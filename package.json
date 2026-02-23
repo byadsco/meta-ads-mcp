@@ -1,0 +1,52 @@
+{
+  "name": "meta-ads-mcp",
+  "version": "1.0.0",
+  "description": "MCP server for Meta Ads (Facebook/Instagram) management - agency multi-account",
+  "type": "module",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "main": "dist/index.js",
+  "bin": {
+    "meta-ads-mcp": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "start:stdio": "node dist/index.js --transport stdio",
+    "dev": "tsx src/index.ts",
+    "dev:stdio": "tsx src/index.ts --transport stdio",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint src/",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "express": "^4.21.0",
+    "cors": "^2.8.5",
+    "zod": "^3.24.0",
+    "pino": "^9.6.0",
+    "pino-pretty": "^13.0.0"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/cors": "^2.8.17",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.0",
+    "tsx": "^4.19.0",
+    "vitest": "^2.1.0",
+    "eslint": "^9.0.0"
+  },
+  "keywords": [
+    "mcp",
+    "meta",
+    "facebook",
+    "instagram",
+    "ads",
+    "marketing",
+    "advertising",
+    "agency"
+  ],
+  "license": "MIT"
+}

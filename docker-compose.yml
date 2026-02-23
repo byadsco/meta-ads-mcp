@@ -1,0 +1,17 @@
+services:
+  meta-ads-mcp:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      - META_ACCESS_TOKEN=${META_ACCESS_TOKEN:-}
+      - META_API_VERSION=${META_API_VERSION:-v22.0}
+      - PORT=3000
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - NODE_ENV=production
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
