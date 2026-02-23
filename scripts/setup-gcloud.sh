@@ -9,7 +9,7 @@ set -euo pipefail
 # Usage: bash scripts/setup-gcloud.sh
 # ─────────────────────────────────────────────────────────────
 
-GITHUB_REPO="MaxterPC/meta-ads-mcp"
+GITHUB_REPO="byadsco/meta-ads-mcp"
 SERVICE_NAME="meta-ads-mcp"
 SA_NAME="github-actions-deploy"
 WIF_POOL="github-actions-pool"
