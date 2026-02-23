@@ -1,0 +1,86 @@
+name: Deploy to Cloud Run
+
+on:
+  push:
+    branches: [main]
+
+env:
+  SERVICE_NAME: meta-ads-mcp
+  IMAGE_NAME: server
+
+permissions:
+  contents: read
+  id-token: write   # Required for WIF OIDC token
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker "$GCP_REGION-docker.pkg.dev" --quiet
+        env:
+          GCP_REGION: ${{ secrets.GCP_REGION }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/meta-ads-mcp/${{ env.IMAGE_NAME }}:${{ github.sha }}
+            ${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/meta-ads-mcp/${{ env.IMAGE_NAME }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Deploy to Cloud Run
+        id: deploy
+        uses: google-github-actions/deploy-cloudrun@v2
+        with:
+          service: ${{ env.SERVICE_NAME }}
+          region: ${{ secrets.GCP_REGION }}
+          image: ${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/meta-ads-mcp/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          flags: >-
+            --allow-unauthenticated
+            --memory=512Mi
+            --cpu=1
+            --concurrency=80
+            --timeout=300
+            --min-instances=0
+            --max-instances=10
+            --port=3000
+          env_vars: |
+            META_API_VERSION=v22.0
+            LOG_LEVEL=info
+            NODE_ENV=production
+
+      - name: Smoke test
+        env:
+          SERVICE_URL: ${{ steps.deploy.outputs.url }}
+        run: |
+          echo "Service URL: ${SERVICE_URL}"
+
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" "${SERVICE_URL}/health" --max-time 10)
+
+          if [ "${STATUS}" = "200" ]; then
+            echo "Health check passed (HTTP ${STATUS})"
+          else
+            echo "Health check FAILED (HTTP ${STATUS})"
+            exit 1
+          fi
