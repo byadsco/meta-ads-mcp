@@ -69,6 +69,17 @@ jobs:
             META_API_VERSION=v22.0
             LOG_LEVEL=info
             NODE_ENV=production
+            META_ACCESS_TOKEN=${{ secrets.META_ACCESS_TOKEN }}
+            OAUTH_SECRET=${{ secrets.OAUTH_SECRET }}
+
+      - name: Set SERVER_URL
+        env:
+          GCP_REGION: ${{ secrets.GCP_REGION }}
+          SERVICE_URL: ${{ steps.deploy.outputs.url }}
+        run: |
+          gcloud run services update "$SERVICE_NAME" \
+            --region="$GCP_REGION" \
+            --update-env-vars="SERVER_URL=$SERVICE_URL"
 
       - name: Smoke test
         env:
@@ -76,11 +87,24 @@ jobs:
         run: |
           echo "Service URL: ${SERVICE_URL}"
 
+          # Wait for new revision to be ready after env var update
+          sleep 5
+
           STATUS=$(curl -s -o /dev/null -w "%{http_code}" "${SERVICE_URL}/health" --max-time 10)
 
           if [ "${STATUS}" = "200" ]; then
             echo "Health check passed (HTTP ${STATUS})"
           else
             echo "Health check FAILED (HTTP ${STATUS})"
+            exit 1
+          fi
+
+          # Verify OAuth metadata is available
+          OAUTH_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "${SERVICE_URL}/.well-known/oauth-authorization-server" --max-time 10)
+
+          if [ "${OAUTH_STATUS}" = "200" ]; then
+            echo "OAuth metadata check passed (HTTP ${OAUTH_STATUS})"
+          else
+            echo "OAuth metadata check FAILED (HTTP ${OAUTH_STATUS})"
             exit 1
           fi

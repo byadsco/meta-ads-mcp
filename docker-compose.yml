@@ -5,6 +5,8 @@ services:
       - "3000:3000"
     environment:
       - META_ACCESS_TOKEN=${META_ACCESS_TOKEN:-}
+      - OAUTH_SECRET=${OAUTH_SECRET:-}
+      - SERVER_URL=${SERVER_URL:-http://localhost:3000}
       - META_API_VERSION=${META_API_VERSION:-v22.0}
       - PORT=3000
       - LOG_LEVEL=${LOG_LEVEL:-info}
