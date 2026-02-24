@@ -5,6 +5,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { mcpAuthRouter } from "@modelcontextprotocol/sdk/server/auth/router.js";
 import { requireBearerAuth } from "@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js";
 import { oauthProvider } from "../auth/oauth-provider.js";
+import { isApiKeyConfigured, validateApiKey } from "../auth/api-key.js";
 import { requestContext } from "../auth/token-store.js";
 import { logger } from "../utils/logger.js";
 
@@ -80,21 +81,109 @@ function renderConsentPage(query: Record<string, string>): string {
 </html>`;
 }
 
+// ── API Key auth middleware ──────────────────────────────────
+
+/**
+ * Extract an API key from the request, checking X-API-Key header first,
+ * then falling back to Authorization: Bearer <token> if it matches
+ * the configured MCP_API_KEY.
+ */
+function extractApiKey(req: express.Request): string | undefined {
+  // Prefer explicit X-API-Key header
+  const xApiKey = req.headers["x-api-key"];
+  if (typeof xApiKey === "string" && xApiKey) {
+    return xApiKey;
+  }
+
+  // Fall back to Bearer token if it matches the API key
+  const authHeader = req.headers.authorization;
+  if (authHeader?.startsWith("Bearer ")) {
+    return authHeader.slice(7);
+  }
+
+  return undefined;
+}
+
+/**
+ * Combined auth middleware that supports both API key and OAuth 2.1.
+ *
+ * When MCP_API_KEY is configured:
+ *   - X-API-Key header → validate as API key
+ *   - Bearer token that matches MCP_API_KEY → authenticate as API key
+ *   - Bearer token that does NOT match → fall through to OAuth
+ *
+ * When MCP_API_KEY is NOT configured:
+ *   - Always delegate to OAuth bearer auth
+ */
+function createCombinedAuthMiddleware(
+  oauthMiddleware: express.RequestHandler,
+): express.RequestHandler {
+  return (req, res, next) => {
+    // If API key auth is not configured, always use OAuth
+    if (!isApiKeyConfigured()) {
+      oauthMiddleware(req, res, next);
+      return;
+    }
+
+    // Check X-API-Key header first (explicit API key)
+    const xApiKey = req.headers["x-api-key"];
+    if (typeof xApiKey === "string" && xApiKey) {
+      if (validateApiKey(xApiKey)) {
+        logger.debug("Authenticated via X-API-Key header");
+        next();
+        return;
+      }
+      res.status(401).json({
+        jsonrpc: "2.0",
+        error: { code: -32000, message: "Invalid API key" },
+        id: null,
+      });
+      return;
+    }
+
+    // Check Bearer token — could be API key or OAuth JWT
+    const candidate = extractApiKey(req);
+    if (candidate && validateApiKey(candidate)) {
+      logger.debug("Authenticated via Bearer token (API key match)");
+      next();
+      return;
+    }
+
+    // Not an API key — delegate to OAuth
+    oauthMiddleware(req, res, next);
+  };
+}
+
 // ── Meta token middleware ────────────────────────────────────
 
+/**
+ * Resolves the Meta Graph API access token for the current request.
+ *
+ * Priority:
+ *  1. X-Meta-Token header (per-request override, e.g. from Manus AI)
+ *  2. META_ACCESS_TOKEN environment variable
+ */
 function metaTokenMiddleware(
-  _req: express.Request,
+  req: express.Request,
   res: express.Response,
   next: express.NextFunction,
 ): void {
-  const metaToken = process.env.META_ACCESS_TOKEN;
+  const headerToken = req.headers["x-meta-token"];
+  const metaToken =
+    (typeof headerToken === "string" && headerToken) ||
+    process.env.META_ACCESS_TOKEN;
+
   if (!metaToken) {
-    logger.error("META_ACCESS_TOKEN environment variable is not set");
+    logger.error(
+      "No Meta access token: set META_ACCESS_TOKEN env var or pass X-Meta-Token header",
+    );
     res.status(500).json({
       jsonrpc: "2.0",
       error: {
         code: -32603,
-        message: "Server configuration error: Meta access token not configured",
+        message:
+          "Server configuration error: Meta access token not configured. " +
+          "Set META_ACCESS_TOKEN env var or pass X-Meta-Token header.",
       },
       id: null,
     });
@@ -109,8 +198,8 @@ function metaTokenMiddleware(
 // ── Server startup ───────────────────────────────────────────
 
 /**
- * Creates and starts an Express HTTP server with StreamableHTTP MCP transport
- * and OAuth 2.1 authentication.
+ * Creates and starts an Express HTTP server with StreamableHTTP MCP transport.
+ * Supports both OAuth 2.1 and API key authentication.
  */
 export async function startHttpTransport(
   createServer: () => McpServer,
@@ -145,11 +234,12 @@ export async function startHttpTransport(
     }),
   );
 
-  // ── Bearer auth middleware for MCP routes ───────────────
-  const bearerAuth = requireBearerAuth({ verifier: oauthProvider });
+  // ── Auth middleware: API key + OAuth 2.1 ─────────────────
+  const oauthBearerAuth = requireBearerAuth({ verifier: oauthProvider });
+  const auth = createCombinedAuthMiddleware(oauthBearerAuth);
 
   // ── MCP endpoint — stateless mode ──────────────────────
-  app.post("/mcp", bearerAuth, metaTokenMiddleware, async (req, res) => {
+  app.post("/mcp", auth, metaTokenMiddleware, async (req, res) => {
     try {
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: undefined, // stateless
@@ -177,7 +267,7 @@ export async function startHttpTransport(
   });
 
   // Handle GET/DELETE for MCP (required by spec even in stateless mode)
-  app.get("/mcp", bearerAuth, (_req: express.Request, res: express.Response) => {
+  app.get("/mcp", auth, (_req: express.Request, res: express.Response) => {
     res.status(405).json({
       jsonrpc: "2.0",
       error: {
@@ -188,7 +278,7 @@ export async function startHttpTransport(
     });
   });
 
-  app.delete("/mcp", bearerAuth, (_req, res) => {
+  app.delete("/mcp", auth, (_req, res) => {
     res.status(405).json({
       jsonrpc: "2.0",
       error: {
@@ -199,10 +289,15 @@ export async function startHttpTransport(
     });
   });
 
+  // ── Start listening ─────────────────────────────────────
+  const authModes: string[] = [];
+  if (isApiKeyConfigured()) authModes.push("API Key");
+  authModes.push("OAuth 2.1");
+
   app.listen(port, () => {
     logger.info(
-      { port, serverUrl: serverUrl.href },
-      "Meta Ads MCP server listening (HTTP transport with OAuth 2.1)",
+      { port, serverUrl: serverUrl.href, auth: authModes },
+      `Meta Ads MCP server listening (HTTP transport — auth: ${authModes.join(", ")})`,
     );
   });
 }
