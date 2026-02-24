@@ -4,7 +4,9 @@ import { metaApiClient } from "../meta/client.js";
 import { normalizeAccountId } from "../utils/format.js";
 import { buildFieldsParam } from "../utils/validation.js";
 import { CREATIVE_DEFAULT_FIELDS } from "../meta/types/creative.js";
-import type { AdCreative, MetaApiResponse } from "../meta/types/index.js";
+import { IMAGE_DEFAULT_FIELDS } from "../meta/types/image.js";
+import { VIDEO_DEFAULT_FIELDS, VIDEO_DETAIL_FIELDS } from "../meta/types/video.js";
+import type { AdCreative, AdImage, AdVideo, MetaApiResponse } from "../meta/types/index.js";
 import { logger } from "../utils/logger.js";
 
 const ctaEnum = z.enum([
@@ -210,6 +212,132 @@ export function registerCreativeTools(server: McpServer): void {
             type: "text",
             text: `Image uploaded successfully!\nHash: ${uploaded.hash}\nURL: ${uploaded.url}\nName: ${uploaded.name ?? name ?? "N/A"}\n\nUse the hash "${uploaded.hash}" when creating a creative with create_ad_creative.`,
           },
+        ],
+      };
+    },
+  );
+
+  // ─── Get Ad Images ────────────────────────────────────────────
+  server.tool(
+    "meta_ads_get_ad_images",
+    "List images uploaded to an ad account with their full URLs. Useful for previewing creative assets without opening Ads Manager.",
+    {
+      account_id: z.string().describe("Ad account ID"),
+      hashes: z.array(z.string()).optional().describe("Filter by specific image hashes"),
+      limit: z.number().min(1).max(100).default(25),
+      fields: z.array(z.string()).optional(),
+    },
+    async ({ account_id, hashes, limit, fields }) => {
+      const id = normalizeAccountId(account_id);
+      const fieldsParam = buildFieldsParam(fields, [...IMAGE_DEFAULT_FIELDS]);
+
+      const params: Record<string, string | number | boolean> = {
+        fields: fieldsParam,
+        limit,
+      };
+
+      if (hashes && hashes.length > 0) {
+        params.hashes = JSON.stringify(hashes);
+      }
+
+      const response = await metaApiClient.get<MetaApiResponse<AdImage>>(
+        `/${id}/adimages`,
+        params,
+      );
+      const images = response.data ?? [];
+
+      const text =
+        images.length === 0
+          ? "No images found."
+          : images
+              .map(
+                (img) =>
+                  `• ${img.name ?? "Unnamed"} — Hash: ${img.hash}\n  URL: ${img.url}\n  Size: ${img.width ?? "?"}x${img.height ?? "?"}`,
+              )
+              .join("\n\n");
+
+      return {
+        content: [
+          { type: "text", text: `Found ${images.length} image(s):\n\n${text}` },
+          { type: "text", text: JSON.stringify(images, null, 2) },
+        ],
+      };
+    },
+  );
+
+  // ─── Get Ad Videos ────────────────────────────────────────────
+  server.tool(
+    "meta_ads_get_ad_videos",
+    "List videos uploaded to an ad account with source URLs and thumbnails. Use this to preview video creatives directly.",
+    {
+      account_id: z.string().describe("Ad account ID"),
+      limit: z.number().min(1).max(100).default(25),
+      fields: z.array(z.string()).optional(),
+    },
+    async ({ account_id, limit, fields }) => {
+      const id = normalizeAccountId(account_id);
+      const fieldsParam = buildFieldsParam(fields, [...VIDEO_DEFAULT_FIELDS]);
+
+      const response = await metaApiClient.get<MetaApiResponse<AdVideo>>(
+        `/${id}/advideos`,
+        { fields: fieldsParam, limit },
+      );
+      const videos = response.data ?? [];
+
+      const text =
+        videos.length === 0
+          ? "No videos found."
+          : videos
+              .map(
+                (v) =>
+                  `• ${v.title ?? "Untitled"} (${v.id}) — Duration: ${v.length ? `${v.length}s` : "N/A"}\n  Source: ${v.source ?? "N/A"}\n  Thumbnail: ${v.picture ?? "N/A"}`,
+              )
+              .join("\n\n");
+
+      return {
+        content: [
+          { type: "text", text: `Found ${videos.length} video(s):\n\n${text}` },
+          { type: "text", text: JSON.stringify(videos, null, 2) },
+        ],
+      };
+    },
+  );
+
+  // ─── Get Video Details ────────────────────────────────────────
+  server.tool(
+    "meta_ads_get_video_details",
+    "Get detailed information about a specific video including source URL, thumbnails at different sizes, and processing status.",
+    {
+      video_id: z.string().describe("Video ID"),
+      fields: z.array(z.string()).optional(),
+    },
+    async ({ video_id, fields }) => {
+      const fieldsParam = buildFieldsParam(fields, [...VIDEO_DETAIL_FIELDS]);
+
+      const video = await metaApiClient.get<AdVideo>(
+        `/${video_id}`,
+        { fields: fieldsParam },
+      );
+
+      const lines: string[] = [
+        `Video: ${video.title ?? "Untitled"} (${video.id})`,
+        `Duration: ${video.length ? `${video.length}s` : "N/A"}`,
+        `Status: ${video.status?.video_status ?? "N/A"}`,
+        `Source URL: ${video.source ?? "Not available"}`,
+        `Thumbnail: ${video.picture ?? "Not available"}`,
+      ];
+
+      if (video.thumbnails?.data && video.thumbnails.data.length > 0) {
+        lines.push(`\nThumbnails (${video.thumbnails.data.length}):`);
+        for (const thumb of video.thumbnails.data) {
+          lines.push(`  • ${thumb.width}x${thumb.height}: ${thumb.uri}`);
+        }
+      }
+
+      return {
+        content: [
+          { type: "text", text: lines.join("\n") },
+          { type: "text", text: JSON.stringify(video, null, 2) },
         ],
       };
     },
