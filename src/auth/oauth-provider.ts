@@ -50,6 +50,8 @@ interface AuthCodeEntry {
 
 // ── Clients Store ───────────────────────────────────────────
 
+const MAX_REGISTERED_CLIENTS = 100;
+
 class InMemoryClientsStore implements OAuthRegisteredClientsStore {
   private clients = new Map<string, OAuthClientInformationFull>();
 
@@ -60,6 +62,10 @@ class InMemoryClientsStore implements OAuthRegisteredClientsStore {
   async registerClient(
     client: OAuthClientInformationFull,
   ): Promise<OAuthClientInformationFull> {
+    // Prevent unbounded client registration (DoS protection)
+    if (this.clients.size >= MAX_REGISTERED_CLIENTS && !this.clients.has(client.client_id)) {
+      throw new Error("Maximum number of registered clients reached");
+    }
     this.clients.set(client.client_id, client);
     logger.info(
       { clientId: client.client_id, clientName: client.client_name },
@@ -71,9 +77,30 @@ class InMemoryClientsStore implements OAuthRegisteredClientsStore {
 
 // ── OAuth Server Provider ───────────────────────────────────
 
+const AUTH_CODE_MAX = 50;
+
 export class MetaAdsOAuthProvider implements OAuthServerProvider {
   private readonly _clientsStore = new InMemoryClientsStore();
   private readonly authCodes = new Map<string, AuthCodeEntry>();
+
+  constructor() {
+    // Clean expired auth codes every 5 minutes to prevent memory leaks
+    setInterval(() => this.cleanExpiredCodes(), 5 * 60 * 1000).unref();
+  }
+
+  private cleanExpiredCodes(): void {
+    const now = Math.floor(Date.now() / 1000);
+    let cleaned = 0;
+    for (const [code, entry] of this.authCodes) {
+      if (entry.expiresAt < now) {
+        this.authCodes.delete(code);
+        cleaned++;
+      }
+    }
+    if (cleaned > 0) {
+      logger.debug({ cleaned }, "Cleaned expired authorization codes");
+    }
+  }
 
   get clientsStore(): OAuthRegisteredClientsStore {
     return this._clientsStore;
@@ -84,6 +111,14 @@ export class MetaAdsOAuthProvider implements OAuthServerProvider {
     params: AuthorizationParams,
     res: Response,
   ): Promise<void> {
+    // Prevent memory exhaustion from too many pending auth codes
+    if (this.authCodes.size >= AUTH_CODE_MAX) {
+      this.cleanExpiredCodes();
+    }
+    if (this.authCodes.size >= AUTH_CODE_MAX) {
+      throw new Error("Too many pending authorization requests");
+    }
+
     const code = crypto.randomBytes(32).toString("hex");
 
     this.authCodes.set(code, {
