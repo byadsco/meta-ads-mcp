@@ -399,7 +399,7 @@ export async function startHttpTransport(
     const query = req.query as Record<string, string>;
     res.setHeader(
       "Content-Security-Policy",
-      "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'",
+      "default-src 'none'; style-src 'unsafe-inline'",
     );
     res.type("html").send(renderConsentPage(query, { pinRequired }));
   });
