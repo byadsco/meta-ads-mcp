@@ -70,18 +70,22 @@ jobs:
             LOG_LEVEL=info
             NODE_ENV=production
             META_ACCESS_TOKEN=${{ secrets.META_ACCESS_TOKEN }}
-            META_TOKENS=${{ secrets.META_TOKENS }}
             OAUTH_SECRET=${{ secrets.OAUTH_SECRET }}
             OAUTH_APPROVAL_PIN=${{ secrets.OAUTH_APPROVAL_PIN }}
 
-      - name: Set SERVER_URL
+      - name: Set SERVER_URL and META_TOKENS
         env:
           GCP_REGION: ${{ secrets.GCP_REGION }}
           SERVICE_URL: ${{ steps.deploy.outputs.url }}
+          META_TOKENS: ${{ secrets.META_TOKENS }}
         run: |
+          UPDATE_VARS="SERVER_URL=$SERVICE_URL"
+          if [ -n "$META_TOKENS" ]; then
+            UPDATE_VARS="$UPDATE_VARS||META_TOKENS=$META_TOKENS"
+          fi
           gcloud run services update "$SERVICE_NAME" \
             --region="$GCP_REGION" \
-            --update-env-vars="SERVER_URL=$SERVICE_URL"
+            --update-env-vars="^||^$UPDATE_VARS"
 
       - name: Smoke test
         env:
