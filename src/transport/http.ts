@@ -317,22 +317,30 @@ function metaTokenMiddleware(
   res: express.Response,
   next: express.NextFunction,
 ): void {
+  // Priority 1: X-Meta-Token header (per-request override)
   const headerToken = req.headers["x-meta-token"];
-  const metaToken =
-    (typeof headerToken === "string" && headerToken) ||
-    process.env.META_ACCESS_TOKEN;
-
-  if (metaToken) {
-    requestContext.run({ accessToken: metaToken }, () => {
+  if (typeof headerToken === "string" && headerToken) {
+    requestContext.run({ accessToken: headerToken }, () => {
       next();
     });
     return;
   }
 
-  // TokenManager has tokens — proceed without context; getAccessToken()
-  // will resolve the active token from the registry.
-  if (tokenManager.hasTokens()) {
-    next();
+  // Priority 2: TokenManager active token (multi-token registry)
+  const managerToken = tokenManager.getActiveToken();
+  if (managerToken) {
+    requestContext.run({ accessToken: managerToken }, () => {
+      next();
+    });
+    return;
+  }
+
+  // Priority 3: META_ACCESS_TOKEN env var (legacy fallback)
+  const envToken = process.env.META_ACCESS_TOKEN;
+  if (envToken) {
+    requestContext.run({ accessToken: envToken }, () => {
+      next();
+    });
     return;
   }
 
