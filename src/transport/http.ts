@@ -8,6 +8,7 @@ import { requireBearerAuth } from "@modelcontextprotocol/sdk/server/auth/middlew
 import { oauthProvider } from "../auth/oauth-provider.js";
 import { isApiKeyConfigured, validateApiKey } from "../auth/api-key.js";
 import { requestContext } from "../auth/token-store.js";
+import { tokenManager } from "../auth/token-manager.js";
 import { logger } from "../utils/logger.js";
 
 // ── Helpers ──────────────────────────────────────────────────
@@ -303,8 +304,13 @@ function createCombinedAuthMiddleware(
  * Resolves the Meta Graph API access token for the current request.
  *
  * Priority:
- *  1. X-Meta-Token header (per-request override, e.g. from Manus AI)
- *  2. META_ACCESS_TOKEN environment variable
+ *  1. X-Meta-Token header (per-request override)
+ *  2. TokenManager active token (multi-token registry)
+ *  3. META_ACCESS_TOKEN environment variable
+ *
+ * When only TokenManager has tokens (no header, no env var), the middleware
+ * proceeds without setting request context — getAccessToken() will resolve
+ * the token from TokenManager instead.
  */
 function metaTokenMiddleware(
   req: express.Request,
@@ -316,25 +322,32 @@ function metaTokenMiddleware(
     (typeof headerToken === "string" && headerToken) ||
     process.env.META_ACCESS_TOKEN;
 
-  if (!metaToken) {
-    logger.error(
-      "No Meta access token: set META_ACCESS_TOKEN env var or pass X-Meta-Token header",
-    );
-    res.status(500).json({
-      jsonrpc: "2.0",
-      error: {
-        code: -32603,
-        message:
-          "Server configuration error: Meta access token not configured. " +
-          "Set META_ACCESS_TOKEN env var or pass X-Meta-Token header.",
-      },
-      id: null,
+  if (metaToken) {
+    requestContext.run({ accessToken: metaToken }, () => {
+      next();
     });
     return;
   }
 
-  requestContext.run({ accessToken: metaToken }, () => {
+  // TokenManager has tokens — proceed without context; getAccessToken()
+  // will resolve the active token from the registry.
+  if (tokenManager.hasTokens()) {
     next();
+    return;
+  }
+
+  logger.error(
+    "No Meta access token: set META_ACCESS_TOKEN or META_TOKENS env var, or pass X-Meta-Token header",
+  );
+  res.status(500).json({
+    jsonrpc: "2.0",
+    error: {
+      code: -32603,
+      message:
+        "Server configuration error: Meta access token not configured. " +
+        "Set META_ACCESS_TOKEN or META_TOKENS env var, or pass X-Meta-Token header.",
+    },
+    id: null,
   });
 }
 

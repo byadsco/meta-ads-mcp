@@ -16,6 +16,7 @@ import { registerRuleTools } from "./rules.js";
 import { registerABTestingTools } from "./abtesting.js";
 import { registerReportTools } from "./reports.js";
 import { registerBillingTools } from "./billing.js";
+import { registerTokenTools } from "./tokens.js";
 
 /**
  * Register all Meta Ads tools on the MCP server.
@@ -42,5 +43,8 @@ export function registerAllTools(server: McpServer): void {
   registerReportTools(server);       // 3 tools — Async scheduled reports
   registerBillingTools(server);      // 3 tools — Billing & spend limits
 
-  // Total: 68 tools
+  // ─── Token Management ────────────────────────────────────
+  registerTokenTools(server);        // 3 tools — Multi-token registry
+
+  // Total: 71 tools
 }

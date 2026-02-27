@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { tokenManager } from "./token-manager.js";
 
 export interface RequestContext {
   accessToken: string;
@@ -12,12 +13,21 @@ export const requestContext = new AsyncLocalStorage<RequestContext>();
 
 /**
  * Get the current request's access token.
- * Falls back to META_ACCESS_TOKEN env var if no request context.
+ *
+ * Priority:
+ *  1. AsyncLocalStorage context (per-request, set by HTTP middleware)
+ *  2. TokenManager active token (multi-token registry)
+ *  3. META_ACCESS_TOKEN env var (legacy fallback)
  */
 export function getAccessToken(): string {
   const ctx = requestContext.getStore();
   if (ctx?.accessToken) {
     return ctx.accessToken;
+  }
+
+  const managerToken = tokenManager.getActiveToken();
+  if (managerToken) {
+    return managerToken;
   }
 
   const envToken = process.env.META_ACCESS_TOKEN;
@@ -26,6 +36,6 @@ export function getAccessToken(): string {
   }
 
   throw new Error(
-    "No Meta access token available. Provide via Authorization: Bearer <token> header or META_ACCESS_TOKEN env var.",
+    "No Meta access token available. Provide via X-Meta-Token header, META_TOKENS env var, or META_ACCESS_TOKEN env var.",
   );
 }
