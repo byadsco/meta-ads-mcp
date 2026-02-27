@@ -70,6 +70,7 @@ jobs:
             LOG_LEVEL=info
             NODE_ENV=production
             META_ACCESS_TOKEN=${{ secrets.META_ACCESS_TOKEN }}
+            META_TOKENS=${{ secrets.META_TOKENS }}
             OAUTH_SECRET=${{ secrets.OAUTH_SECRET }}
             OAUTH_APPROVAL_PIN=${{ secrets.OAUTH_APPROVAL_PIN }}
 
