@@ -2,7 +2,13 @@ import type { OAuthClientInformationFull } from "@modelcontextprotocol/sdk/share
 
 export type AuthorizeValidationResult =
   | { ok: true; redirectUri: string; redirectOrigin: string }
-  | { ok: false; status: number; message: string };
+  | { ok: false; kind: "no-params"; status: 200 }
+  | {
+      ok: false;
+      kind: "missing-field" | "unknown-client" | "redirect-mismatch" | "malformed-redirect";
+      status: number;
+      message: string;
+    };
 
 export interface AuthorizeQuery {
   client_id?: string | string[];
@@ -38,9 +44,19 @@ export async function validateAuthorizeQuery(
   const clientId = single(query.client_id);
   const redirectUri = single(query.redirect_uri);
 
+  // Both missing → not an OAuth attempt, just a user landing here from an
+  // internal redirect (logout, expired-session message, etc.). Return a
+  // soft "no-params" so the caller can render a landing page instead of a
+  // hostile 400.
+  if (!clientId && !redirectUri) {
+    return { ok: false, kind: "no-params", status: 200 };
+  }
+  // One present, the other missing → a malformed OAuth request from a
+  // client. This is a real validation error.
   if (!clientId || !redirectUri) {
     return {
       ok: false,
+      kind: "missing-field",
       status: 400,
       message: "client_id and redirect_uri are required.",
     };
@@ -48,13 +64,19 @@ export async function validateAuthorizeQuery(
 
   const client = await getClient(clientId);
   if (!client) {
-    return { ok: false, status: 400, message: "Unknown client." };
+    return {
+      ok: false,
+      kind: "unknown-client",
+      status: 400,
+      message: "Unknown client.",
+    };
   }
 
   const registered = client.redirect_uris ?? [];
   if (!registered.includes(redirectUri)) {
     return {
       ok: false,
+      kind: "redirect-mismatch",
       status: 400,
       message: "redirect_uri is not registered for this client.",
     };
@@ -66,6 +88,7 @@ export async function validateAuthorizeQuery(
   } catch {
     return {
       ok: false,
+      kind: "malformed-redirect",
       status: 400,
       message: "redirect_uri is malformed.",
     };

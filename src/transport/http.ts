@@ -471,12 +471,36 @@ export async function startHttpTransport(
         oauthProvider.clientsStore.getClient(id),
       );
       if (!validation.ok) {
+        if (validation.kind === "no-params") {
+          // Internal redirect (logout, expired-session, no-token messages).
+          // Render a friendly landing page so users can recover.
+          const session = await getSession(req);
+          const sessionLine = session
+            ? `<p>You're signed in as <code>${escapeHtml(session.email ?? session.name ?? session.fbUserId)}</code>.</p>`
+            : `<p><a href="/auth/meta">Sign in with Meta</a> to start a session.</p>`;
+          res.status(200).type("html").send(
+            `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Meta Ads MCP</title>
+            <style>body{background:#0f0f0f;color:#e0e0e0;font-family:-apple-system,BlinkMacSystemFont,sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;padding:1rem}
+            .card{background:#1a1a1a;border:1px solid #333;border-radius:12px;padding:2rem;max-width:480px;text-align:center}
+            h1{color:#fff;margin:0 0 1rem;font-size:1.3rem}
+            p{color:#aaa;margin:0.5rem 0;font-size:0.95rem;line-height:1.5}
+            a{color:#6cb4ee;text-decoration:none}a:hover{text-decoration:underline}
+            code{background:#222;padding:0.1rem 0.4rem;border-radius:4px;color:#ccc;font-size:0.85rem}</style></head>
+            <body><div class="card">
+              <h1>Meta Ads MCP</h1>
+              <p>This is the OAuth authorization endpoint for the Meta Ads MCP server.</p>
+              <p>To authorize an MCP client, point it at this server's MCP URL — the client will land on this endpoint with the right query parameters.</p>
+              ${sessionLine}
+            </div></body></html>`,
+          );
+          return;
+        }
         logger.warn(
-          { clientId: query.client_id, redirectUri: query.redirect_uri, reason: validation.message },
+          { clientId: query.client_id, redirectUri: query.redirect_uri, kind: validation.kind, reason: validation.message },
           "Rejected /authorize",
         );
         res.status(validation.status).type("html").send(
-          `<h1>Invalid request</h1><p>${validation.message}</p>`,
+          `<h1>Invalid request</h1><p>${escapeHtml(validation.message)}</p>`,
         );
         return;
       }

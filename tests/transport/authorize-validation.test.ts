@@ -32,24 +32,29 @@ describe("validateAuthorizeQuery", () => {
     }
   });
 
-  it("rejects when client_id is missing", async () => {
+  it("returns no-params landing signal when both client_id and redirect_uri are missing (logout/expired-session recovery)", async () => {
+    const r = await validateAuthorizeQuery({}, makeGetClient({}));
+    expect(r).toEqual({ ok: false, kind: "no-params", status: 200 });
+  });
+
+  it("rejects with missing-field when only client_id is missing", async () => {
     const r = await validateAuthorizeQuery(
       { redirect_uri: "https://claude.ai/api/mcp/auth_callback" },
       makeGetClient({}),
     );
-    expect(r).toEqual({
+    expect(r).toMatchObject({
       ok: false,
+      kind: "missing-field",
       status: 400,
-      message: expect.stringContaining("required"),
     });
   });
 
-  it("rejects when redirect_uri is missing", async () => {
+  it("rejects with missing-field when only redirect_uri is missing", async () => {
     const r = await validateAuthorizeQuery(
       { client_id: "claude-client" },
       makeGetClient({ "claude-client": claudeClient }),
     );
-    expect(r.ok).toBe(false);
+    expect(r).toMatchObject({ ok: false, kind: "missing-field", status: 400 });
   });
 
   it("rejects when the client is unknown", async () => {
@@ -60,8 +65,9 @@ describe("validateAuthorizeQuery", () => {
       },
       makeGetClient({}),
     );
-    expect(r).toEqual({
+    expect(r).toMatchObject({
       ok: false,
+      kind: "unknown-client",
       status: 400,
       message: "Unknown client.",
     });
@@ -75,10 +81,10 @@ describe("validateAuthorizeQuery", () => {
       },
       makeGetClient({ "claude-client": claudeClient }),
     );
-    expect(r).toEqual({
+    expect(r).toMatchObject({
       ok: false,
+      kind: "redirect-mismatch",
       status: 400,
-      message: "redirect_uri is not registered for this client.",
     });
   });
 
@@ -91,10 +97,10 @@ describe("validateAuthorizeQuery", () => {
       { client_id: "claude-client", redirect_uri: "not a url" },
       makeGetClient({ "claude-client": weirdClient }),
     );
-    expect(r).toEqual({
+    expect(r).toMatchObject({
       ok: false,
+      kind: "malformed-redirect",
       status: 400,
-      message: "redirect_uri is malformed.",
     });
   });
 
