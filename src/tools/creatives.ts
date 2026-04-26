@@ -184,17 +184,6 @@ export function registerCreativeTools(server: McpServer): void {
     }) => {
       const id = normalizeAccountId(account_id);
 
-      if (image_url) {
-        try {
-          await assertSafePublicUrl(image_url);
-        } catch (err) {
-          if (err instanceof UnsafeUrlError) {
-            throw new Error(`Refusing to forward image_url to Meta: ${err.message}`);
-          }
-          throw err;
-        }
-      }
-
       const body: Record<string, string | number | boolean> = { name };
 
       if (source_instagram_media_id) {
@@ -220,6 +209,20 @@ export function registerCreativeTools(server: McpServer): void {
         }
         if (video_id && !image_hash && !image_url) {
           throw new Error("video creatives built from scratch require image_hash or image_url as a thumbnail.");
+        }
+        // SSRF guard: only validate image_url when it will actually be
+        // forwarded to Meta — i.e. Mode 1 with no image_hash override. Other
+        // modes ignore image_url entirely, so a stale value shouldn't fail
+        // the call.
+        if (image_url && !image_hash) {
+          try {
+            await assertSafePublicUrl(image_url);
+          } catch (err) {
+            if (err instanceof UnsafeUrlError) {
+              throw new Error(`Refusing to forward image_url to Meta: ${err.message}`);
+            }
+            throw err;
+          }
         }
         const objectStorySpec: Record<string, unknown> = { page_id };
 
