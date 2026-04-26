@@ -250,6 +250,7 @@ jobs:
           image: ${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/meta-ads-mcp/${{ env.IMAGE_NAME }}:${{ github.sha }}
           flags: >-
             --allow-unauthenticated
+            --service-account=meta-ads-mcp-runtime@${{ secrets.GCP_PROJECT_ID }}.iam.gserviceaccount.com
             --memory=512Mi
             --cpu=1
             --concurrency=80
