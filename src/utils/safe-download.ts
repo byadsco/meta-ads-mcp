@@ -18,6 +18,7 @@ const ALLOWED_IMAGE_TYPES = new Set([
   "image/gif",
   "image/webp",
 ]);
+const JPEG_MIME_ALIASES = new Set(["image/jpg", "image/pjpeg"]);
 
 export interface SafeImageDownloadOptions extends AssertSafeUrlOptions {
   maxBytes?: number;
@@ -44,7 +45,8 @@ function normalizeContentType(headers: IncomingHttpHeaders): string | null {
   const raw = headers["content-type"];
   const value = Array.isArray(raw) ? raw[0] : raw;
   if (!value) return null;
-  return value.split(";")[0].trim().toLowerCase();
+  const contentType = value.split(";")[0].trim().toLowerCase();
+  return JPEG_MIME_ALIASES.has(contentType) ? "image/jpeg" : contentType;
 }
 
 function parseContentLength(headers: IncomingHttpHeaders): number | null {

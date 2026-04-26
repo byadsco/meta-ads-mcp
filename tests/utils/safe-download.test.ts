@@ -159,6 +159,36 @@ describe("downloadSafePublicImage", () => {
     ).rejects.toThrow(/content-type/);
   });
 
+  it("accepts common JPEG MIME aliases", async () => {
+    const jpg = makeRequest([
+      {
+        headers: { "content-type": "image/jpg" },
+        chunks: [Buffer.from("jpgdata")],
+      },
+    ]);
+
+    const pjpeg = makeRequest([
+      {
+        headers: { "content-type": "image/pjpeg" },
+        chunks: [Buffer.from("pjpegdata")],
+      },
+    ]);
+
+    const jpgImage = await downloadSafePublicImage("https://cdn.example.com/image.jpg", {
+      request: jpg.request,
+      resolve: fakeResolve({ "cdn.example.com": ["203.0.113.10"] }),
+    });
+    const pjpegImage = await downloadSafePublicImage("https://cdn.example.com/image2.jpg", {
+      request: pjpeg.request,
+      resolve: fakeResolve({ "cdn.example.com": ["203.0.113.10"] }),
+    });
+
+    expect(jpgImage.contentType).toBe("image/jpeg");
+    expect(jpgImage.extension).toBe(".jpg");
+    expect(pjpegImage.contentType).toBe("image/jpeg");
+    expect(pjpegImage.extension).toBe(".jpg");
+  });
+
   it("rejects images whose Content-Length exceeds the limit", async () => {
     const { request } = makeRequest([
       {
