@@ -103,7 +103,7 @@ Every PR and every push to `main` runs [gitleaks](https://github.com/gitleaks/gi
 - The full multi-tenant token map (`META_TOKENS={…EAA…}`).
 - Our named secrets (`META_APP_SECRET=`, `OAUTH_SECRET=`, `OAUTH_APPROVAL_PIN=`, `SESSION_COOKIE_SECRET=`, `TOKEN_ENCRYPTION_KEY=`, `MCP_API_KEY=`).
 - Google API keys (`AIza…`), OAuth tokens (`ya29.…`), service-account JSON.
-- Generic patterns: `-----BEGIN PRIVATE KEY-----`, GitHub PATs (`gh[pousr]_…`), AWS keys (`AKIA…`).
+- Generic patterns: `-----BEGIN PRIVATE KEY-----`, GitHub PATs (`gh[pousr]_…`), AWS keys (`AKIA…`). <!-- gitleaks:allow -->
 
 The deploy job in [.github/workflows/deploy.yml](.github/workflows/deploy.yml) depends on the preflight job, so a failed scan blocks the deployment.
 

@@ -22,7 +22,7 @@ describe("crypto encryptToken / decryptToken", () => {
   });
 
   it("roundtrips arbitrary strings", () => {
-    const plaintext = "EAAGm0PX4ZCpsBA0123456789abcdef";
+    const plaintext = "EAA-test-token-fixture-roundtrip";
     const encrypted = encryptToken(plaintext);
     expect(encrypted.ciphertext).not.toContain(plaintext);
     expect(decryptToken(encrypted)).toBe(plaintext);

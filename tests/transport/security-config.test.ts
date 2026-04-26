@@ -114,7 +114,7 @@ describe("resolveSecurityConfig", () => {
   });
 
   it("warns but does not throw when OAUTH_APPROVAL_PIN is set", () => {
-    process.env.OAUTH_APPROVAL_PIN = "legacy";
+    process.env.OAUTH_APPROVAL_PIN = "placeholder";
     expect(() => resolveSecurityConfig()).not.toThrow();
   });
 });

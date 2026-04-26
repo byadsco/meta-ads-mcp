@@ -31,11 +31,11 @@ describe("API Key Authentication", () => {
 
   describe("validateApiKey", () => {
     beforeEach(() => {
-      process.env.MCP_API_KEY = "my-secret-api-key-12345";
+      process.env.MCP_API_KEY = "test-secret-fixture-1234567890";
     });
 
     it("returns true for matching key", () => {
-      expect(validateApiKey("my-secret-api-key-12345")).toBe(true);
+      expect(validateApiKey("test-secret-fixture-1234567890")).toBe(true);
     });
 
     it("returns false for wrong key", () => {
@@ -59,7 +59,7 @@ describe("API Key Authentication", () => {
       // Verify crypto.timingSafeEqual is used by checking that
       // both matching and non-matching keys of the same length
       // call through without throwing
-      expect(validateApiKey("my-secret-api-key-12345")).toBe(true);
+      expect(validateApiKey("test-secret-fixture-1234567890")).toBe(true);
       expect(validateApiKey("xx-xxxxxx-xxx-xxx-xxxxx")).toBe(false);
     });
 
