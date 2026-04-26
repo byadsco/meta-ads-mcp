@@ -21,10 +21,42 @@ import {
 } from "../store/meta-token-repo.js";
 import { logger } from "../utils/logger.js";
 
-function safeReturnTo(input: unknown): string {
+/**
+ * Sanitize a returnTo URL provided by callers (?return=… on /auth/meta).
+ *
+ * Defenses (CODE-M3):
+ *   - must start with a single "/" (no scheme, no protocol-relative "//")
+ *   - max length 2048 (avoid header smuggling and absurdly large redirects)
+ *   - control characters (CR, LF, NUL, etc.) rejected — prevents response
+ *     splitting / header injection if this ever ends up in a Location header
+ *     unencoded by a downstream proxy
+ *   - if it points at /authorize, the query must carry both client_id and
+ *     redirect_uri (otherwise it's the same dead-end the validation gate
+ *     guards against, just reached via a redirect chain)
+ *
+ * On any failure, fall back to "/authorize" — the landing page handles
+ * unauthenticated users.
+ */
+export function safeReturnTo(input: unknown): string {
   if (typeof input !== "string") return "/authorize";
+  if (input.length === 0 || input.length > 2048) return "/authorize";
   if (!input.startsWith("/")) return "/authorize";
   if (input.startsWith("//")) return "/authorize";
+  // Reject control characters (0x00–0x1f and DEL).
+  if (/[\x00-\x1f\x7f]/.test(input)) return "/authorize";
+
+  // If returnTo points at /authorize, make sure it has the OAuth params
+  // the GET handler now requires. A path like "/authorize" alone is
+  // valid and renders the landing page; anything matching "/authorize?…"
+  // must carry both client_id and redirect_uri.
+  if (input === "/authorize" || input.startsWith("/authorize?")) {
+    const qIdx = input.indexOf("?");
+    if (qIdx === -1) return input; // bare /authorize → landing page is fine
+    const params = new URLSearchParams(input.slice(qIdx + 1));
+    if (!params.get("client_id") || !params.get("redirect_uri")) {
+      return "/authorize";
+    }
+  }
   return input;
 }
 
@@ -90,7 +122,22 @@ export function mountAuthRoutes(
     const error = typeof req.query.error === "string" ? req.query.error : null;
 
     if (error) {
-      renderError(res, 400, `Meta returned an error: ${error}`);
+      // Don't reflect Meta's error code/message back to the user — log it
+      // server-side and show a generic message (CODE-M1).
+      logger.warn(
+        {
+          metaError: error,
+          metaErrorCode: req.query.error_code,
+          metaErrorReason: req.query.error_reason,
+          metaErrorDescription: req.query.error_description,
+        },
+        "Meta OAuth callback returned an error",
+      );
+      renderError(
+        res,
+        400,
+        "Login was cancelled or rejected by Meta. Please try again.",
+      );
       return;
     }
     if (!code || !state) {
@@ -216,10 +263,21 @@ export function mountAuthRoutes(
 
       const validation = await validateToken(token);
       if (!validation.valid || !validation.profile) {
+        // Don't echo Meta's validation error verbatim — it can carry
+        // trace IDs and Graph API messages we don't want surfaced to
+        // the operator's UI (CODE-M1).
+        logger.warn(
+          {
+            fbUserId: session.fbUserId,
+            tokenName: name,
+            error: validation.error ?? null,
+          },
+          "System User token validation failed",
+        );
         renderError(
           res,
           400,
-          `Token validation failed: ${validation.error ?? "unknown error"}`,
+          "Token validation failed. The token may be expired, revoked, or for a different Meta app. Check the server logs for details.",
         );
         return;
       }

@@ -3,6 +3,7 @@ import {
   normalizeAccountId,
   formatBudget,
   truncateResponse,
+  validateMetaId,
 } from "../../src/utils/format.js";
 
 describe("normalizeAccountId", () => {
@@ -14,12 +15,53 @@ describe("normalizeAccountId", () => {
     expect(normalizeAccountId("act_123456")).toBe("act_123456");
   });
 
-  it("handles empty string", () => {
-    expect(normalizeAccountId("")).toBe("act_");
+  it("rejects empty string", () => {
+    expect(() => normalizeAccountId("")).toThrow(/Invalid Meta account_id/);
   });
 
-  it("does not double-prefix", () => {
-    expect(normalizeAccountId("act_act_123")).toBe("act_act_123");
+  it("rejects double prefix", () => {
+    expect(() => normalizeAccountId("act_act_123")).toThrow(
+      /Invalid Meta account_id/,
+    );
+  });
+
+  it("rejects path traversal attempts (CODE-A5)", () => {
+    expect(() => normalizeAccountId("../foo")).toThrow();
+    expect(() => normalizeAccountId("123/insights")).toThrow();
+    expect(() => normalizeAccountId("act_123?fields=id")).toThrow();
+    expect(() => normalizeAccountId("act_ 123")).toThrow();
+    expect(() => normalizeAccountId("act_123\n")).toThrow();
+  });
+
+  it("rejects non-string", () => {
+    // @ts-expect-error testing runtime guard
+    expect(() => normalizeAccountId(undefined)).toThrow();
+    // @ts-expect-error testing runtime guard
+    expect(() => normalizeAccountId(123)).toThrow();
+  });
+});
+
+describe("validateMetaId", () => {
+  it("accepts a numeric id", () => {
+    expect(validateMetaId("23843234567")).toBe("23843234567");
+    expect(validateMetaId("1", "campaign_id")).toBe("1");
+  });
+
+  it("rejects act_ prefixed ids (use normalizeAccountId for those)", () => {
+    expect(() => validateMetaId("act_123")).toThrow(/Invalid Meta id/);
+  });
+
+  it("rejects junk", () => {
+    expect(() => validateMetaId("../foo")).toThrow();
+    expect(() => validateMetaId("123/x")).toThrow();
+    expect(() => validateMetaId("")).toThrow();
+    expect(() => validateMetaId("123 456")).toThrow();
+  });
+
+  it("propagates the kind label in the error", () => {
+    expect(() => validateMetaId("bad", "campaign_id")).toThrow(
+      /Invalid Meta campaign_id/,
+    );
   });
 });
 

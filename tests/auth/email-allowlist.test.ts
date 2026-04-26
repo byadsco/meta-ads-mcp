@@ -9,6 +9,8 @@ const KEYS = [
   "AUTH_ALLOWED_DOMAINS",
   "AUTH_ALLOWED_FB_USER_IDS",
   "NODE_ENV",
+  "META_APP_ID",
+  "META_APP_SECRET",
 ] as const;
 
 const original: Record<(typeof KEYS)[number], string | undefined> =
@@ -61,5 +63,16 @@ describe("email-allowlist", () => {
     expect(isAllowlistConfigured()).toBe(false);
     process.env.AUTH_ALLOWED_EMAILS = "x@y.com";
     expect(isAllowlistConfigured()).toBe(true);
+  });
+
+  it("CODE-M6: fails closed even outside production when multi-tenant OAuth is configured", () => {
+    process.env.NODE_ENV = "development";
+    process.env.META_APP_ID = "1234567890";
+    process.env.META_APP_SECRET = "a".repeat(32);
+    // No allowlist sources configured — must reject anyway because
+    // multi-tenant is on. Without this fix, dev/staging would silently
+    // accept any Meta login.
+    expect(isAllowed({ email: "anyone@anywhere.com" })).toBe(false);
+    expect(isAllowed({ fbUserId: "9999" })).toBe(false);
   });
 });
