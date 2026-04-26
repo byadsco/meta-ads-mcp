@@ -83,6 +83,7 @@ jobs:
           AUTH_ALLOWED_DOMAINS: ${{ secrets.AUTH_ALLOWED_DOMAINS }}
           AUTH_ALLOWED_FB_USER_IDS: ${{ secrets.AUTH_ALLOWED_FB_USER_IDS }}
           FIRESTORE_PROJECT_ID: ${{ secrets.FIRESTORE_PROJECT_ID }}
+          GCP_RUNTIME_SERVICE_ACCOUNT: ${{ secrets.GCP_RUNTIME_SERVICE_ACCOUNT }}
         run: |
           set -u
           errors=()
@@ -124,12 +125,13 @@ jobs:
             fi
           }
 
-          require_present OAUTH_SECRET            "${OAUTH_SECRET}"
-          require_present TOKEN_ENCRYPTION_KEY    "${TOKEN_ENCRYPTION_KEY}"
-          require_present SESSION_COOKIE_SECRET   "${SESSION_COOKIE_SECRET}"
-          require_present META_APP_ID             "${META_APP_ID}"
-          require_present META_APP_SECRET         "${META_APP_SECRET}"
-          require_present FIRESTORE_PROJECT_ID    "${FIRESTORE_PROJECT_ID}"
+          require_present OAUTH_SECRET                "${OAUTH_SECRET}"
+          require_present TOKEN_ENCRYPTION_KEY        "${TOKEN_ENCRYPTION_KEY}"
+          require_present SESSION_COOKIE_SECRET       "${SESSION_COOKIE_SECRET}"
+          require_present META_APP_ID                 "${META_APP_ID}"
+          require_present META_APP_SECRET             "${META_APP_SECRET}"
+          require_present FIRESTORE_PROJECT_ID        "${FIRESTORE_PROJECT_ID}"
+          require_present GCP_RUNTIME_SERVICE_ACCOUNT "${GCP_RUNTIME_SERVICE_ACCOUNT}"
 
           # Format: matches resolveSecurityConfig() in src/transport/security-config.ts
           require_regex   TOKEN_ENCRYPTION_KEY    "${TOKEN_ENCRYPTION_KEY}"  '^[0-9a-fA-F]{64}$' "64 hex chars (32 bytes)"
@@ -141,6 +143,8 @@ jobs:
           require_regex   META_APP_SECRET         "${META_APP_SECRET}"       '^[0-9a-fA-F]{32}$' "32 hex chars"
           # GCP project ID format: 6-30 chars, lowercase, starts with letter, ends with letter/digit
           require_regex   FIRESTORE_PROJECT_ID    "${FIRESTORE_PROJECT_ID}"  '^[a-z][a-z0-9-]{4,28}[a-z0-9]$' "valid GCP project ID"
+          # Runtime SA must look like a valid GCP service account email
+          require_regex   GCP_RUNTIME_SERVICE_ACCOUNT "${GCP_RUNTIME_SERVICE_ACCOUNT}" '^[a-z][a-z0-9-]{4,28}[a-z0-9]@[a-z][a-z0-9-]{4,28}[a-z0-9]\.iam\.gserviceaccount\.com$' "a valid GCP service account email (name@project.iam.gserviceaccount.com)"
 
           # At least one allowlist source must be a real value
           allowlist_ok=0
@@ -168,11 +172,34 @@ jobs:
       - name: Set up Cloud SDK
         uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f  # v2
 
+      - name: Verify runtime service account exists
+        env:
+          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+          GCP_RUNTIME_SERVICE_ACCOUNT: ${{ secrets.GCP_RUNTIME_SERVICE_ACCOUNT }}
+        run: |
+          set -u
+          # Fail fast with a clear error before deploy if the runtime SA
+          # doesn't exist (e.g. fork to a fresh project that hasn't been
+          # bootstrapped yet). Without this, the deploy step fails with a
+          # cryptic iam.serviceAccountUser error mid-rollout.
+          if ! gcloud iam service-accounts describe "${GCP_RUNTIME_SERVICE_ACCOUNT}" \
+              --project="${GCP_PROJECT_ID}" --quiet >/dev/null 2>&1; then
+            echo "Runtime service account ${GCP_RUNTIME_SERVICE_ACCOUNT} does not exist in project ${GCP_PROJECT_ID}."
+            echo "Create it with the minimum roles described in CONTRIBUTING.md, e.g.:"
+            echo "  gcloud iam service-accounts create meta-ads-mcp-runtime --project=${GCP_PROJECT_ID}"
+            echo "  gcloud projects add-iam-policy-binding ${GCP_PROJECT_ID} --member=serviceAccount:${GCP_RUNTIME_SERVICE_ACCOUNT} --role=roles/datastore.user"
+            echo "  gcloud projects add-iam-policy-binding ${GCP_PROJECT_ID} --member=serviceAccount:${GCP_RUNTIME_SERVICE_ACCOUNT} --role=roles/logging.logWriter"
+            echo "  # plus secretmanager.secretAccessor on each mounted secret"
+            exit 1
+          fi
+          echo "Runtime SA ${GCP_RUNTIME_SERVICE_ACCOUNT} exists."
+
       - name: Sync META_TOKENS to Secret Manager
         env:
           GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
           GCP_REGION: ${{ secrets.GCP_REGION }}
           META_TOKENS: ${{ secrets.META_TOKENS }}
+          GCP_RUNTIME_SERVICE_ACCOUNT: ${{ secrets.GCP_RUNTIME_SERVICE_ACCOUNT }}
         run: |
           set -u
           if [ -z "${META_TOKENS}" ]; then
@@ -188,14 +215,12 @@ jobs:
           fi
 
           SECRET_NAME=meta-tokens-prod
-          RUNTIME_SA=$(gcloud run services describe "$SERVICE_NAME" \
-            --region="$GCP_REGION" --project="$GCP_PROJECT_ID" \
-            --format='value(spec.template.spec.serviceAccountName)' 2>/dev/null || true)
-          if [ -z "$RUNTIME_SA" ]; then
-            # Fallback: default Compute SA if the service hasn't been created yet
-            PROJECT_NUMBER=$(gcloud projects describe "$GCP_PROJECT_ID" --format='value(projectNumber)')
-            RUNTIME_SA="${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
-          fi
+          # Always grant access to the SA the deploy step will pin (single
+          # source of truth: GCP_RUNTIME_SERVICE_ACCOUNT). Previously this
+          # derived RUNTIME_SA from gcloud run services describe with a
+          # fall-back to the default Compute SA — that drifted from the SA
+          # the deploy step actually used.
+          RUNTIME_SA="${GCP_RUNTIME_SERVICE_ACCOUNT}"
 
           if ! gcloud secrets describe "$SECRET_NAME" --project="$GCP_PROJECT_ID" --quiet >/dev/null 2>&1; then
             printf '%s' "${META_TOKENS}" | gcloud secrets create "$SECRET_NAME" \
@@ -250,7 +275,7 @@ jobs:
           image: ${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/meta-ads-mcp/${{ env.IMAGE_NAME }}:${{ github.sha }}
           flags: >-
             --allow-unauthenticated
-            --service-account=meta-ads-mcp-runtime@${{ secrets.GCP_PROJECT_ID }}.iam.gserviceaccount.com
+            --service-account=${{ secrets.GCP_RUNTIME_SERVICE_ACCOUNT }}
             --memory=512Mi
             --cpu=1
             --concurrency=80
