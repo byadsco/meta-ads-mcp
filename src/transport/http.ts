@@ -13,6 +13,7 @@ import { tokenManager } from "../auth/token-manager.js";
 import { getSession } from "../auth/session.js";
 import { resolveSecurityConfig } from "./security-config.js";
 import { mountAuthRoutes } from "./auth-routes.js";
+import { validateAuthorizeQuery } from "./authorize-validation.js";
 import {
   FirestoreClientsStore,
   InMemoryClientsStore,
@@ -376,7 +377,31 @@ export async function startHttpTransport(
   const config = resolveSecurityConfig();
 
   app.set("trust proxy", 1);
-  app.use(cors());
+  // CORS: explicit allowlist instead of wildcard. The previous app.use(cors())
+  // set Access-Control-Allow-Origin: * on every response, which let any origin
+  // invoke /mcp with a stolen Bearer token. We only need cross-origin reads
+  // for Claude.ai (and any operator-configured peers); /authorize and /auth/*
+  // are top-level navigations that don't depend on CORS.
+  const corsAllowedOrigins = (process.env.CORS_ALLOWED_ORIGINS?.trim() || "https://claude.ai")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  app.use(
+    cors({
+      origin: corsAllowedOrigins,
+      credentials: false,
+      methods: ["GET", "POST", "OPTIONS"],
+      allowedHeaders: [
+        "Content-Type",
+        "Authorization",
+        "X-API-Key",
+        "X-Meta-Token",
+        "Mcp-Session-Id",
+      ],
+      maxAge: 600,
+    }),
+  );
+  logger.info({ corsAllowedOrigins }, "CORS allowlist configured");
   app.use(cookieParser());
   app.use(express.json({ limit: "10mb" }));
 
@@ -436,6 +461,27 @@ export async function startHttpTransport(
     mountAuthRoutes(app, { serverUrl });
 
     app.get("/authorize", async (req, res) => {
+      const query = req.query as Record<string, string>;
+
+      // Validate client_id and redirect_uri BEFORE rendering the consent
+      // page or kicking off the Meta login dance. mcp-sdk validates these
+      // in POST /authorize but the GET handler used to reflect the value
+      // verbatim into the "Deny" form action.
+      const validation = await validateAuthorizeQuery(query, async (id) =>
+        oauthProvider.clientsStore.getClient(id),
+      );
+      if (!validation.ok) {
+        logger.warn(
+          { clientId: query.client_id, redirectUri: query.redirect_uri, reason: validation.message },
+          "Rejected /authorize",
+        );
+        res.status(validation.status).type("html").send(
+          `<h1>Invalid request</h1><p>${validation.message}</p>`,
+        );
+        return;
+      }
+      const { redirectOrigin } = validation;
+
       const session = await getSession(req);
       if (!session) {
         const returnTo = req.originalUrl;
@@ -446,15 +492,9 @@ export async function startHttpTransport(
       const tokens = await listTokens(session.fbUserId);
       const activeName = await getDefaultTokenName(session.fbUserId);
 
-      const query = req.query as Record<string, string>;
-      const redirectOrigin = query.redirect_uri
-        ? new URL(query.redirect_uri, serverUrl).origin
-        : null;
       res.setHeader(
         "Content-Security-Policy",
-        `default-src 'none'; style-src 'unsafe-inline'; form-action 'self'${
-          redirectOrigin ? ` ${redirectOrigin}` : ""
-        }`,
+        `default-src 'none'; style-src 'unsafe-inline'; form-action 'self' ${redirectOrigin}`,
       );
 
       res.type("html").send(
