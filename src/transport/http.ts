@@ -10,7 +10,7 @@ import { oauthProvider } from "../auth/oauth-provider.js";
 import { isApiKeyConfigured, validateApiKey } from "../auth/api-key.js";
 import { requestContext } from "../auth/token-store.js";
 import { tokenManager } from "../auth/token-manager.js";
-import { getSession } from "../auth/session.js";
+import { configureSessionJtiStore, getSession } from "../auth/session.js";
 import { resolveSecurityConfig } from "./security-config.js";
 import { mountAuthRoutes } from "./auth-routes.js";
 import { validateAuthorizeQuery } from "./authorize-validation.js";
@@ -22,6 +22,10 @@ import {
   FirestoreAuthCodesStore,
   InMemoryAuthCodesStore,
 } from "../store/persistent-auth-codes.js";
+import {
+  FirestoreJtiStore,
+  InMemoryJtiStore,
+} from "../store/persistent-jti-store.js";
 import {
   configureMetaTokenRepo,
   FirestoreMetaTokenRepo,
@@ -440,15 +444,19 @@ export async function startHttpTransport(
       oauthProvider.configure({
         clientsStore: new InMemoryClientsStore(),
         authCodesStore: new InMemoryAuthCodesStore(),
+        refreshJtiStore: new InMemoryJtiStore(),
         resolvePendingAuth: () => pendingAuthStorage.getStore() ?? null,
       });
+      configureSessionJtiStore(new InMemoryJtiStore());
       configureMetaTokenRepo(new InMemoryMetaTokenRepo());
     } else {
       oauthProvider.configure({
         clientsStore: new FirestoreClientsStore(),
         authCodesStore: new FirestoreAuthCodesStore(),
+        refreshJtiStore: new FirestoreJtiStore("mcp_refresh_jti"),
         resolvePendingAuth: () => pendingAuthStorage.getStore() ?? null,
       });
+      configureSessionJtiStore(new FirestoreJtiStore("mcp_session_jti"));
       configureMetaTokenRepo(new FirestoreMetaTokenRepo());
     }
   }

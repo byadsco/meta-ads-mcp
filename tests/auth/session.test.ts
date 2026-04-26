@@ -103,10 +103,57 @@ describe("session", () => {
     expect(got).toBeNull();
   });
 
-  it("clearSession clears the cookie", () => {
+  it("clearSession clears the cookie", async () => {
     const res = makeRes();
-    clearSession(res as never);
+    await clearSession({ cookies: {} } as never, res as never);
     expect(res.clearCalls).toHaveLength(1);
     expect(res.clearCalls[0].name).toBe("mcp_session");
+  });
+
+  it("clearSession invalidates the jti so the cookie no longer authenticates (CODE-M5)", async () => {
+    // Set a session
+    const res1 = makeRes();
+    await setSession(res1 as never, {
+      fbUserId: "fb-9",
+      email: null,
+      name: null,
+    });
+    const cookie = res1.cookieCalls[0].value;
+
+    // Cookie validates initially
+    expect(
+      await getSession({ cookies: { mcp_session: cookie } } as never),
+    ).toMatchObject({ fbUserId: "fb-9" });
+
+    // Logout
+    const res2 = makeRes();
+    await clearSession(
+      { cookies: { mcp_session: cookie } } as never,
+      res2 as never,
+    );
+
+    // Same cookie no longer authenticates — even if it was stolen earlier.
+    expect(
+      await getSession({ cookies: { mcp_session: cookie } } as never),
+    ).toBeNull();
+  });
+
+  it("rejects sessions whose jti is unknown (e.g. server restart with in-memory store)", async () => {
+    const res = makeRes();
+    await setSession(res as never, {
+      fbUserId: "fb-1",
+      email: null,
+      name: null,
+    });
+    const cookie = res.cookieCalls[0].value;
+
+    // Reset the in-memory jti store
+    resetSecretCacheForTests();
+    process.env.SESSION_COOKIE_SECRET = SECRET;
+
+    // The cookie is valid signature-wise but jti is gone.
+    expect(
+      await getSession({ cookies: { mcp_session: cookie } } as never),
+    ).toBeNull();
   });
 });

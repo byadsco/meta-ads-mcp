@@ -160,8 +160,8 @@ export function mountAuthRoutes(
     }
   });
 
-  app.post("/auth/logout", (_req, res) => {
-    clearSession(res);
+  app.post("/auth/logout", async (req, res) => {
+    await clearSession(req, res);
     res.redirect(302, "/authorize");
   });
 

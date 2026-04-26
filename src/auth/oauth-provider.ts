@@ -18,6 +18,10 @@ import {
   type AuthCodesStore,
 } from "../store/persistent-auth-codes.js";
 import { InMemoryClientsStore } from "../store/persistent-clients-store.js";
+import {
+  InMemoryJtiStore,
+  type JtiStore,
+} from "../store/persistent-jti-store.js";
 
 let cachedSecret: Uint8Array | undefined;
 
@@ -48,15 +52,18 @@ export interface PendingAuthSession {
 export class MetaAdsOAuthProvider implements OAuthServerProvider {
   private clientsStoreImpl: OAuthRegisteredClientsStore = new InMemoryClientsStore();
   private authCodesImpl: AuthCodesStore = new InMemoryAuthCodesStore();
+  private refreshJtiStoreImpl: JtiStore = new InMemoryJtiStore();
   private pendingAuthResolver: () => PendingAuthSession | null = () => null;
 
   configure(opts: {
     clientsStore?: OAuthRegisteredClientsStore;
     authCodesStore?: AuthCodesStore;
+    refreshJtiStore?: JtiStore;
     resolvePendingAuth?: () => PendingAuthSession | null;
   }): void {
     if (opts.clientsStore) this.clientsStoreImpl = opts.clientsStore;
     if (opts.authCodesStore) this.authCodesImpl = opts.authCodesStore;
+    if (opts.refreshJtiStore) this.refreshJtiStoreImpl = opts.refreshJtiStore;
     if (opts.resolvePendingAuth) this.pendingAuthResolver = opts.resolvePendingAuth;
   }
 
@@ -115,22 +122,39 @@ export class MetaAdsOAuthProvider implements OAuthServerProvider {
   async exchangeAuthorizationCode(
     client: OAuthClientInformationFull,
     authorizationCode: string,
-    _codeVerifier?: string,
+    codeVerifier?: string,
     _redirectUri?: string,
     resource?: URL,
   ): Promise<OAuthTokens> {
-    const entry = await this.authCodesImpl.get(authorizationCode);
+    // Atomic get-and-delete: under concurrent exchange requests, only the
+    // first caller sees the entry. RFC 6749 §10.5: codes must be single-use.
+    const entry = await this.authCodesImpl.consume(authorizationCode);
     if (!entry) {
       throw new Error("Invalid authorization code");
     }
-
-    await this.authCodesImpl.delete(authorizationCode);
 
     if (entry.clientId !== client.client_id) {
       throw new Error("Authorization code was issued to a different client");
     }
     if (entry.expiresAt < Math.floor(Date.now() / 1000)) {
       throw new Error("Authorization code has expired");
+    }
+
+    // Defense-in-depth PKCE check. mcp-sdk's primary verification happens
+    // upstream via challengeForAuthorizationCode; we re-verify here when
+    // the verifier is supplied so the guarantee survives any future
+    // change in how mcp-sdk wires the calls. We don't *require* the
+    // verifier in this method (the SDK's flow sometimes passes it,
+    // sometimes hands the challenge upward), but if it's present it must
+    // match.
+    if (entry.codeChallenge && codeVerifier) {
+      const computed = crypto
+        .createHash("sha256")
+        .update(codeVerifier)
+        .digest("base64url");
+      if (computed !== entry.codeChallenge) {
+        throw new Error("PKCE verification failed");
+      }
     }
 
     return this.generateTokens({
@@ -159,6 +183,21 @@ export class MetaAdsOAuthProvider implements OAuthServerProvider {
     if (payload.sub !== client.client_id) {
       throw new Error("Refresh token was issued to a different client");
     }
+    // jti must be present in the allow-list — i.e. issued by us, not yet
+    // revoked, and not yet rotated. Old tokens issued before this code
+    // existed don't carry a jti and would be rejected here, which is the
+    // intended behaviour after rolling out the change.
+    const jti = typeof payload.jti === "string" ? payload.jti : null;
+    if (!jti) {
+      throw new Error("Refresh token missing jti");
+    }
+    if (!(await this.refreshJtiStoreImpl.has(jti))) {
+      throw new Error("Refresh token has been revoked or already used");
+    }
+    // Rotation: invalidate the old jti before minting a new pair. Even if
+    // generateTokens fails after this, the worst case is the user has to
+    // re-authorize — not a stuck-but-valid token sitting around.
+    await this.refreshJtiStoreImpl.delete(jti);
 
     return this.generateTokens({
       clientId: client.client_id,
@@ -199,9 +238,22 @@ export class MetaAdsOAuthProvider implements OAuthServerProvider {
 
   async revokeToken(
     _client: OAuthClientInformationFull,
-    _request: OAuthTokenRevocationRequest,
+    request: OAuthTokenRevocationRequest,
   ): Promise<void> {
-    logger.debug("Token revocation requested (no-op for stateless JWTs)");
+    // RFC 7009: best-effort revoke. We can only revoke refresh tokens (the
+    // ones we track jtis for). Access tokens are 1h TTL and stateless.
+    const token = request.token;
+    if (!token) return;
+    try {
+      const { payload } = await jwtVerify(token, getJwtSecret());
+      if (payload.type === "refresh" && typeof payload.jti === "string") {
+        await this.refreshJtiStoreImpl.delete(payload.jti);
+        logger.info({ jti: payload.jti }, "Refresh token revoked");
+      }
+    } catch {
+      // Silently ignore — RFC 7009 §2.2: revocation responses must succeed
+      // even on unrecognised tokens.
+    }
   }
 
   private async generateTokens(input: {
@@ -225,17 +277,31 @@ export class MetaAdsOAuthProvider implements OAuthServerProvider {
       .setExpirationTime(now + 3600)
       .sign(secret);
 
+    // Refresh tokens carry a jti recorded in the refresh allow-list.
+    // Exchange-refresh deletes the jti before minting a new pair (rotation),
+    // and revokeToken can wipe it on demand.
+    const refreshJti = crypto.randomBytes(16).toString("hex");
+    const refreshExpiresAt = now + 30 * 24 * 3600;
     const refreshClaims: Record<string, unknown> = {
       sub: input.clientId,
       type: "refresh",
+      jti: refreshJti,
     };
     if (input.fbUserId) refreshClaims.fb_user_id = input.fbUserId;
 
     const refreshToken = await new SignJWT(refreshClaims)
       .setProtectedHeader({ alg: "HS256" })
       .setIssuedAt(now)
-      .setExpirationTime(now + 30 * 24 * 3600)
+      .setExpirationTime(refreshExpiresAt)
       .sign(secret);
+
+    await this.refreshJtiStoreImpl.put(refreshJti, {
+      expiresAt: refreshExpiresAt,
+      meta: {
+        clientId: input.clientId,
+        fbUserId: input.fbUserId ?? null,
+      },
+    });
 
     logger.info(
       { clientId: input.clientId, fbUserId: input.fbUserId ?? null },
@@ -258,6 +324,7 @@ export function resetOAuthProviderForTests(): void {
   oauthProvider.configure({
     clientsStore: new InMemoryClientsStore(),
     authCodesStore: new InMemoryAuthCodesStore(),
+    refreshJtiStore: new InMemoryJtiStore(),
     resolvePendingAuth: () => null,
   });
 }
