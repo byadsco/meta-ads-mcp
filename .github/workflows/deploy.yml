@@ -261,19 +261,18 @@ jobs:
             META_API_VERSION=v22.0
             LOG_LEVEL=info
             NODE_ENV=production
-            OAUTH_SECRET=${{ secrets.OAUTH_SECRET }}
-            TOKEN_ENCRYPTION_KEY=${{ secrets.TOKEN_ENCRYPTION_KEY }}
-            SESSION_COOKIE_SECRET=${{ secrets.SESSION_COOKIE_SECRET }}
             META_APP_ID=${{ secrets.META_APP_ID }}
-            META_APP_SECRET=${{ secrets.META_APP_SECRET }}
             AUTH_ALLOWED_EMAILS=${{ secrets.AUTH_ALLOWED_EMAILS }}
             AUTH_ALLOWED_DOMAINS=${{ secrets.AUTH_ALLOWED_DOMAINS }}
             AUTH_ALLOWED_FB_USER_IDS=${{ secrets.AUTH_ALLOWED_FB_USER_IDS }}
             FIRESTORE_PROJECT_ID=${{ secrets.FIRESTORE_PROJECT_ID }}
-            META_ACCESS_TOKEN=${{ secrets.META_ACCESS_TOKEN }}
-            MCP_API_KEY=${{ secrets.MCP_API_KEY }}
           secrets: |
             META_TOKENS=meta-tokens-prod:latest
+            OAUTH_SECRET=oauth-secret:latest
+            TOKEN_ENCRYPTION_KEY=token-encryption-key:latest
+            SESSION_COOKIE_SECRET=session-cookie-secret:latest
+            META_APP_SECRET=meta-app-secret:latest
+            MCP_API_KEY=mcp-api-key:latest
 
       - name: Mask service URL in logs
         env:
