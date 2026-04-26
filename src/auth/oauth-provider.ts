@@ -191,13 +191,15 @@ export class MetaAdsOAuthProvider implements OAuthServerProvider {
     if (!jti) {
       throw new Error("Refresh token missing jti");
     }
-    if (!(await this.refreshJtiStoreImpl.has(jti))) {
+    // Atomic consume: under concurrent refresh requests with the same
+    // token, only one wins. Without this, has()+delete() were two
+    // separate calls, leaving a replay window across instances backed by
+    // Firestore (and breaking the rotation guarantee in-memory under
+    // sufficient async interleaving). Even if generateTokens fails after
+    // this, the worst case is the user has to re-authorize.
+    if (!(await this.refreshJtiStoreImpl.consume(jti))) {
       throw new Error("Refresh token has been revoked or already used");
     }
-    // Rotation: invalidate the old jti before minting a new pair. Even if
-    // generateTokens fails after this, the worst case is the user has to
-    // re-authorize — not a stuck-but-valid token sitting around.
-    await this.refreshJtiStoreImpl.delete(jti);
 
     return this.generateTokens({
       clientId: client.client_id,

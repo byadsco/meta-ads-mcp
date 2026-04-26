@@ -233,6 +233,43 @@ describe("MetaAdsOAuthProvider", () => {
     ).rejects.toThrow(/revoked|already used/i);
   });
 
+  it("CODE-A2: refresh-token rotation is atomic under concurrent exchange", async () => {
+    // Two concurrent exchanges of the same refresh token must produce
+    // exactly one fulfilled and one rejected. Without atomic consume,
+    // both would see has=true before either delete and both would mint
+    // new pairs (replay window).
+    const res = fakeRes();
+    await oauthProvider.authorize(
+      fakeClient,
+      {
+        codeChallenge: "ch",
+        codeChallengeMethod: "S256",
+        redirectUri: "https://example.com/cb",
+        scopes: [],
+      },
+      res,
+    );
+    const code = new URL(
+      (res.redirect as never as ReturnType<typeof vi.fn>).mock.calls[0][1],
+    ).searchParams.get("code")!;
+    const tokens = await oauthProvider.exchangeAuthorizationCode(
+      fakeClient,
+      code,
+    );
+
+    const settled = await Promise.allSettled([
+      oauthProvider.exchangeRefreshToken(fakeClient, tokens.refresh_token!),
+      oauthProvider.exchangeRefreshToken(fakeClient, tokens.refresh_token!),
+    ]);
+    const fulfilled = settled.filter((s) => s.status === "fulfilled");
+    const rejected = settled.filter((s) => s.status === "rejected");
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect((rejected[0] as PromiseRejectedResult).reason.message).toMatch(
+      /revoked|already used/i,
+    );
+  });
+
   it("CODE-A2: revokeToken invalidates the refresh token (RFC 7009)", async () => {
     const res = fakeRes();
     await oauthProvider.authorize(

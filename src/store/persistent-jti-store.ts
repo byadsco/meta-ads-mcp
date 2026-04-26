@@ -20,6 +20,13 @@ export interface JtiStore {
   put(jti: string, entry: JtiEntry): Promise<void>;
   /** Returns true if the jti exists and is not expired. */
   has(jti: string): Promise<boolean>;
+  /**
+   * Atomically: returns true and removes the jti if it existed (and is
+   * not expired); returns false otherwise. Used by refresh-token rotation
+   * to avoid races where two concurrent exchanges both pass a non-atomic
+   * has() check before either delete() lands.
+   */
+  consume(jti: string): Promise<boolean>;
   delete(jti: string): Promise<void>;
 }
 
@@ -46,6 +53,21 @@ export class FirestoreJtiStore implements JtiStore {
     return true;
   }
 
+  async consume(jti: string): Promise<boolean> {
+    const ref = this.collection.doc(jti);
+    return getFirestore().runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      if (!snap.exists) return false;
+      const data = snap.data() as JtiEntry;
+      if (data.expiresAt < Math.floor(Date.now() / 1000)) {
+        tx.delete(ref);
+        return false;
+      }
+      tx.delete(ref);
+      return true;
+    });
+  }
+
   async delete(jti: string): Promise<void> {
     await this.collection.doc(jti).delete();
   }
@@ -65,6 +87,15 @@ export class InMemoryJtiStore implements JtiStore {
       this.map.delete(jti);
       return false;
     }
+    return true;
+  }
+
+  async consume(jti: string): Promise<boolean> {
+    // JS event loop is single-threaded so this is atomic by construction.
+    const entry = this.map.get(jti);
+    if (!entry) return false;
+    this.map.delete(jti);
+    if (entry.expiresAt < Math.floor(Date.now() / 1000)) return false;
     return true;
   }
 
