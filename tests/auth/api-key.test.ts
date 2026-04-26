@@ -62,5 +62,15 @@ describe("API Key Authentication", () => {
       expect(validateApiKey("my-secret-api-key-12345")).toBe(true);
       expect(validateApiKey("xx-xxxxxx-xxx-xxx-xxxxx")).toBe(false);
     });
+
+    it("CODE-B4: rejects keys of different length without leaking length via early return", () => {
+      // We can't measure timing reliably in a unit test, but we can at
+      // least assert that the function still returns a clean false for
+      // a wide range of mismatched-length candidates and never throws.
+      expect(validateApiKey("a")).toBe(false);
+      expect(validateApiKey("aa")).toBe(false);
+      expect(validateApiKey("a".repeat(100))).toBe(false);
+      expect(validateApiKey("a".repeat(10000))).toBe(false);
+    });
   });
 });

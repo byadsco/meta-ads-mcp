@@ -13,6 +13,35 @@ import { logger } from "../utils/logger.js";
 
 const REFRESH_THRESHOLD_SECONDS = 7 * 24 * 60 * 60;
 
+/**
+ * AAD string bound into the GCM auth tag for each token (CODE-B1). It's
+ * unique per (user, token-name) pair, so a Firestore-write attacker can't
+ * rebind a valid ciphertext from one doc to another. Old docs encrypted
+ * before AAD support fall back to plain decrypt — see decryptCompat.
+ */
+function aadFor(fbUserId: string, tokenName: string): string {
+  return `mcp_token:${fbUserId}:${tokenName}`;
+}
+
+/**
+ * Decrypt a token, transparently handling docs encrypted with AAD (new)
+ * or without (legacy). On AAD-tag mismatch we retry without AAD; if that
+ * also fails the underlying error propagates. Once every doc has been
+ * re-encrypted with AAD (e.g. via natural rotation or a one-shot
+ * migration script), the legacy fallback can be removed.
+ */
+function decryptCompat(
+  payload: EncryptedPayload,
+  fbUserId: string,
+  tokenName: string,
+): string {
+  try {
+    return decryptToken(payload, aadFor(fbUserId, tokenName));
+  } catch {
+    return decryptToken(payload);
+  }
+}
+
 export type TokenKind = "user" | "system_user";
 
 export interface UserDoc {
@@ -99,7 +128,7 @@ async function maybeRefresh(
   serverUrl: URL | undefined,
   persist: (next: { encryptedToken: EncryptedPayload; expiresAt: number; updatedAt: number }) => Promise<void>,
 ): Promise<string> {
-  const plaintext = decryptToken(doc.encryptedToken);
+  const plaintext = decryptCompat(doc.encryptedToken, fbUserId, tokenName);
 
   if (doc.kind === "system_user") {
     return plaintext;
@@ -125,7 +154,10 @@ async function maybeRefresh(
   try {
     const refreshed = await exchangeForLongLivedToken(config, plaintext);
     await persist({
-      encryptedToken: encryptToken(refreshed.accessToken),
+      encryptedToken: encryptToken(
+        refreshed.accessToken,
+        aadFor(fbUserId, tokenName),
+      ),
       expiresAt: refreshed.expiresAt,
       updatedAt: Math.floor(Date.now() / 1000),
     });
@@ -209,7 +241,10 @@ export class FirestoreMetaTokenRepo implements MetaTokenRepo {
 
   async saveToken(input: SaveTokenInput): Promise<void> {
     const now = Math.floor(Date.now() / 1000);
-    const encryptedToken = encryptToken(input.accessToken);
+    const encryptedToken = encryptToken(
+      input.accessToken,
+      aadFor(input.fbUserId, input.name),
+    );
 
     const doc: MetaTokenDoc = {
       encryptedToken,
@@ -368,7 +403,10 @@ export class InMemoryMetaTokenRepo implements MetaTokenRepo {
     }
 
     bucket.set(input.name, {
-      encryptedToken: encryptToken(input.accessToken),
+      encryptedToken: encryptToken(
+        input.accessToken,
+        aadFor(input.fbUserId, input.name),
+      ),
       kind: input.kind,
       expiresAt: input.expiresAt,
       scopes: input.scopes ?? [],

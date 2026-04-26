@@ -65,3 +65,19 @@ export function getAccessTokenHash(): string {
 export function hashToken(token: string): string {
   return createHash("sha256").update(token).digest("hex").slice(0, 12);
 }
+
+/**
+ * Hash personally-identifying values (email, fbUserId, etc.) before
+ * including them in log lines (CODE-B5). The output is a stable
+ * 12-hex-char prefix of SHA-256 — enough to correlate events from the
+ * same user without storing the raw value in our log retention.
+ *
+ * Returns null if input is null/undefined so callers can pass through
+ * optional fields without conditional clutter:
+ *
+ *   logger.warn({ user: hashPii(profile.email) }, "rejected by allowlist");
+ */
+export function hashPii(value: string | null | undefined): string | null {
+  if (value === null || value === undefined || value === "") return null;
+  return createHash("sha256").update(value).digest("hex").slice(0, 12);
+}

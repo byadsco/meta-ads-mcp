@@ -5,6 +5,16 @@ import { logger } from "../utils/logger.js";
 
 const COLLECTION = "mcp_clients";
 
+/**
+ * Stamp the registration timestamp on the doc so an operator can later
+ * audit / clean up clients that haven't been used in N days (CODE-B8).
+ * Stored alongside the original client info — the SDK ignores the
+ * extra field on read.
+ */
+interface StoredClient extends OAuthClientInformationFull {
+  registered_at?: number;
+}
+
 export class FirestoreClientsStore implements OAuthRegisteredClientsStore {
   private get collection() {
     return getFirestore().collection(COLLECTION);
@@ -21,7 +31,11 @@ export class FirestoreClientsStore implements OAuthRegisteredClientsStore {
   async registerClient(
     client: OAuthClientInformationFull,
   ): Promise<OAuthClientInformationFull> {
-    await this.collection.doc(client.client_id).set(client);
+    const stored: StoredClient = {
+      ...client,
+      registered_at: Math.floor(Date.now() / 1000),
+    };
+    await this.collection.doc(client.client_id).set(stored);
     logger.info(
       { clientId: client.client_id, clientName: client.client_name },
       "Registered OAuth client",

@@ -3,10 +3,14 @@ import {
   getAccessToken,
   requestContext,
 } from "../../src/auth/token-store.js";
+import { tokenManager } from "../../src/auth/token-manager.js";
 
 describe("getAccessToken", () => {
   afterEach(() => {
     delete process.env.META_ACCESS_TOKEN;
+    // Reset the singleton between tests so lazy load reads the (now
+    // cleared) env on the next call.
+    tokenManager.resetForTests();
   });
 
   it("returns token from AsyncLocalStorage context", () => {

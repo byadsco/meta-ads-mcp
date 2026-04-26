@@ -35,10 +35,29 @@ export interface EncryptedPayload {
   tag: string;
 }
 
-export function encryptToken(plaintext: string): EncryptedPayload {
+/**
+ * Encrypt a token with AES-256-GCM.
+ *
+ * If `aad` is provided, it is bound into the GCM authentication tag
+ * (CODE-B1). At decrypt time the same AAD must be supplied or the auth
+ * check fails — this prevents an attacker who has Firestore write access
+ * from copying a valid (ciphertext, iv, tag) tuple from one
+ * `users/A/meta_tokens/X` doc to another `users/B/meta_tokens/Y` doc and
+ * having the server happily decrypt it as B's token. Recommended AAD is
+ * `${fbUserId}:${name}` — stable and unique per doc.
+ *
+ * Records encrypted before this parameter existed will continue to
+ * decrypt with `aad` left out (the AAD defaults to empty), so this is
+ * fully backward-compatible.
+ */
+export function encryptToken(
+  plaintext: string,
+  aad?: string,
+): EncryptedPayload {
   const key = getKey();
   const iv = crypto.randomBytes(IV_LENGTH);
   const cipher = crypto.createCipheriv(ALGORITHM, key, iv);
+  if (aad) cipher.setAAD(Buffer.from(aad, "utf8"));
   const ciphertext = Buffer.concat([
     cipher.update(plaintext, "utf8"),
     cipher.final(),
@@ -52,7 +71,7 @@ export function encryptToken(plaintext: string): EncryptedPayload {
   };
 }
 
-export function decryptToken(payload: EncryptedPayload): string {
+export function decryptToken(payload: EncryptedPayload, aad?: string): string {
   const key = getKey();
   const iv = Buffer.from(payload.iv, "base64");
   const tag = Buffer.from(payload.tag, "base64");
@@ -60,6 +79,7 @@ export function decryptToken(payload: EncryptedPayload): string {
 
   const decipher = crypto.createDecipheriv(ALGORITHM, key, iv);
   decipher.setAuthTag(tag);
+  if (aad) decipher.setAAD(Buffer.from(aad, "utf8"));
 
   const plaintext = Buffer.concat([
     decipher.update(ciphertext),

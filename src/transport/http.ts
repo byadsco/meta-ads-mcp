@@ -55,7 +55,31 @@ function escapeHtml(raw: string): string {
 
 function getServerUrl(): URL {
   const envUrl = process.env.SERVER_URL;
-  if (envUrl) return new URL(envUrl);
+  if (envUrl) {
+    let parsed: URL;
+    try {
+      parsed = new URL(envUrl);
+    } catch {
+      throw new Error(`SERVER_URL is not a valid URL: ${envUrl}`);
+    }
+    // Defensive constraints (CODE-B7): SERVER_URL is used to build OAuth
+    // redirect URIs and the Meta callback URL. A poisoned value would
+    // redirect the OAuth dance to an attacker host. In production we
+    // require https:// and reject hostname-less or port-only values.
+    if (process.env.NODE_ENV === "production") {
+      if (parsed.protocol !== "https:") {
+        throw new Error(
+          `SERVER_URL must use https:// in production, got: ${parsed.protocol}`,
+        );
+      }
+      if (!parsed.hostname || parsed.hostname === "localhost") {
+        throw new Error(
+          `SERVER_URL must point at a real hostname in production, got: ${parsed.hostname || "(empty)"}`,
+        );
+      }
+    }
+    return parsed;
+  }
   const port = process.env.PORT || "3000";
   return new URL(`http://localhost:${port}`);
 }

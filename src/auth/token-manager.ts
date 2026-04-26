@@ -3,8 +3,17 @@ import { logger } from "../utils/logger.js";
 export class TokenManager {
   private tokens = new Map<string, string>();
   private activeTokenName: string | null = null;
+  private envLoaded = false;
 
-  constructor() {
+  /**
+   * Lazy initialization (CODE-B6): we used to read META_TOKENS in the
+   * constructor, which fired at module-import time. That made the
+   * tokens visible on the import-side stack of any uncaught error and
+   * hard to reset deterministically in tests. Now load on first access.
+   */
+  private ensureEnvLoaded(): void {
+    if (this.envLoaded) return;
+    this.envLoaded = true;
     this.loadFromEnv();
   }
 
@@ -48,15 +57,18 @@ export class TokenManager {
   }
 
   getActiveToken(): string | null {
+    this.ensureEnvLoaded();
     if (!this.activeTokenName) return null;
     return this.tokens.get(this.activeTokenName) ?? null;
   }
 
   getActiveTokenName(): string | null {
+    this.ensureEnvLoaded();
     return this.activeTokenName;
   }
 
   setActiveToken(name: string): boolean {
+    this.ensureEnvLoaded();
     if (!this.tokens.has(name)) return false;
     this.activeTokenName = name;
     logger.info({ tokenName: name }, "Active token changed");
@@ -64,6 +76,7 @@ export class TokenManager {
   }
 
   listTokens(): { active: string | null; available: string[] } {
+    this.ensureEnvLoaded();
     return {
       active: this.activeTokenName,
       available: Array.from(this.tokens.keys()),
@@ -71,6 +84,7 @@ export class TokenManager {
   }
 
   registerToken(name: string, token: string): void {
+    this.ensureEnvLoaded();
     this.tokens.set(name, token);
     if (!this.activeTokenName) {
       this.activeTokenName = name;
@@ -79,7 +93,15 @@ export class TokenManager {
   }
 
   hasTokens(): boolean {
+    this.ensureEnvLoaded();
     return this.tokens.size > 0;
+  }
+
+  /** Test-only: reset and re-read env on next access. */
+  resetForTests(): void {
+    this.tokens.clear();
+    this.activeTokenName = null;
+    this.envLoaded = false;
   }
 }
 

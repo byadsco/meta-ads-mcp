@@ -53,4 +53,25 @@ describe("crypto encryptToken / decryptToken", () => {
     resetKeyCacheForTests();
     expect(() => encryptToken("x")).toThrow(/64 hex characters/);
   });
+
+  it("CODE-B1: AAD round-trips when same value supplied on both sides", () => {
+    const enc = encryptToken("secret-token", "user-1:byads");
+    expect(decryptToken(enc, "user-1:byads")).toBe("secret-token");
+  });
+
+  it("CODE-B1: rejects ciphertext when a different AAD is supplied (rebind defense)", () => {
+    const enc = encryptToken("secret-token", "user-1:byads");
+    expect(() => decryptToken(enc, "user-2:byads")).toThrow();
+    expect(() => decryptToken(enc, "user-1:other-name")).toThrow();
+  });
+
+  it("CODE-B1: rejects ciphertext encrypted-with-AAD when decrypted-without-AAD", () => {
+    const enc = encryptToken("secret-token", "user-1:byads");
+    expect(() => decryptToken(enc)).toThrow();
+  });
+
+  it("CODE-B1: legacy ciphertext (no AAD) still decrypts when no AAD is supplied", () => {
+    const enc = encryptToken("legacy-token");
+    expect(decryptToken(enc)).toBe("legacy-token");
+  });
 });

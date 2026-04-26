@@ -10,19 +10,26 @@ export function isApiKeyConfigured(): boolean {
 
 /**
  * Validate a candidate API key against the configured MCP_API_KEY.
- * Uses timing-safe comparison to prevent timing attacks.
+ *
+ * Constant-time over both *content* and *length* (CODE-B4): the previous
+ * implementation early-returned on length mismatch, which leaks the
+ * server-side key length to a remote attacker who can measure response
+ * timings. We now hash both values to a fixed-width digest and compare
+ * those, so the work done is identical whether the candidate matches or
+ * not, regardless of input length.
  */
 export function validateApiKey(candidate: string): boolean {
   const expected = process.env.MCP_API_KEY;
   if (!expected) return false;
 
-  // Lengths must match for timingSafeEqual
-  if (Buffer.byteLength(candidate) !== Buffer.byteLength(expected)) {
-    return false;
-  }
+  const candidateDigest = crypto
+    .createHash("sha256")
+    .update(candidate)
+    .digest();
+  const expectedDigest = crypto
+    .createHash("sha256")
+    .update(expected)
+    .digest();
 
-  return crypto.timingSafeEqual(
-    Buffer.from(candidate),
-    Buffer.from(expected),
-  );
+  return crypto.timingSafeEqual(candidateDigest, expectedDigest);
 }

@@ -1,12 +1,14 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { MetaApiClient } from "../../src/meta/client.js";
 import { setupTestToken, cleanupTestToken, mockFetchResponse } from "../setup.js";
+import { tokenManager } from "../../src/auth/token-manager.js";
 
 describe("MetaApiClient", () => {
   let client: MetaApiClient;
 
   beforeEach(() => {
     setupTestToken();
+    tokenManager.resetForTests();
     client = new MetaApiClient({
       apiVersion: "v22.0",
       baseUrl: "https://graph.facebook.com",
@@ -17,6 +19,7 @@ describe("MetaApiClient", () => {
 
   afterEach(() => {
     cleanupTestToken();
+    tokenManager.resetForTests();
     vi.restoreAllMocks();
   });
 

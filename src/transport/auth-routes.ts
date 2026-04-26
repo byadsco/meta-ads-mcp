@@ -20,6 +20,7 @@ import {
   upsertUser,
 } from "../store/meta-token-repo.js";
 import { logger } from "../utils/logger.js";
+import { hashPii } from "../auth/token-store.js";
 
 /**
  * Sanitize a returnTo URL provided by callers (?return=… on /auth/meta).
@@ -61,6 +62,14 @@ export function safeReturnTo(input: unknown): string {
 }
 
 function renderError(res: express.Response, status: number, message: string): void {
+  // Restrictive CSP on every server-rendered HTML page (CODE-B3): even
+  // though renderError only emits inline <style>, pinning the policy
+  // limits the blast radius if user-controlled content ever leaks
+  // through escapeHtml in the future.
+  res.setHeader(
+    "Content-Security-Policy",
+    "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'",
+  );
   res.status(status).type("html").send(
     `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Auth error</title>
     <style>body{background:#0f0f0f;color:#e0e0e0;font-family:-apple-system,BlinkMacSystemFont,sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0}
@@ -160,8 +169,11 @@ export function mountAuthRoutes(
       const profile = await fetchProfile(longLived.accessToken, config.apiVersion);
 
       if (!isAllowed({ email: profile.email, fbUserId: profile.id })) {
+        // Hash PII before logging — keeps the value correlatable across
+        // events without persisting the raw email/fbUserId in log
+        // retention (CODE-B5).
         logger.warn(
-          { fbUserId: profile.id, email: profile.email },
+          { fbUserId: hashPii(profile.id), email: hashPii(profile.email) },
           "Meta login rejected by allowlist",
         );
         renderError(
@@ -268,7 +280,7 @@ export function mountAuthRoutes(
         // the operator's UI (CODE-M1).
         logger.warn(
           {
-            fbUserId: session.fbUserId,
+            fbUserId: hashPii(session.fbUserId),
             tokenName: name,
             error: validation.error ?? null,
           },
