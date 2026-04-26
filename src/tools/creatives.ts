@@ -8,6 +8,7 @@ import { IMAGE_DEFAULT_FIELDS } from "../meta/types/image.js";
 import { VIDEO_DEFAULT_FIELDS, VIDEO_DETAIL_FIELDS } from "../meta/types/video.js";
 import type { AdCreative, AdImage, AdVideo, MetaApiResponse } from "../meta/types/index.js";
 import { logger } from "../utils/logger.js";
+import { assertSafePublicUrl, UnsafeUrlError } from "../utils/url-guard.js";
 
 const ctaEnum = z.enum([
   // Core actions
@@ -183,6 +184,17 @@ export function registerCreativeTools(server: McpServer): void {
     }) => {
       const id = normalizeAccountId(account_id);
 
+      if (image_url) {
+        try {
+          await assertSafePublicUrl(image_url);
+        } catch (err) {
+          if (err instanceof UnsafeUrlError) {
+            throw new Error(`Refusing to forward image_url to Meta: ${err.message}`);
+          }
+          throw err;
+        }
+      }
+
       const body: Record<string, string | number | boolean> = { name };
 
       if (source_instagram_media_id) {
@@ -314,9 +326,20 @@ export function registerCreativeTools(server: McpServer): void {
     async ({ account_id, image_url, name }) => {
       const id = normalizeAccountId(account_id);
 
+      // SSRF guard: validate URL scheme + reject private/loopback/metadata IPs.
+      let safeUrl: URL;
+      try {
+        safeUrl = await assertSafePublicUrl(image_url);
+      } catch (err) {
+        if (err instanceof UnsafeUrlError) {
+          throw new Error(`Refusing to download image_url: ${err.message}`);
+        }
+        throw err;
+      }
+
       // Download the image
       logger.info({ image_url }, "Downloading image for upload");
-      const imageResponse = await fetch(image_url);
+      const imageResponse = await fetch(safeUrl.toString());
       if (!imageResponse.ok) {
         throw new Error(`Failed to download image: HTTP ${imageResponse.status}`);
       }
@@ -504,6 +527,18 @@ export function registerCreativeTools(server: McpServer): void {
       if (source_instagram_media_id) {
         body.source_instagram_media_id = source_instagram_media_id;
       } else if (file_url) {
+        // SSRF guard: Meta will fetch this URL on its end, but we still want to
+        // refuse forwarding URLs that look like internal addresses — both as a
+        // belt-and-braces measure and so the rejection happens with a clear
+        // error here instead of a generic Meta-side failure later.
+        try {
+          await assertSafePublicUrl(file_url);
+        } catch (err) {
+          if (err instanceof UnsafeUrlError) {
+            throw new Error(`Refusing to forward file_url to Meta: ${err.message}`);
+          }
+          throw err;
+        }
         body.file_url = file_url;
       } else {
         throw new Error("Either file_url or source_instagram_media_id is required.");
