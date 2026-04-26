@@ -90,6 +90,15 @@ export interface AssertSafeUrlOptions {
   resolve?: (hostname: string) => Promise<Array<{ address: string }>>;
 }
 
+export interface ResolvedSafePublicUrl {
+  url: URL;
+  addresses: Array<{ address: string; family: 4 | 6 }>;
+}
+
+export function unsafeIpReason(ip: string): string | null {
+  return isPrivateV4(ip)?.reason ?? isPrivateV6(ip)?.reason ?? null;
+}
+
 /**
  * Throws UnsafeUrlError if the URL is not a safe public destination for an
  * outbound fetch. Used by tools that accept user-supplied URLs (image/video
@@ -108,6 +117,13 @@ export async function assertSafePublicUrl(
   raw: string,
   options: AssertSafeUrlOptions = {},
 ): Promise<URL> {
+  return (await resolveSafePublicUrl(raw, options)).url;
+}
+
+export async function resolveSafePublicUrl(
+  raw: string,
+  options: AssertSafeUrlOptions = {},
+): Promise<ResolvedSafePublicUrl> {
   let url: URL;
   try {
     url = new URL(raw);
@@ -131,12 +147,12 @@ export async function assertSafePublicUrl(
   if (literalIpVersion === 4) {
     const block = isPrivateV4(bareHost);
     if (block) throw new UnsafeUrlError(`URL points at private IP (${block.reason})`);
-    return url;
+    return { url, addresses: [{ address: bareHost, family: 4 }] };
   }
   if (literalIpVersion === 6) {
     const block = isPrivateV6(bareHost);
     if (block) throw new UnsafeUrlError(`URL points at private IP (${block.reason})`);
-    return url;
+    return { url, addresses: [{ address: bareHost, family: 6 }] };
   }
 
   // Hostname → resolve and reject if any address is private.
@@ -157,6 +173,12 @@ export async function assertSafePublicUrl(
     throw new UnsafeUrlError(`Hostname ${url.hostname} did not resolve to any address`);
   }
   for (const { address } of addresses) {
+    const family = isIP(address);
+    if (family !== 4 && family !== 6) {
+      throw new UnsafeUrlError(
+        `Hostname ${url.hostname} resolved to non-IP address ${address}`,
+      );
+    }
     const v4 = isPrivateV4(address);
     if (v4) {
       throw new UnsafeUrlError(
@@ -170,5 +192,11 @@ export async function assertSafePublicUrl(
       );
     }
   }
-  return url;
+  return {
+    url,
+    addresses: addresses.map(({ address }) => ({
+      address,
+      family: isIP(address) as 4 | 6,
+    })),
+  };
 }

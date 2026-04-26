@@ -20,8 +20,9 @@ const originalEnv: Record<(typeof KEYS)[number], string | undefined> =
     string | undefined
   >;
 
-const HEX64 = "a".repeat(64);
-const SECRET32 = "x".repeat(40);
+const HEX64 = "0123456789abcdef".repeat(4);
+const SECRET32 = "session-secret-fixture-1234567890";
+const OAUTH32 = "oauth-secret-fixture-123456789012";
 
 describe("resolveSecurityConfig", () => {
   beforeEach(() => {
@@ -47,8 +48,26 @@ describe("resolveSecurityConfig", () => {
   it("requires OAUTH_SECRET in production", () => {
     process.env.NODE_ENV = "production";
     expect(() => resolveSecurityConfig()).toThrow(
-      /OAUTH_SECRET environment variable is required in production/,
+      /OAUTH_SECRET environment variable is required/,
     );
+  });
+
+  it("requires OAUTH_SECRET >= 32 chars in production", () => {
+    process.env.NODE_ENV = "production";
+    process.env.OAUTH_SECRET = "short";
+    expect(() => resolveSecurityConfig()).toThrow(/OAUTH_SECRET must be at least 32 characters/);
+  });
+
+  it("rejects placeholder OAUTH_SECRET values in production", () => {
+    process.env.NODE_ENV = "production";
+    process.env.OAUTH_SECRET = "placeholder-placeholder-placeholder";
+    expect(() => resolveSecurityConfig()).toThrow(/OAUTH_SECRET environment variable is required/);
+  });
+
+  it("accepts a strong-looking OAUTH_SECRET in production", () => {
+    process.env.NODE_ENV = "production";
+    process.env.OAUTH_SECRET = OAUTH32;
+    expect(resolveSecurityConfig().multiTenantEnabled).toBe(false);
   });
 
   it("enables multi-tenant when META_APP_* are present", () => {
@@ -92,6 +111,16 @@ describe("resolveSecurityConfig", () => {
     process.env.AUTH_ALLOWED_EMAILS = "alice@x.com";
 
     expect(() => resolveSecurityConfig()).toThrow(/SESSION_COOKIE_SECRET/);
+  });
+
+  it("rejects placeholder SESSION_COOKIE_SECRET values when multi-tenant", () => {
+    process.env.META_APP_ID = "1234";
+    process.env.META_APP_SECRET = "shh";
+    process.env.TOKEN_ENCRYPTION_KEY = HEX64;
+    process.env.SESSION_COOKIE_SECRET = "placeholder-placeholder-placeholder";
+    process.env.AUTH_ALLOWED_EMAILS = "alice@x.com";
+
+    expect(() => resolveSecurityConfig()).toThrow(/SESSION_COOKIE_SECRET environment variable is required/);
   });
 
   it("requires an allowlist when multi-tenant is enabled", () => {

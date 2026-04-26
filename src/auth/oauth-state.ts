@@ -6,6 +6,7 @@ const STATE_AUDIENCE = "meta-oauth-state";
 
 export interface OAuthStatePayload {
   returnTo: string;
+  nonce: string;
 }
 
 let cachedSecret: Uint8Array | undefined;
@@ -38,6 +39,7 @@ export async function signOAuthState(
   const now = Math.floor(Date.now() / 1000);
   return new SignJWT({
     rt: payload.returnTo,
+    n: payload.nonce,
     jti: crypto.randomBytes(8).toString("hex"),
   })
     .setProtectedHeader({ alg: "HS256" })
@@ -49,6 +51,7 @@ export async function signOAuthState(
 
 export async function verifyOAuthState(
   token: string,
+  expectedNonce?: string,
 ): Promise<OAuthStatePayload | null> {
   try {
     const { payload } = await jwtVerify(token, getSecret(), {
@@ -56,10 +59,16 @@ export async function verifyOAuthState(
       audience: STATE_AUDIENCE,
     });
     if (typeof payload.rt !== "string") return null;
-    return { returnTo: payload.rt };
+    if (typeof payload.n !== "string") return null;
+    if (expectedNonce !== undefined && payload.n !== expectedNonce) return null;
+    return { returnTo: payload.rt, nonce: payload.n };
   } catch {
     return null;
   }
+}
+
+export function generateOAuthStateNonce(): string {
+  return crypto.randomBytes(16).toString("hex");
 }
 
 export function resetOAuthStateSecretForTests(): void {

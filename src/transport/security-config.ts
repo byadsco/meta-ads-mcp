@@ -18,6 +18,44 @@ function hasAllowlist(env: NodeJS.ProcessEnv): boolean {
   );
 }
 
+function looksUnset(value: string): boolean {
+  if (!value) return true;
+  const lower = value.toLowerCase();
+  if (
+    lower === "-" ||
+    lower === "--" ||
+    lower === "x" ||
+    lower === "xx" ||
+    lower === "xxx" ||
+    lower === "todo" ||
+    lower === "none" ||
+    lower === "placeholder" ||
+    lower === "change-me" ||
+    lower === "change_me" ||
+    lower === "changeme" ||
+    lower === "<value>" ||
+    lower === "<unset>"
+  ) {
+    return true;
+  }
+  return (
+    lower.includes("placeholder") ||
+    lower.includes("change-me") ||
+    lower.includes("changeme") ||
+    lower.startsWith("your_") ||
+    lower.startsWith("your-")
+  );
+}
+
+function requireSecret(value: string, name: string, minLength: number): void {
+  if (looksUnset(value)) {
+    throw new Error(`${name} environment variable is required`);
+  }
+  if (value.length < minLength) {
+    throw new Error(`${name} must be at least ${minLength} characters`);
+  }
+}
+
 /**
  * Resolve and validate security-sensitive runtime configuration.
  *
@@ -59,11 +97,7 @@ export function resolveSecurityConfig(
         "TOKEN_ENCRYPTION_KEY must be 64 hex characters (32 bytes)",
       );
     }
-    if (!sessionCookieSecret || sessionCookieSecret.length < 32) {
-      throw new Error(
-        "SESSION_COOKIE_SECRET is required (>=32 chars) when META_APP_ID/SECRET are set",
-      );
-    }
+    requireSecret(sessionCookieSecret, "SESSION_COOKIE_SECRET", 32);
     if (!allowlistConfigured) {
       throw new Error(
         "Allowlist required: set AUTH_ALLOWED_EMAILS, AUTH_ALLOWED_DOMAINS, or AUTH_ALLOWED_FB_USER_IDS",
@@ -71,8 +105,8 @@ export function resolveSecurityConfig(
     }
   }
 
-  if (isProduction && !oauthSecret) {
-    throw new Error("OAUTH_SECRET environment variable is required in production");
+  if (isProduction) {
+    requireSecret(oauthSecret, "OAUTH_SECRET", 32);
   }
 
   return {

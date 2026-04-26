@@ -11,7 +11,11 @@ import {
 } from "../auth/meta-oauth.js";
 import { isAllowed } from "../auth/email-allowlist.js";
 import { clearSession, getSession, setSession } from "../auth/session.js";
-import { signOAuthState, verifyOAuthState } from "../auth/oauth-state.js";
+import {
+  generateOAuthStateNonce,
+  signOAuthState,
+  verifyOAuthState,
+} from "../auth/oauth-state.js";
 import {
   deleteToken,
   getDefaultTokenName,
@@ -21,6 +25,10 @@ import {
 } from "../store/meta-token-repo.js";
 import { logger } from "../utils/logger.js";
 import { hashPii } from "../auth/token-store.js";
+
+const OAUTH_STATE_COOKIE_NAME =
+  process.env.NODE_ENV === "production" ? "__Host-meta_oauth_state" : "meta_oauth_state";
+const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
 
 /**
  * Sanitize a returnTo URL provided by callers (?return=… on /auth/meta).
@@ -88,6 +96,32 @@ function escapeHtml(raw: string): string {
     .replace(/'/g, "&#x27;");
 }
 
+function setOAuthStateCookie(res: express.Response, nonce: string): void {
+  res.cookie(OAUTH_STATE_COOKIE_NAME, nonce, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax",
+    maxAge: OAUTH_STATE_TTL_MS,
+    path: "/",
+  });
+}
+
+function getOAuthStateCookie(req: express.Request): string | null {
+  const reqCookies = (req as express.Request & { cookies?: Record<string, string> })
+    .cookies;
+  const nonce = reqCookies?.[OAUTH_STATE_COOKIE_NAME];
+  return typeof nonce === "string" && nonce.length > 0 ? nonce : null;
+}
+
+function clearOAuthStateCookie(res: express.Response): void {
+  res.clearCookie(OAUTH_STATE_COOKIE_NAME, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax",
+    path: "/",
+  });
+}
+
 export interface AuthRoutesOptions {
   serverUrl: URL;
 }
@@ -117,18 +151,22 @@ export function mountAuthRoutes(
     const returnTo = safeReturnTo(
       typeof req.query.return === "string" ? req.query.return : req.originalUrl,
     );
-    const state = await signOAuthState({ returnTo });
+    const nonce = generateOAuthStateNonce();
+    const state = await signOAuthState({ returnTo, nonce });
+    setOAuthStateCookie(res, nonce);
 
     res.redirect(302, buildAuthorizeUrl(config, state));
   });
 
   app.get("/auth/meta/callback", async (req, res) => {
-    const config = getMetaConfigOr500(serverUrl, res);
-    if (!config) return;
-
     const code = typeof req.query.code === "string" ? req.query.code : null;
     const state = typeof req.query.state === "string" ? req.query.state : null;
     const error = typeof req.query.error === "string" ? req.query.error : null;
+    const stateNonce = getOAuthStateCookie(req);
+    clearOAuthStateCookie(res);
+
+    const config = getMetaConfigOr500(serverUrl, res);
+    if (!config) return;
 
     if (error) {
       // Don't reflect Meta's error code/message back to the user — log it
@@ -154,7 +192,7 @@ export function mountAuthRoutes(
       return;
     }
 
-    const pending = await verifyOAuthState(state);
+    const pending = stateNonce ? await verifyOAuthState(state, stateNonce) : null;
     if (!pending) {
       renderError(res, 400, "Invalid or expired OAuth state.");
       return;

@@ -9,6 +9,7 @@ import { VIDEO_DEFAULT_FIELDS, VIDEO_DETAIL_FIELDS } from "../meta/types/video.j
 import type { AdCreative, AdImage, AdVideo, MetaApiResponse } from "../meta/types/index.js";
 import { logger } from "../utils/logger.js";
 import { assertSafePublicUrl, UnsafeUrlError } from "../utils/url-guard.js";
+import { downloadSafePublicImage } from "../utils/safe-download.js";
 
 const ctaEnum = z.enum([
   // Core actions
@@ -344,58 +345,49 @@ export function registerCreativeTools(server: McpServer): void {
     async ({ account_id, image_url, name }) => {
       const id = normalizeAccountId(account_id);
 
-      // SSRF guard: validate URL scheme + reject private/loopback/metadata IPs.
-      let safeUrl: URL;
       try {
-        safeUrl = await assertSafePublicUrl(image_url);
+        const downloaded = await downloadSafePublicImage(image_url);
+        logger.info(
+          { imageHost: downloaded.finalUrl.hostname, bytes: downloaded.buffer.length },
+          "Downloaded image for upload",
+        );
+
+        const formData = new FormData();
+        const imageBytes = new Uint8Array(downloaded.buffer.length);
+        imageBytes.set(downloaded.buffer);
+        formData.set(
+          "filename",
+          new Blob([imageBytes], { type: downloaded.contentType }),
+          `image${downloaded.extension}`,
+        );
+        if (name) formData.set("name", name);
+
+        const result = await metaApiClient.postMultipart<{ images: Record<string, { hash: string; url: string; name?: string }> }>(
+          `/${id}/adimages`,
+          formData,
+        );
+
+        const imageEntries = Object.values(result.images ?? {});
+        const uploaded = imageEntries[0];
+
+        if (!uploaded) {
+          throw new Error("Image upload failed — no image hash returned.");
+        }
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Image uploaded successfully!\nHash: ${uploaded.hash}\nURL: ${uploaded.url}\nName: ${uploaded.name ?? name ?? "N/A"}\n\nUse the hash "${uploaded.hash}" when creating a creative with create_ad_creative.`,
+            },
+          ],
+        };
       } catch (err) {
         if (err instanceof UnsafeUrlError) {
           throw new Error(`Refusing to download image_url: ${err.message}`);
         }
         throw err;
       }
-
-      // Download the image
-      logger.info({ image_url }, "Downloading image for upload");
-      const imageResponse = await fetch(safeUrl.toString());
-      if (!imageResponse.ok) {
-        throw new Error(`Failed to download image: HTTP ${imageResponse.status}`);
-      }
-
-      const imageBuffer = await imageResponse.arrayBuffer();
-      const contentType = imageResponse.headers.get("content-type") ?? "image/jpeg";
-      const extension = contentType.includes("png") ? ".png" : ".jpg";
-
-      // Upload to Meta via multipart form
-      const formData = new FormData();
-      formData.set(
-        "filename",
-        new Blob([imageBuffer], { type: contentType }),
-        `image${extension}`,
-      );
-      if (name) formData.set("name", name);
-
-      const result = await metaApiClient.postMultipart<{ images: Record<string, { hash: string; url: string; name?: string }> }>(
-        `/${id}/adimages`,
-        formData,
-      );
-
-      // Extract the first image result
-      const imageEntries = Object.values(result.images ?? {});
-      const uploaded = imageEntries[0];
-
-      if (!uploaded) {
-        throw new Error("Image upload failed — no image hash returned.");
-      }
-
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Image uploaded successfully!\nHash: ${uploaded.hash}\nURL: ${uploaded.url}\nName: ${uploaded.name ?? name ?? "N/A"}\n\nUse the hash "${uploaded.hash}" when creating a creative with create_ad_creative.`,
-          },
-        ],
-      };
     },
   );
 

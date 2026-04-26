@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { isIP } from "node:net";
 import express from "express";
 import cors from "cors";
 import cookieParser from "cookie-parser";
@@ -37,6 +38,7 @@ import {
 } from "../store/meta-token-repo.js";
 import { isFirestoreEnabled } from "../store/firestore.js";
 import { logger } from "../utils/logger.js";
+import { unsafeIpReason } from "../utils/url-guard.js";
 
 interface PendingAuth {
   fbUserId: string;
@@ -53,7 +55,13 @@ function escapeHtml(raw: string): string {
     .replace(/'/g, "&#x27;");
 }
 
-function getServerUrl(): URL {
+function normalizeHostname(hostname: string): string {
+  return hostname.startsWith("[") && hostname.endsWith("]")
+    ? hostname.slice(1, -1)
+    : hostname;
+}
+
+export function getServerUrl(): URL {
   const envUrl = process.env.SERVER_URL;
   if (envUrl) {
     let parsed: URL;
@@ -77,8 +85,17 @@ function getServerUrl(): URL {
           `SERVER_URL must point at a real hostname in production, got: ${parsed.hostname || "(empty)"}`,
         );
       }
+      const host = normalizeHostname(parsed.hostname);
+      if (isIP(host) && unsafeIpReason(host)) {
+        throw new Error(
+          `SERVER_URL must point at a public hostname or IP in production, got private IP: ${host}`,
+        );
+      }
     }
     return parsed;
+  }
+  if (process.env.NODE_ENV === "production") {
+    throw new Error("SERVER_URL environment variable is required in production");
   }
   const port = process.env.PORT || "3000";
   return new URL(`http://localhost:${port}`);
