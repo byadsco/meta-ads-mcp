@@ -182,17 +182,33 @@ jobs:
           # doesn't exist (e.g. fork to a fresh project that hasn't been
           # bootstrapped yet). Without this, the deploy step fails with a
           # cryptic iam.serviceAccountUser error mid-rollout.
-          if ! gcloud iam service-accounts describe "${GCP_RUNTIME_SERVICE_ACCOUNT}" \
-              --project="${GCP_PROJECT_ID}" --quiet >/dev/null 2>&1; then
-            echo "Runtime service account ${GCP_RUNTIME_SERVICE_ACCOUNT} does not exist in project ${GCP_PROJECT_ID}."
-            echo "Create it with the minimum roles described in CONTRIBUTING.md, e.g.:"
-            echo "  gcloud iam service-accounts create meta-ads-mcp-runtime --project=${GCP_PROJECT_ID}"
-            echo "  gcloud projects add-iam-policy-binding ${GCP_PROJECT_ID} --member=serviceAccount:${GCP_RUNTIME_SERVICE_ACCOUNT} --role=roles/datastore.user"
-            echo "  gcloud projects add-iam-policy-binding ${GCP_PROJECT_ID} --member=serviceAccount:${GCP_RUNTIME_SERVICE_ACCOUNT} --role=roles/logging.logWriter"
-            echo "  # plus secretmanager.secretAccessor on each mounted secret"
-            exit 1
+          #
+          # Be tolerant of strict least-privilege deployers: roles/iam.serviceAccountUser
+          # grants iam.serviceAccounts.actAs but NOT iam.serviceAccounts.get,
+          # so `describe` may return PERMISSION_DENIED even when the SA exists
+          # and the deployer can legitimately attach it. Treat NOT_FOUND as
+          # blocking, but downgrade missing-read-permission to a warning.
+          if out=$(gcloud iam service-accounts describe "${GCP_RUNTIME_SERVICE_ACCOUNT}" \
+              --project="${GCP_PROJECT_ID}" --quiet 2>&1); then
+            echo "Runtime SA ${GCP_RUNTIME_SERVICE_ACCOUNT} exists."
+          else
+            if printf '%s' "$out" | grep -qiE "permission denied|insufficient permission|forbidden|does not have permission"; then
+              echo "::warning::Cannot read SA metadata for ${GCP_RUNTIME_SERVICE_ACCOUNT} (deployer lacks iam.serviceAccounts.get)."
+              echo "::warning::Skipping existence check; deploy will fail later with a clear iam.serviceAccountUser error if the SA does not exist."
+            elif printf '%s' "$out" | grep -qiE "not.*found|does not exist|NOT_FOUND"; then
+              echo "Runtime service account ${GCP_RUNTIME_SERVICE_ACCOUNT} does not exist in project ${GCP_PROJECT_ID}."
+              echo "Create it with the minimum roles described in CONTRIBUTING.md, e.g.:"
+              echo "  gcloud iam service-accounts create meta-ads-mcp-runtime --project=${GCP_PROJECT_ID}"
+              echo "  gcloud projects add-iam-policy-binding ${GCP_PROJECT_ID} --member=serviceAccount:${GCP_RUNTIME_SERVICE_ACCOUNT} --role=roles/datastore.user"
+              echo "  gcloud projects add-iam-policy-binding ${GCP_PROJECT_ID} --member=serviceAccount:${GCP_RUNTIME_SERVICE_ACCOUNT} --role=roles/logging.logWriter"
+              echo "  # plus secretmanager.secretAccessor on each mounted secret"
+              exit 1
+            else
+              echo "Unexpected error reading runtime SA metadata:"
+              printf '%s\n' "$out"
+              exit 1
+            fi
           fi
-          echo "Runtime SA ${GCP_RUNTIME_SERVICE_ACCOUNT} exists."
 
       - name: Sync META_TOKENS to Secret Manager
         env:
@@ -222,16 +238,29 @@ jobs:
           # the deploy step actually used.
           RUNTIME_SA="${GCP_RUNTIME_SERVICE_ACCOUNT}"
 
+          # Idempotent IAM reconcile: ensure the current runtime SA always
+          # has access to meta-tokens-prod, regardless of whether the secret
+          # is being created here or already existed. Without this, rotating
+          # GCP_RUNTIME_SERVICE_ACCOUNT to a new SA would mount the secret
+          # at deploy time but the new SA would lack secretmanager.secretAccessor,
+          # and the container would fail at startup.
+          ensure_iam_binding() {
+            local secret="$1"
+            gcloud secrets add-iam-policy-binding "$secret" \
+              --member="serviceAccount:${RUNTIME_SA}" \
+              --role=roles/secretmanager.secretAccessor \
+              --project="$GCP_PROJECT_ID" --condition=None --quiet >/dev/null
+          }
+
           if ! gcloud secrets describe "$SECRET_NAME" --project="$GCP_PROJECT_ID" --quiet >/dev/null 2>&1; then
             printf '%s' "${META_TOKENS}" | gcloud secrets create "$SECRET_NAME" \
               --data-file=- --replication-policy=automatic \
               --project="$GCP_PROJECT_ID" --quiet
-            gcloud secrets add-iam-policy-binding "$SECRET_NAME" \
-              --member="serviceAccount:${RUNTIME_SA}" \
-              --role=roles/secretmanager.secretAccessor \
-              --project="$GCP_PROJECT_ID" --quiet >/dev/null
+            ensure_iam_binding "$SECRET_NAME"
             echo "Created Secret Manager secret $SECRET_NAME and granted ${RUNTIME_SA} access."
           else
+            ensure_iam_binding "$SECRET_NAME"
+            echo "Reconciled ${RUNTIME_SA} access on existing $SECRET_NAME."
             # Only add a new version if the value actually changed — avoids
             # one new version per deploy (Secret Manager bills per-version).
             existing_hash=$(gcloud secrets versions access latest \
