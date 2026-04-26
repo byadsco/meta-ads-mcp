@@ -68,7 +68,11 @@ export function registerPreviewTools(server: McpServer): void {
         };
       }
 
-      // Extract iframe src URL from the HTML body if possible
+      // Extract iframe src URL from the HTML body. We deliberately do NOT
+      // forward the raw Meta HTML to the agent (CODE-A4 audit finding) —
+      // a browser-based MCP client that renders text content as HTML
+      // would execute scripts inside the iframe. The shareable URL is
+      // sufficient for every documented use case.
       const html = previews[0].body;
       const iframeSrcMatch = html.match(/src="([^"]+)"/);
       const previewUrl = iframeSrcMatch ? iframeSrcMatch[1].replace(/&amp;/g, "&") : null;
@@ -78,14 +82,13 @@ export function registerPreviewTools(server: McpServer): void {
       ];
       if (previewUrl) {
         lines.push(`\nPreview URL: ${previewUrl}`);
+        lines.push(`\nShareable — copy the URL above to share with clients without Business Manager access.`);
+      } else {
+        lines.push(`\nMeta returned a preview but no shareable URL could be extracted from it.`);
       }
-      lines.push(`\nShareable — copy the URL above to share with clients without Business Manager access.`);
 
       return {
-        content: [
-          { type: "text", text: lines.join("\n") },
-          { type: "text", text: `Raw HTML:\n${html}` },
-        ],
+        content: [{ type: "text", text: lines.join("\n") }],
       };
     },
   );
@@ -166,9 +169,8 @@ export function registerPreviewTools(server: McpServer): void {
             type: "text",
             text: previewUrl
               ? `Preview generated (${ad_format}):\n\nPreview URL: ${previewUrl}`
-              : `Preview generated (${ad_format}).`,
+              : `Preview generated (${ad_format}). Meta did not return a shareable URL.`,
           },
-          { type: "text", text: `Raw HTML:\n${html}` },
         ],
       };
     },

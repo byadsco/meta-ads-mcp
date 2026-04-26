@@ -6,8 +6,15 @@ import {
   type JtiStore,
 } from "../store/persistent-jti-store.js";
 
-const COOKIE_NAME = "mcp_session";
+// Use the __Host- prefix in production: requires Secure, requires path=/,
+// forbids the Domain attribute. Together they prevent a sibling subdomain
+// from setting or overwriting our cookie. The cookie name *is* part of the
+// prefix contract; switching it on/off based on production silently lets
+// dev work over plain http while prod gets the strongest guarantee.
+const COOKIE_NAME =
+  process.env.NODE_ENV === "production" ? "__Host-mcp_session" : "mcp_session";
 const SESSION_TTL_SECONDS = 30 * 24 * 60 * 60;
+const SESSION_AUDIENCE = "mcp-session";
 
 export interface SessionPayload {
   fbUserId: string;
@@ -65,6 +72,7 @@ export async function setSession(
     .setProtectedHeader({ alg: "HS256" })
     .setIssuedAt(now)
     .setExpirationTime(expiresAt)
+    .setAudience(SESSION_AUDIENCE)
     .sign(secret);
 
   await sessionJtiStore.put(jti, {
@@ -75,6 +83,12 @@ export async function setSession(
   res.cookie(COOKIE_NAME, jwt, {
     httpOnly: true,
     secure: process.env.NODE_ENV === "production",
+    // Lax is required because the OAuth callback from Meta is a top-level
+    // navigation from a different origin; Strict would drop the cookie on
+    // that hop and the user would land back at /authorize without a
+    // session. Lax is enough — JWTs are not cookie-only-protected (the
+    // jti allow-list still gates them) and CSRF is mitigated by SameSite
+    // for non-GET state-changing routes.
     sameSite: "lax",
     maxAge: SESSION_TTL_SECONDS * 1000,
     path: "/",
@@ -90,7 +104,14 @@ export async function getSession(
   if (!cookie) return null;
 
   try {
-    const { payload } = await jwtVerify(cookie, getSecret());
+    // Pin the algorithm and the audience so the verifier can't be fooled
+    // into accepting a token signed with a different alg (alg confusion)
+    // or a token issued for a different purpose with the same secret
+    // (e.g. an oauth-state JWT — token confusion / CODE-M7).
+    const { payload } = await jwtVerify(cookie, getSecret(), {
+      algorithms: ["HS256"],
+      audience: SESSION_AUDIENCE,
+    });
     if (typeof payload.fb !== "string") return null;
     if (typeof payload.jti !== "string") return null;
     if (!(await sessionJtiStore.has(payload.jti))) return null;
@@ -113,7 +134,10 @@ export async function clearSession(req: Request, res: Response): Promise<void> {
   const cookie = reqCookies?.[COOKIE_NAME];
   if (cookie) {
     try {
-      const { payload } = await jwtVerify(cookie, getSecret());
+      const { payload } = await jwtVerify(cookie, getSecret(), {
+        algorithms: ["HS256"],
+        audience: SESSION_AUDIENCE,
+      });
       if (typeof payload.jti === "string") {
         await sessionJtiStore.delete(payload.jti);
       }

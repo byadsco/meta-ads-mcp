@@ -23,6 +23,14 @@ import {
   type JtiStore,
 } from "../store/persistent-jti-store.js";
 
+// Audience separation (CODE-M7): every JWT we mint is tagged with its
+// purpose. Verifiers pin the audience so an attacker can't smuggle a
+// session JWT into the access-token slot or vice versa, even if a single
+// secret rotates and starts being shared. Combined with `type` claim
+// checks already in place, this is belt-and-braces.
+const ACCESS_AUDIENCE = "mcp-oauth-access";
+const REFRESH_AUDIENCE = "mcp-oauth-refresh";
+
 let cachedSecret: Uint8Array | undefined;
 
 function getJwtSecret(): Uint8Array {
@@ -173,7 +181,10 @@ export class MetaAdsOAuthProvider implements OAuthServerProvider {
   ): Promise<OAuthTokens> {
     const secret = getJwtSecret();
 
-    const { payload } = await jwtVerify(refreshToken, secret).catch(() => {
+    const { payload } = await jwtVerify(refreshToken, secret, {
+      algorithms: ["HS256"],
+      audience: REFRESH_AUDIENCE,
+    }).catch(() => {
       throw new Error("Invalid refresh token");
     });
 
@@ -212,7 +223,10 @@ export class MetaAdsOAuthProvider implements OAuthServerProvider {
   async verifyAccessToken(token: string): Promise<AuthInfo> {
     const secret = getJwtSecret();
 
-    const { payload } = await jwtVerify(token, secret).catch(() => {
+    const { payload } = await jwtVerify(token, secret, {
+      algorithms: ["HS256"],
+      audience: ACCESS_AUDIENCE,
+    }).catch(() => {
       throw new Error("Invalid access token");
     });
 
@@ -247,14 +261,18 @@ export class MetaAdsOAuthProvider implements OAuthServerProvider {
     const token = request.token;
     if (!token) return;
     try {
-      const { payload } = await jwtVerify(token, getJwtSecret());
+      const { payload } = await jwtVerify(token, getJwtSecret(), {
+        algorithms: ["HS256"],
+        audience: REFRESH_AUDIENCE,
+      });
       if (payload.type === "refresh" && typeof payload.jti === "string") {
         await this.refreshJtiStoreImpl.delete(payload.jti);
         logger.info({ jti: payload.jti }, "Refresh token revoked");
       }
     } catch {
       // Silently ignore — RFC 7009 §2.2: revocation responses must succeed
-      // even on unrecognised tokens.
+      // even on unrecognised tokens. Tokens that aren't a refresh JWT fall
+      // through here and we treat them as already revoked / unknown.
     }
   }
 
@@ -277,6 +295,7 @@ export class MetaAdsOAuthProvider implements OAuthServerProvider {
       .setProtectedHeader({ alg: "HS256" })
       .setIssuedAt(now)
       .setExpirationTime(now + 3600)
+      .setAudience(ACCESS_AUDIENCE)
       .sign(secret);
 
     // Refresh tokens carry a jti recorded in the refresh allow-list.
@@ -295,6 +314,7 @@ export class MetaAdsOAuthProvider implements OAuthServerProvider {
       .setProtectedHeader({ alg: "HS256" })
       .setIssuedAt(now)
       .setExpirationTime(refreshExpiresAt)
+      .setAudience(REFRESH_AUDIENCE)
       .sign(secret);
 
     await this.refreshJtiStoreImpl.put(refreshJti, {

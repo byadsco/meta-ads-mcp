@@ -138,6 +138,47 @@ describe("session", () => {
     ).toBeNull();
   });
 
+  it("CODE-M7: rejects a JWT signed with the same secret but for a different audience (token confusion)", async () => {
+    // Forge a JWT with the same secret + structure as a session, but with
+    // the audience of an oauth-state. getSession must reject it because
+    // it pins audience: "mcp-session".
+    const { SignJWT } = await import("jose");
+    const secret = new TextEncoder().encode(SECRET);
+    const forged = await new SignJWT({ fb: "fb-evil", jti: "x".repeat(32) })
+      .setProtectedHeader({ alg: "HS256" })
+      .setAudience("meta-oauth-state") // wrong audience for getSession
+      .setIssuedAt()
+      .setExpirationTime("1h")
+      .sign(secret);
+
+    expect(
+      await getSession({ cookies: { mcp_session: forged } } as never),
+    ).toBeNull();
+  });
+
+  it("CODE-M2: uses the __Host- cookie prefix in production", async () => {
+    const original = process.env.NODE_ENV;
+    try {
+      process.env.NODE_ENV = "production";
+      // Force re-import so the COOKIE_NAME constant picks up production.
+      const fresh = await import(
+        "../../src/auth/session.ts?prod=" + Date.now()
+      );
+      const res = makeRes();
+      await fresh.setSession(res as never, {
+        fbUserId: "fb-prod",
+        email: null,
+        name: null,
+      });
+      expect(res.cookieCalls[0].name).toBe("__Host-mcp_session");
+      expect(res.cookieCalls[0].options.secure).toBe(true);
+      expect(res.cookieCalls[0].options.path).toBe("/");
+    } finally {
+      if (original === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = original;
+    }
+  });
+
   it("rejects sessions whose jti is unknown (e.g. server restart with in-memory store)", async () => {
     const res = makeRes();
     await setSession(res as never, {

@@ -299,6 +299,58 @@ describe("MetaAdsOAuthProvider", () => {
     ).rejects.toThrow(/revoked|already used/i);
   });
 
+  it("CODE-M7: rejects an access token offered as a refresh token (audience separation)", async () => {
+    const res = fakeRes();
+    await oauthProvider.authorize(
+      fakeClient,
+      {
+        codeChallenge: "ch",
+        codeChallengeMethod: "S256",
+        redirectUri: "https://example.com/cb",
+        scopes: [],
+      },
+      res,
+    );
+    const code = new URL(
+      (res.redirect as never as ReturnType<typeof vi.fn>).mock.calls[0][1],
+    ).searchParams.get("code")!;
+    const tokens = await oauthProvider.exchangeAuthorizationCode(
+      fakeClient,
+      code,
+    );
+
+    // Pass the access token where a refresh is expected.
+    await expect(
+      oauthProvider.exchangeRefreshToken(fakeClient, tokens.access_token),
+    ).rejects.toThrow(/Invalid refresh token/);
+  });
+
+  it("CODE-M7: rejects a refresh token offered as an access token (audience separation)", async () => {
+    const res = fakeRes();
+    await oauthProvider.authorize(
+      fakeClient,
+      {
+        codeChallenge: "ch",
+        codeChallengeMethod: "S256",
+        redirectUri: "https://example.com/cb",
+        scopes: [],
+      },
+      res,
+    );
+    const code = new URL(
+      (res.redirect as never as ReturnType<typeof vi.fn>).mock.calls[0][1],
+    ).searchParams.get("code")!;
+    const tokens = await oauthProvider.exchangeAuthorizationCode(
+      fakeClient,
+      code,
+    );
+
+    // Pass the refresh token where an access verifier is expected.
+    await expect(
+      oauthProvider.verifyAccessToken(tokens.refresh_token!),
+    ).rejects.toThrow(/Invalid access token/);
+  });
+
   it("preserves fb_user_id across refresh-token exchange (token name is never in the JWT)", async () => {
     oauthProvider.configure({
       resolvePendingAuth: () => ({ fbUserId: "fb-9999" }),

@@ -52,6 +52,7 @@ export async function verifyOAuthState(
 ): Promise<OAuthStatePayload | null> {
   try {
     const { payload } = await jwtVerify(token, getSecret(), {
+      algorithms: ["HS256"],
       audience: STATE_AUDIENCE,
     });
     if (typeof payload.rt !== "string") return null;
