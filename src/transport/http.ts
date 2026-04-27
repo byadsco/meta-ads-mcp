@@ -421,6 +421,7 @@ export async function startHttpTransport(
   const isProduction = process.env.NODE_ENV === "production";
   const config = resolveSecurityConfig();
 
+  app.disable("x-powered-by");
   app.set("trust proxy", 1);
   // CORS: explicit allowlist instead of wildcard. The previous app.use(cors())
   // set Access-Control-Allow-Origin: * on every response, which let any origin
