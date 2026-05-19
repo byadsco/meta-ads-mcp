@@ -1,7 +1,7 @@
 import pino from "pino";
+import { isStdioTransport } from "./transport-mode.js";
 
-const stdioIdx = process.argv.indexOf("--transport");
-const isStdio = stdioIdx !== -1 && process.argv[stdioIdx + 1] === "stdio";
+const isStdio = isStdioTransport(process.argv);
 
 export const logger = isStdio
   ? pino(
