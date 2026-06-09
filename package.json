@@ -59,11 +59,11 @@
     "@types/cookie-parser": "^1.4.10",
     "@types/cors": "^2.8.17",
     "@types/express": "^5.0.0",
-    "@types/node": "^22.0.0",
-    "eslint": "^10.0.2",
-    "tsx": "^4.19.0",
-    "typescript": "^5.7.0",
-    "typescript-eslint": "^8.56.1",
+    "@types/node": "^25.9.2",
+    "eslint": "^10.4.1",
+    "tsx": "^4.22.4",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.61.0",
     "vitest": "^4.0.18"
   },
   "keywords": [
