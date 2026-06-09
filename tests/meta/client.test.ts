@@ -303,6 +303,52 @@ describe("MetaApiClient", () => {
       expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
     });
 
+    it("does NOT retry POST to a /copies edge on 5xx (duplicate-mint safety)", async () => {
+      const retryClient = new MetaApiClient({
+        maxRetries: 3,
+        timeout: 5000,
+      });
+
+      const serverErrorResponse = mockFetchResponse(
+        {
+          error: {
+            message: "Server error",
+            type: "API_ERROR",
+            code: 1,
+          },
+        },
+      );
+
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(serverErrorResponse));
+
+      // POST /<ad_id>/copies duplicates an ad — a non-act_ path that still
+      // CREATES a resource. A retry after a server-side success would mint a
+      // duplicate ad, so it must not be retried.
+      await expect(
+        retryClient.postForm("/1234567890/copies", { adset_id: "999" }),
+      ).rejects.toThrow();
+      expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
+    });
+
+    it("uses caller-provided account scope for /copies write pacing", async () => {
+      const scopedClient = new MetaApiClient({
+        maxRetries: 0,
+        timeout: 5000,
+      });
+
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockFetchResponse({ copied_ad_id: "999" })));
+
+      await scopedClient.postForm(
+        "/1234567890/copies",
+        { adset_id: "999" },
+        { accountId: "act_123" },
+      );
+
+      const keys = scopedClient.getUsageSnapshot().writePacer.map((bucket) => bucket.key);
+      expect(keys.some((key) => key.endsWith(":act_123"))).toBe(true);
+      expect(keys.some((key) => key.endsWith(":1234567890"))).toBe(false);
+    });
+
     it("still retries POST to non-account-scoped paths (updates are idempotent)", async () => {
       const retryClient = new MetaApiClient({
         maxRetries: 1,

@@ -102,7 +102,7 @@ All tools use the `ads_*` naming convention, aligned with Meta's official MCP se
 |---|---|---|
 | Accounts | 3 | `ads_get_ad_accounts`, `ads_get_account_info`, `ads_get_pages_for_business` |
 | Campaigns | 5 | CRUD + status management |
-| Ad Sets | 6 | CRUD + clone bundle with full targeting spec |
+| Ad Sets | 6 | CRUD + clone bundle (native ad-copy, 100% creative-type coverage incl. dynamic/Advantage+) |
 | Ads | 5 | CRUD with creative assignment |
 | Creatives | 9 | List, details, create/update, image/video library and uploads |
 | Generic entity helpers | 3 | `ads_get_ad_entities`, `ads_update_entity`, `ads_activate_entity` (mirror official MCP) |

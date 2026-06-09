@@ -4,6 +4,10 @@ import { logger } from "../utils/logger.js";
 
 export interface CloneBundleCreatedResources {
   adSetId?: string;
+  // On the native-copy clone path, ad creatives are duplicated server-side by
+  // Meta and are not separately tracked here; creativeIds only collects the
+  // creatives minted locally when applying a creative_overrides swap. adIds
+  // holds the copied ad ids and is the primary partial-state ledger for cleanup.
   creativeIds: string[];
   adIds: string[];
 }

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { registerCreativeTools } from "../../src/tools/creatives.js";
+import { CREATIVE_DEFAULT_FIELDS } from "../../src/meta/types/creative.js";
 import {
   createMockMcpServer,
   setupTestToken,
@@ -15,6 +16,10 @@ describe("registerCreativeTools", () => {
   afterEach(() => {
     cleanupTestToken();
     vi.restoreAllMocks();
+  });
+
+  it("never requests effective_link_url — not a real Meta AdCreative field (Graph API rejects it with #100)", () => {
+    expect(CREATIVE_DEFAULT_FIELDS).not.toContain("effective_link_url");
   });
 
   it("registers exactly 9 tools", () => {
@@ -70,7 +75,7 @@ describe("registerCreativeTools", () => {
       const url = new URL(vi.mocked(fetch).mock.calls[0][0] as string);
       expect(url.pathname).toContain("/40123");
       expect(url.searchParams.get("fields")).toBe(
-        "id,name,title,body,image_hash,image_url,thumbnail_url,object_story_spec,asset_feed_spec,call_to_action_type,link_url,effective_link_url,effective_object_story_id,status",
+        "id,name,title,body,image_hash,image_url,thumbnail_url,object_story_spec,asset_feed_spec,call_to_action_type,link_url,effective_object_story_id,status",
       );
     });
 

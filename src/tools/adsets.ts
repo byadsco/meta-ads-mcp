@@ -187,55 +187,86 @@ interface CloneAdSetBundleResult {
   warnings: string[];
 }
 
-interface ResolvedCloneCreativeInput {
-  name: string;
-  page_id: string;
-  instagram_user_id?: string;
-  image_hash?: string;
-  image_url?: string;
-  video_id?: string;
-  link_url?: string;
-  message?: string;
-  headline?: string;
-  description?: string;
-  call_to_action_type?: string;
-}
-
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   return typeof value === "object" && value !== null ? value as Record<string, unknown> : undefined;
 }
 
-function getString(record: Record<string, unknown> | undefined, key: string): string | undefined {
-  const value = record?.[key];
-  return typeof value === "string" && value.length > 0 ? value : undefined;
+type OverrideStrategy = "copy" | "swap" | "warn_override_ignored";
+
+// Decides how a creative override is applied on top of a native ad copy.
+// - "copy": no override → plain native copy (every creative type, lossless).
+// - "swap": override on an object_story_spec creative → copy, then swap a
+//   modified creative built from the real source spec.
+// - "warn_override_ignored": dynamic (asset_feed_spec) creatives store copy in
+//   arrays where a single-value override is ambiguous, and creatives with no
+//   object_story_spec (e.g. boosted posts) cannot be patched — the ad still
+//   copies, but the override is reported, never silently dropped.
+function classifyOverride(
+  override: CreativeOverrideInput | undefined,
+  sourceCreative: AdCreative | undefined,
+): OverrideStrategy {
+  if (!override) return "copy";
+  if (sourceCreative?.asset_feed_spec) return "warn_override_ignored";
+  if (!asRecord(sourceCreative?.object_story_spec)) return "warn_override_ignored";
+  return "swap";
 }
 
-function getNestedString(record: Record<string, unknown> | undefined, path: string[]): string | undefined {
-  let current: unknown = record;
-  for (const key of path) {
-    if (typeof current !== "object" || current === null || !(key in current)) {
-      return undefined;
-    }
-    current = (current as Record<string, unknown>)[key];
+function describeIgnoredOverrideReason(sourceCreative: AdCreative | undefined): string {
+  if (sourceCreative?.asset_feed_spec) return "dynamic asset_feed_spec creative";
+  if (!sourceCreative) return "source ad has no readable creative";
+  return "creative has no patchable object_story_spec";
+}
+
+function applyCtaOverride(
+  cta: Record<string, unknown> | undefined,
+  override: CreativeOverrideInput,
+): Record<string, unknown> | undefined {
+  const next = { ...(cta ?? {}) };
+  if (override.call_to_action_type) next.type = override.call_to_action_type;
+  if (override.link_url) {
+    const value = asRecord(next.value) ?? {};
+    next.value = { ...value, link: override.link_url };
+  }
+  return Object.keys(next).length > 0 ? next : undefined;
+}
+
+// Deep-clones the source object_story_spec and patches the override fields into
+// it, reusing the real source media/structure (image_hash, video_id, page_id,
+// carousel attachments). Returns undefined when there is no link_data/video_data
+// to target, so the caller can degrade to a warning instead of a silent change.
+function buildPatchedObjectStorySpec(
+  sourceCreative: AdCreative,
+  override: CreativeOverrideInput,
+): Record<string, unknown> | undefined {
+  const oss = asRecord(sourceCreative.object_story_spec);
+  if (!oss) return undefined;
+  const next = structuredClone(oss) as Record<string, unknown>;
+
+  const videoData = asRecord(next.video_data);
+  const linkData = asRecord(next.link_data);
+
+  if (videoData) {
+    if (override.headline !== undefined) videoData.title = override.headline;
+    if (override.message !== undefined) videoData.message = override.message;
+    if (override.description !== undefined) videoData.link_description = override.description;
+    const cta = applyCtaOverride(asRecord(videoData.call_to_action), override);
+    if (cta) videoData.call_to_action = cta;
+    next.video_data = videoData;
+    return next;
   }
 
-  return typeof current === "string" && current.length > 0 ? current : undefined;
-}
+  if (linkData) {
+    if (override.headline !== undefined) linkData.name = override.headline;
+    if (override.message !== undefined) linkData.message = override.message;
+    if (override.description !== undefined) linkData.description = override.description;
+    if (override.link_url !== undefined) linkData.link = override.link_url;
+    const cta = applyCtaOverride(asRecord(linkData.call_to_action), override);
+    if (cta) linkData.call_to_action = cta;
+    next.link_data = linkData;
+    return next;
+  }
 
-function extractEffectiveCreativeLinkUrl(creative: AdCreative): string | undefined {
-  if (creative.link_url) return creative.link_url;
-
-  const objectStorySpec = asRecord(creative.object_story_spec);
-  const videoData = asRecord(objectStorySpec?.["video_data"]);
-  const linkData = asRecord(objectStorySpec?.["link_data"]);
-  const assetFeedSpec = asRecord(creative.asset_feed_spec);
-
-  return (
-    getNestedString(videoData, ["call_to_action", "value", "link"])
-    ?? getString(linkData, "link")
-    ?? getNestedString(linkData, ["call_to_action", "value", "link"])
-    ?? getNestedString(assetFeedSpec, ["link_urls", "0", "website_url"])
-  );
+  return undefined;
 }
 
 function buildAdSetDetailsFields(fields?: string[]): string {
@@ -283,97 +314,6 @@ function findCreativeOverride(
     override.source_ad_id === sourceAdId
     || (sourceCreativeId && override.source_creative_id === sourceCreativeId),
   );
-}
-
-function resolveCreativeCloneInput(
-  sourceCreative: AdCreative,
-  sourceAd: Ad,
-  sourceAdSetName: string,
-  targetAdSetName: string,
-  override: CreativeOverrideInput | undefined,
-  reuseSourceMedia: boolean,
-): { input?: ResolvedCloneCreativeInput; reason?: string } {
-  if (!reuseSourceMedia) {
-    return { reason: "reuse_source_media=false todavía no está soportado para clonado automático." };
-  }
-
-  // Reject asset_feed_spec FIRST. A dynamic creative that also happens to have
-  // a video_data/link_data shape would otherwise silently be cloned as a
-  // static creative, losing the feed entirely.
-  if (sourceCreative.asset_feed_spec) {
-    return { reason: "El creative fuente usa asset_feed_spec y esa variante aún no está soportada por ads_clone_ad_set_bundle." };
-  }
-
-  const objectStorySpec = asRecord(sourceCreative.object_story_spec);
-  const videoData = asRecord(objectStorySpec?.["video_data"]);
-  const linkData = asRecord(objectStorySpec?.["link_data"]);
-  const pageId = getString(objectStorySpec, "page_id");
-  const instagramUserId =
-    getString(objectStorySpec, "instagram_user_id")
-    ?? getString(objectStorySpec, "instagram_actor_id");
-  const effectiveLinkUrl = override?.link_url ?? extractEffectiveCreativeLinkUrl(sourceCreative);
-  const defaultName =
-    override?.name
-    ?? deriveClonedName(sourceAd.name, sourceAdSetName, targetAdSetName);
-
-  if (!pageId) {
-    return { reason: "El creative fuente no tiene page_id en object_story_spec." };
-  }
-
-  if (videoData) {
-    const videoId = getString(videoData, "video_id");
-    const imageHash = getString(videoData, "image_hash") ?? sourceCreative.image_hash;
-    const imageUrl = getString(videoData, "image_url") ?? sourceCreative.thumbnail_url ?? sourceCreative.image_url;
-
-    if (!videoId) {
-      return { reason: "El creative de video fuente no incluye video_id." };
-    }
-
-    if (!imageHash && !imageUrl) {
-      return { reason: "El creative de video fuente no incluye thumbnail reusable (image_hash o image_url)." };
-    }
-
-    return {
-      input: {
-        name: defaultName,
-        page_id: pageId,
-        instagram_user_id: instagramUserId,
-        video_id: videoId,
-        image_hash: imageHash,
-        image_url: imageHash ? undefined : imageUrl,
-        link_url: effectiveLinkUrl,
-        message: override?.message ?? getString(videoData, "message") ?? sourceCreative.body,
-        headline: override?.headline ?? getString(videoData, "title") ?? sourceCreative.title,
-        description: override?.description ?? getString(videoData, "link_description"),
-        call_to_action_type:
-          override?.call_to_action_type
-          ?? getNestedString(videoData, ["call_to_action", "type"])
-          ?? sourceCreative.call_to_action_type,
-      },
-    };
-  }
-
-  if (linkData) {
-    return {
-      input: {
-        name: defaultName,
-        page_id: pageId,
-        instagram_user_id: instagramUserId,
-        image_hash: getString(linkData, "image_hash") ?? sourceCreative.image_hash,
-        image_url: getString(linkData, "picture") ?? sourceCreative.image_url,
-        link_url: effectiveLinkUrl,
-        message: override?.message ?? getString(linkData, "message") ?? sourceCreative.body,
-        headline: override?.headline ?? getString(linkData, "name") ?? sourceCreative.title,
-        description: override?.description ?? getString(linkData, "description"),
-        call_to_action_type:
-          override?.call_to_action_type
-          ?? getNestedString(linkData, ["call_to_action", "type"])
-          ?? sourceCreative.call_to_action_type,
-      },
-    };
-  }
-
-  return { reason: "No se pudo resolver una estructura clonable de object_story_spec en el creative fuente." };
 }
 
 export function registerAdSetTools(server: McpServer): void {
@@ -463,19 +403,18 @@ export function registerAdSetTools(server: McpServer): void {
   server.registerTool(
     "ads_clone_ad_set_bundle",
     {
-      description: `${WRITE_WARNING}Clone an ad set bundle in one operation: reads a source ad set, clones its targeting/budget setup into a new ad set, recreates its ads with reused source media, and applies explicit creative copy overrides. Designed for workflows like duplicating a GEO-specific ad set to another country while keeping every new resource PAUSED by default. Supports dry_run planning and idempotency_key-based retry safety.`,
+      description: `${WRITE_WARNING}Clone an ad set bundle in one operation: reads a source ad set, clones its targeting/budget/pixel setup into a new ad set, and recreates every ad by duplicating it with Meta's native ad-copy endpoint (POST /{ad_id}/copies). Native copy gives 100% creative-type coverage — link, image, video, carousel, collection, catalog/Advantage+ catalog, dynamic (asset_feed_spec), and boosted posts all clone losslessly, with the destination ad set's pixel applied automatically. Designed for workflows like duplicating a GEO-specific ad set to another country with a different pixel while keeping every new resource PAUSED by default. creative_overrides change copy per source ad: on standard (object_story_spec) creatives the override is applied by swapping a modified creative onto the copied ad; on dynamic or otherwise non-patchable creatives the override cannot be applied and is reported in warnings while the ad remains in created_ads. If a single ad fails to copy it is reported in skipped and the rest proceed. Supports dry_run planning and idempotency_key-based retry safety.`,
       inputSchema: {
         account_id: z.string().describe("Ad account ID"),
         source_ad_set_id: z.string().describe("Source ad set ID to clone"),
         target_ad_set: cloneTargetAdSetSchema.describe("Configuration for the cloned ad set"),
-        creative_overrides: z.array(creativeOverrideSchema).default([]).describe("Optional creative overrides keyed by source_ad_id or source_creative_id"),
-        reuse_source_media: z.boolean().default(true).describe("Reuse source image/video assets when cloning creatives"),
+        creative_overrides: z.array(creativeOverrideSchema).default([]).describe("Optional creative overrides keyed by source_ad_id or source_creative_id. Applied via creative swap on standard creatives; ignored (and reported) on dynamic or otherwise non-patchable creatives."),
         dry_run: z.boolean().default(false).describe("Plan the operation without creating any resources"),
         idempotency_key: z.string().optional().describe("Required for real execution. Reusing the same key returns the prior result instead of duplicating resources."),
       },
       annotations: { ...CREATE },
     },
-    async ({ account_id, source_ad_set_id, target_ad_set, creative_overrides, reuse_source_media, dry_run, idempotency_key }) => {
+    async ({ account_id, source_ad_set_id, target_ad_set, creative_overrides, dry_run, idempotency_key }) => {
       if (!dry_run && !idempotency_key) {
         throw new Error("idempotency_key is required when dry_run is false.");
       }
@@ -488,7 +427,6 @@ export function registerAdSetTools(server: McpServer): void {
         source_ad_set_id: sourceAdSetIdValidated,
         target_ad_set,
         creative_overrides,
-        reuse_source_media,
       });
       const cacheKey = idempotency_key
         ? `${idempotency_key}:${accountPath}:${sourceAdSetIdValidated}:${target_ad_set.name}`
@@ -546,7 +484,7 @@ export function registerAdSetTools(server: McpServer): void {
         throw new Error("target_ad_set.lifetime_budget requires target_ad_set.end_time.");
       }
 
-      const adsFieldsParam = buildFieldsParam(undefined, [...AD_DEFAULT_FIELDS, "tracking_specs"]);
+      const adsFieldsParam = buildFieldsParam(undefined, [...AD_DEFAULT_FIELDS]);
       const sourceAds = await metaApiClient.getPaginated<Ad>(
         `/${sourceAdSetIdValidated}/ads`,
         { fields: adsFieldsParam, limit: 100 },
@@ -555,71 +493,42 @@ export function registerAdSetTools(server: McpServer): void {
 
       const warnings: string[] = [];
       const skipped: CloneAdSetBundleSkip[] = [];
-      const plannedCreatives: CloneAdSetBundleResource[] = [];
-      const plannedAds: CloneAdSetBundleResource[] = [];
 
       const clonedTargeting = applyGeoOverride(sourceAdSet.targeting, target_ad_set.geo_override);
       const targetStatus = target_ad_set.status ?? "PAUSED";
+      // Force PAUSED unless the caller explicitly asked for ACTIVE — never
+      // INHERITED_FROM_SOURCE, which could silently activate a copy of an active ad.
+      const statusOption = targetStatus === "ACTIVE" ? "ACTIVE" : "PAUSED";
 
-      const resolvedCreativePlans: Array<{
+      interface AdCopyPlan {
         sourceAd: Ad;
-        sourceCreativeId: string;
-        input: ResolvedCloneCreativeInput;
-      }> = [];
+        sourceCreativeId?: string;
+        sourceCreative?: AdCreative;
+        override?: CreativeOverrideInput;
+        strategy: OverrideStrategy;
+        plannedName: string;
+      }
 
+      const adPlans: AdCopyPlan[] = [];
       for (const sourceAd of sourceAds) {
         const sourceCreativeId = sourceAd.creative?.id;
-        if (!sourceCreativeId) {
-          skipped.push({
-            source_ad_id: sourceAd.id,
-            name: sourceAd.name,
-            reason: "Source ad has no creative.id.",
-          });
-          continue;
-        }
-
-        const sourceCreative = await metaApiClient.get<AdCreative>(`/${sourceCreativeId}`, {
-          fields: buildFieldsParam(undefined, [...CREATIVE_DEFAULT_FIELDS]),
-        });
-
         const override = findCreativeOverride(creative_overrides, sourceAd.id, sourceCreativeId);
-        const resolved = resolveCreativeCloneInput(
-          sourceCreative,
-          sourceAd,
-          sourceAdSet.name,
-          target_ad_set.name,
-          override,
-          reuse_source_media,
-        );
-
-        if (!resolved.input) {
-          skipped.push({
-            source_ad_id: sourceAd.id,
-            source_creative_id: sourceCreativeId,
-            name: sourceAd.name,
-            reason: resolved.reason ?? "Unknown creative clone resolution error.",
+        // The creative is only read to apply an override (swap) or to detect a
+        // dynamic creative an override can't touch. Plain copies never read it —
+        // native copy duplicates the creative server-side for every type.
+        let sourceCreative: AdCreative | undefined;
+        if (override && sourceCreativeId) {
+          sourceCreative = await metaApiClient.get<AdCreative>(`/${sourceCreativeId}`, {
+            fields: buildFieldsParam(undefined, [...CREATIVE_DEFAULT_FIELDS]),
           });
-          continue;
         }
-
-        resolvedCreativePlans.push({
+        adPlans.push({
           sourceAd,
           sourceCreativeId,
-          input: resolved.input,
-        });
-
-        plannedCreatives.push({
-          source_ad_id: sourceAd.id,
-          source_creative_id: sourceCreativeId,
-          name: resolved.input.name,
-          status: targetStatus,
-          planned: true,
-        });
-        plannedAds.push({
-          source_ad_id: sourceAd.id,
-          name: deriveClonedName(sourceAd.name, sourceAdSet.name, target_ad_set.name),
-          status: targetStatus,
-          planned: true,
+          sourceCreative,
+          override,
+          strategy: classifyOverride(override, sourceCreative),
+          plannedName: deriveClonedName(sourceAd.name, sourceAdSet.name, target_ad_set.name),
         });
       }
 
@@ -639,22 +548,40 @@ export function registerAdSetTools(server: McpServer): void {
       };
 
       if (dry_run) {
-        result.created_creatives = plannedCreatives;
-        result.created_ads = plannedAds;
+        for (const plan of adPlans) {
+          result.created_ads.push({
+            source_ad_id: plan.sourceAd.id,
+            name: plan.plannedName,
+            status: targetStatus,
+            planned: true,
+          });
+          if (plan.strategy === "swap") {
+            result.created_creatives.push({
+              source_ad_id: plan.sourceAd.id,
+              source_creative_id: plan.sourceCreativeId,
+              name: plan.override?.name ?? plan.plannedName,
+              status: targetStatus,
+              planned: true,
+            });
+          }
+          if (plan.strategy === "warn_override_ignored") {
+            warnings.push(`Ad ${plan.sourceAd.id}: creative_overrides cannot be applied to this ${describeIgnoredOverrideReason(plan.sourceCreative)}; the ad will be copied without the override.`);
+          }
+        }
 
         return {
           content: [
             {
               type: "text",
-              text: `Dry run ready: ${target_ad_set.name}\nSource ads inspected: ${sourceAds.length}\nCreatives planned: ${plannedCreatives.length}\nAds planned: ${plannedAds.length}\nSkipped: ${skipped.length}`,
+              text: `Dry run ready: ${target_ad_set.name}\nSource ads to copy: ${adPlans.length}\nWith overrides (swap): ${adPlans.filter((p) => p.strategy === "swap").length}\nOverrides ignored (dynamic): ${adPlans.filter((p) => p.strategy === "warn_override_ignored").length}`,
             },
             { type: "text", text: JSON.stringify(result, null, 2) },
           ],
         };
       }
 
-      if (resolvedCreativePlans.length === 0) {
-        throw new Error(`ads_clone_ad_set_bundle: no clonable creatives in source ad set ${sourceAdSetIdValidated}. Skipped: ${JSON.stringify(skipped)}`);
+      if (adPlans.length === 0) {
+        throw new Error(`ads_clone_ad_set_bundle: source ad set ${sourceAdSetIdValidated} has no ads to copy.`);
       }
 
       if (cacheKey) {
@@ -746,106 +673,104 @@ export function registerAdSetTools(server: McpServer): void {
         status: targetStatus,
       };
 
-      for (const plan of resolvedCreativePlans) {
-        const creativeBody: Record<string, string | number | boolean> = {
-          name: plan.input.name,
-          object_story_spec: JSON.stringify({
-            page_id: plan.input.page_id,
-            ...(plan.input.instagram_user_id ? { instagram_user_id: plan.input.instagram_user_id } : {}),
-            ...(plan.input.video_id
-              ? {
-                  video_data: {
-                    video_id: plan.input.video_id,
-                    ...(plan.input.message ? { message: plan.input.message } : {}),
-                    ...(plan.input.image_hash ? { image_hash: plan.input.image_hash } : {}),
-                    ...(!plan.input.image_hash && plan.input.image_url ? { image_url: plan.input.image_url } : {}),
-                    ...(plan.input.headline ? { title: plan.input.headline } : {}),
-                    ...(
-                      plan.input.call_to_action_type || plan.input.link_url
-                        ? {
-                            call_to_action: {
-                              type: plan.input.call_to_action_type ?? "LEARN_MORE",
-                              ...(plan.input.link_url ? { value: { link: plan.input.link_url } } : {}),
-                            },
-                          }
-                        : {}
-                    ),
-                    ...(plan.input.description ? { link_description: plan.input.description } : {}),
-                  },
-                }
-              : {
-                  link_data: {
-                    ...(plan.input.image_hash ? { image_hash: plan.input.image_hash } : {}),
-                    ...(!plan.input.image_hash && plan.input.image_url ? { picture: plan.input.image_url } : {}),
-                    ...(plan.input.link_url ? { link: plan.input.link_url } : {}),
-                    ...(plan.input.message ? { message: plan.input.message } : {}),
-                    ...(plan.input.headline ? { name: plan.input.headline } : {}),
-                    ...(plan.input.description ? { description: plan.input.description } : {}),
-                    ...(
-                      plan.input.call_to_action_type
-                        ? {
-                            call_to_action: {
-                              type: plan.input.call_to_action_type,
-                              ...(plan.input.link_url ? { value: { link: plan.input.link_url } } : {}),
-                            },
-                          }
-                        : {}
-                    ),
-                  },
-                }),
-          }),
+      for (const plan of adPlans) {
+        const { sourceAd, plannedName, strategy } = plan;
+
+        // 1. Native copy — duplicates the ad + its creative into the new ad set
+        //    for every creative type, inheriting the new ad set's pixel.
+        const copyBody: Record<string, string | number | boolean> = {
+          adset_id: newAdSet.id,
+          status_option: statusOption,
+          // NO_RENAME suppresses Meta's localized "- Copy" suffix; we apply the
+          // source→target name transform ourselves in step 2.
+          rename_options: JSON.stringify({ rename_strategy: "NO_RENAME" }),
         };
 
-        let createdCreative: { id: string };
+        let copiedAdId: string;
         try {
-          createdCreative = await metaApiClient.postForm<{ id: string }>(
-            `/${accountPath}/adcreatives`,
-            creativeBody,
+          const copyResp = await metaApiClient.postForm<{ copied_ad_id?: string; id?: string }>(
+            `/${validateMetaId(sourceAd.id, "ad")}/copies`,
+            copyBody,
+            { accountId: accountPath },
           );
+          const id = copyResp.copied_ad_id ?? copyResp.id;
+          if (!id) throw new Error("Meta /copies returned no copied ad id.");
+          copiedAdId = String(id);
         } catch (err) {
-          await markFailed(err);
-          throw new Error(`${err instanceof Error ? err.message : String(err)} (partial state: ad_set=${createdResources.adSetId}, creatives=[${createdResources.creativeIds.join(",")}], ads=[${createdResources.adIds.join(",")}])`);
+          // Skip-and-continue: one ad's failure must not abort the bundle.
+          const msg = err instanceof Error ? err.message : String(err);
+          skipped.push({ source_ad_id: sourceAd.id, name: plannedName, reason: `Copy failed: ${msg}` });
+          warnings.push(`Ad ${sourceAd.id} could not be copied: ${msg}`);
+          continue;
         }
-        createdResources.creativeIds.push(createdCreative.id);
+        createdResources.adIds.push(copiedAdId);
         if (cacheKey) await store.update(cacheKey, { createdResources });
 
-        result.created_creatives.push({
-          id: createdCreative.id,
-          name: plan.input.name,
-          source_ad_id: plan.sourceAd.id,
+        // 2. Apply the source→target name transform (skip when unchanged).
+        if (plannedName !== sourceAd.name) {
+          try {
+            await metaApiClient.postForm<{ success?: boolean }>(
+              `/${copiedAdId}`,
+              { name: plannedName },
+              { accountId: accountPath },
+            );
+          } catch (err) {
+            warnings.push(`Copied ad ${copiedAdId} could not be renamed to "${plannedName}": ${err instanceof Error ? err.message : String(err)}`);
+          }
+        }
+
+        // 3. Apply a creative override by swapping a modified creative onto the
+        //    copied ad. Built from the real source spec so all media is reused.
+        let creativeId: string | undefined;
+        if (strategy === "swap" && plan.sourceCreative && plan.override) {
+          try {
+            const patched = buildPatchedObjectStorySpec(plan.sourceCreative, plan.override);
+            if (!patched) throw new Error("source creative has no patchable object_story_spec.");
+            const newCreative = await metaApiClient.postForm<{ id: string }>(
+              `/${accountPath}/adcreatives`,
+              { name: plan.override.name ?? plannedName, object_story_spec: JSON.stringify(patched) },
+            );
+            createdResources.creativeIds.push(newCreative.id);
+            if (cacheKey) await store.update(cacheKey, { createdResources });
+            await metaApiClient.postForm<{ success?: boolean }>(
+              `/${copiedAdId}`,
+              { creative: JSON.stringify({ creative_id: newCreative.id }) },
+              { accountId: accountPath },
+            );
+            creativeId = newCreative.id;
+            result.created_creatives.push({
+              id: newCreative.id,
+              name: plan.override.name ?? plannedName,
+              source_ad_id: sourceAd.id,
+              source_creative_id: plan.sourceCreativeId,
+              status: targetStatus,
+            });
+          } catch (err) {
+            // The ad is already copied with its original creative — degrade to a
+            // warning rather than dropping the ad.
+            warnings.push(`Override could not be applied to copied ad ${copiedAdId}: ${err instanceof Error ? err.message : String(err)}. Ad copied with its original creative.`);
+          }
+        } else if (strategy === "warn_override_ignored") {
+          warnings.push(`Override for ad ${sourceAd.id} was not applied (${describeIgnoredOverrideReason(plan.sourceCreative)}); copied as ${copiedAdId} unchanged. Edit the copied ad manually if needed.`);
+        }
+
+        result.created_ads.push({
+          id: copiedAdId,
+          name: plannedName,
+          ad_set_id: newAdSet.id,
+          creative_id: creativeId,
+          source_ad_id: sourceAd.id,
           source_creative_id: plan.sourceCreativeId,
           status: targetStatus,
         });
+      }
 
-        const clonedAdName = deriveClonedName(plan.sourceAd.name, sourceAdSet.name, target_ad_set.name);
-        const adBody: Record<string, string | number | boolean> = {
-          name: clonedAdName,
-          adset_id: newAdSet.id,
-          creative: JSON.stringify({ creative_id: createdCreative.id }),
-          status: targetStatus,
-        };
-
-        if (plan.sourceAd.tracking_specs) {
-          adBody.tracking_specs = JSON.stringify(plan.sourceAd.tracking_specs);
-        }
-
-        let createdAd: { id: string };
-        try {
-          createdAd = await metaApiClient.postForm<{ id: string }>(`/${accountPath}/ads`, adBody);
-        } catch (err) {
-          await markFailed(err);
-          throw new Error(`${err instanceof Error ? err.message : String(err)} (partial state: ad_set=${createdResources.adSetId}, creatives=[${createdResources.creativeIds.join(",")}], ads=[${createdResources.adIds.join(",")}])`);
-        }
-        createdResources.adIds.push(createdAd.id);
-        if (cacheKey) await store.update(cacheKey, { createdResources });
-        result.created_ads.push({
-          id: createdAd.id,
-          name: clonedAdName,
-          ad_set_id: newAdSet.id,
-          creative_id: createdCreative.id,
-          source_ad_id: plan.sourceAd.id,
-          status: targetStatus,
-        });
+      // Every copy failed — the ad set exists but is empty. Mark failed so the
+      // operator cleans it up, mirroring the original all-or-nothing safety.
+      if (result.created_ads.length === 0) {
+        const err = new Error(`ads_clone_ad_set_bundle: every ad copy failed for source ad set ${sourceAdSetIdValidated} (partial state: ad_set=${newAdSet.id}, ads=[]). Skipped: ${JSON.stringify(skipped)}`);
+        await markFailed(err);
+        throw err;
       }
 
       if (cacheKey) {
@@ -860,7 +785,7 @@ export function registerAdSetTools(server: McpServer): void {
         content: [
           {
             type: "text",
-            text: `Bundle cloned successfully!\nAd Set: ${target_ad_set.name} (${result.new_ad_set.id})\nCreatives created: ${result.created_creatives.length}\nAds created: ${result.created_ads.length}\nSkipped: ${result.skipped.length}`,
+            text: `Bundle cloned!\nAd Set: ${target_ad_set.name} (${result.new_ad_set.id})\nAds copied: ${result.created_ads.length}\nOverrides swapped: ${result.created_creatives.length}\nWarnings: ${result.warnings.length}\nSkipped (copy failed): ${result.skipped.length}`,
           },
           { type: "text", text: JSON.stringify(result, null, 2) },
         ],
