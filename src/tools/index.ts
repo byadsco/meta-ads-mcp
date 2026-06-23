@@ -56,7 +56,7 @@ export function registerAllTools(server: McpServer): void {
   registerRuleTools(server);         // 5 tools — Automated rules
   registerABTestingTools(server);    // 3 tools — A/B split testing
   registerReportTools(server);       // 4 tools — Async scheduled reports (+ run_and_wait)
-  registerBillingTools(server);      // 3 tools — Billing & spend limits
+  registerBillingTools(server);      // 4 tools — Billing, spend limits & invoices
   registerRateStatusTools(server);   // 1 tool — Rate-limit usage + circuit status
 
   // ─── Diagnostics & Help ─────────────────────────────────

@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { metaApiClient } from "../meta/client.js";
-import { normalizeAccountId, formatBudget } from "../utils/format.js";
+import { normalizeAccountId, validateMetaId, formatBudget } from "../utils/format.js";
 import { READ, UPDATE, WRITE_WARNING } from "./_register.js";
 
 interface BillingInfo {
@@ -59,6 +59,52 @@ interface SpendInfo {
   daily_spend_limit?: string;
   min_daily_budget?: number;
 }
+
+interface Invoice {
+  id: string;
+  invoice_id?: string;
+  advertiser_name?: string;
+  amount?: string | number | Record<string, unknown>;
+  amount_due?: string | number | Record<string, unknown>;
+  billed_amount_details?: Record<string, unknown>;
+  billing_period?: string;
+  currency?: string;
+  download_uri?: string;
+  cdn_download_uri?: string;
+  due_date?: string;
+  entity?: string;
+  invoice_date?: string;
+  invoice_type?: string;
+  liability_type?: string;
+  payment_status?: string;
+  payment_term?: string;
+  type?: string;
+  ad_account_ids?: string[];
+}
+
+const INVOICE_FIELDS = [
+  "id",
+  "invoice_id",
+  "advertiser_name",
+  "amount",
+  "amount_due",
+  "billed_amount_details",
+  "billing_period",
+  "currency",
+  "download_uri",
+  "cdn_download_uri",
+  "due_date",
+  "entity",
+  "invoice_date",
+  "invoice_type",
+  "liability_type",
+  "payment_status",
+  "payment_term",
+  "type",
+  "ad_account_ids",
+].join(",");
+
+const INVOICE_TYPE = z.enum(["CM", "DM", "INV", "PRO_FORMA"]);
 
 const ACCOUNT_STATUS_MAP: Record<number, string> = {
   1: "ACTIVE",
@@ -216,6 +262,138 @@ export function registerBillingTools(server: McpServer): void {
             type: "text",
             text: `Spend cap updated for account ${account_id}.\nNew spend cap: ${displayAmount}`,
           },
+        ],
+      };
+    },
+  );
+
+  // ─── Get Invoices ─────────────────────────────────────────────
+  server.registerTool(
+    "ads_get_invoices",
+    {
+      description:
+        "Get invoices for a business (Meta's business_invoices), with their PDF download links. " +
+        "Provide business_id directly, or account_id to resolve its business automatically. " +
+        "Optionally filter by date range, invoice_id, or type. " +
+        "Note: Meta only exposes invoices for businesses on a credit line / monthly invoicing, " +
+        "and the access token needs the FINANCE_EDITOR or FINANCE_ANALYST role; card-billed accounts have no API invoices.",
+      inputSchema: {
+        business_id: z
+          .string()
+          .optional()
+          .describe("Business ID. Either this or account_id is required."),
+        account_id: z
+          .string()
+          .optional()
+          .describe(
+            "Ad account ID. Used to resolve the owning business when business_id is not given.",
+          ),
+        start_date: z
+          .string()
+          .optional()
+          .describe("Filter invoices from this date (YYYY-MM-DD)."),
+        end_date: z
+          .string()
+          .optional()
+          .describe("Filter invoices up to this date (YYYY-MM-DD)."),
+        invoice_id: z
+          .string()
+          .optional()
+          .describe("Return a single invoice by its invoice_id."),
+        type: INVOICE_TYPE.optional().describe(
+          "Invoice type: CM (credit memo), DM (debit memo), INV (invoice), PRO_FORMA.",
+        ),
+        limit: z
+          .number()
+          .min(1)
+          .max(100)
+          .default(25)
+          .describe("Maximum number of invoices to return."),
+      },
+      annotations: { ...READ },
+    },
+    async ({ business_id, account_id, start_date, end_date, invoice_id, type, limit }) => {
+      let businessId: string;
+      if (business_id) {
+        businessId = validateMetaId(business_id, "business_id");
+      } else if (account_id) {
+        const acct = await metaApiClient.get<{
+          business?: { id: string; name?: string };
+        }>(`/${normalizeAccountId(account_id)}`, { fields: "business" });
+        if (!acct.business?.id) {
+          throw new Error(
+            `Ad account ${account_id} is not linked to a business, so it has no invoices. ` +
+              `Meta exposes invoices only for businesses on a credit line / monthly invoicing.`,
+          );
+        }
+        businessId = acct.business.id;
+      } else {
+        throw new Error("Provide either business_id or account_id to fetch invoices.");
+      }
+
+      const params: Record<string, string | number> = { fields: INVOICE_FIELDS };
+      if (start_date) params.start_date = start_date;
+      if (end_date) params.end_date = end_date;
+      if (invoice_id) params.invoice_id = invoice_id;
+      if (type) params.type = type;
+
+      const invoices = await metaApiClient.getPaginated<Invoice>(
+        `/${businessId}/business_invoices`,
+        params,
+        limit,
+      );
+
+      if (invoices.length === 0) {
+        return {
+          content: [
+            {
+              type: "text",
+              text:
+                `No invoices found for business ${businessId}.\n` +
+                `Meta's business_invoices API only returns data for businesses on a ` +
+                `credit line / monthly invoicing, and the access token must have the ` +
+                `FINANCE_EDITOR or FINANCE_ANALYST role. Card-billed accounts have no ` +
+                `invoices via the API — only receipts in Ads Manager.`,
+            },
+            { type: "text", text: "[]" },
+          ],
+        };
+      }
+
+      const renderAmount = (
+        value: Invoice["amount"],
+        currency?: string,
+      ): string => {
+        if (value === undefined || value === null) return "N/A";
+        if (typeof value === "object") return JSON.stringify(value);
+        return currency ? `${value} ${currency}` : String(value);
+      };
+
+      const lines: string[] = [
+        `Found ${invoices.length} invoice(s) for business ${businessId}:`,
+        ``,
+      ];
+      for (const inv of invoices) {
+        const number = inv.invoice_id ?? inv.id;
+        const period = inv.billing_period
+          ? inv.billing_period
+          : [inv.invoice_date, inv.due_date].filter(Boolean).join(" → ") || "N/A";
+        const link = inv.download_uri ?? inv.cdn_download_uri;
+        lines.push(
+          `Invoice ${number}`,
+          `  Period: ${period}`,
+          `  Amount: ${renderAmount(inv.amount_due ?? inv.amount, inv.currency)}`,
+          `  Status: ${inv.payment_status ?? "N/A"}`,
+          `  Due: ${inv.due_date ?? "N/A"}`,
+        );
+        if (link) lines.push(`  PDF: ${link}`);
+        lines.push(``);
+      }
+
+      return {
+        content: [
+          { type: "text", text: lines.join("\n").trimEnd() },
+          { type: "text", text: JSON.stringify(invoices, null, 2) },
         ],
       };
     },
