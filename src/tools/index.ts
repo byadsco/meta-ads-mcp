@@ -72,5 +72,5 @@ export function registerAllTools(server: McpServer): void {
   // ─── Token Management ────────────────────────────────────
   registerTokenTools(server);        // 4 tools — list / set-active / register / delete
 
-  // Total: 96 tools (79 renamed + 14 new in v3 + 3 audience-sharing)
+  // Total: 97 tools (79 renamed + 14 new in v3 + 3 audience-sharing + 1 invoices)
 }
