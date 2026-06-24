@@ -5,6 +5,22 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`ads_get_invoices`** — read a business's invoices via Meta's
+  `GET /{business_id}/business_invoices` edge, returning each invoice's amount,
+  billing period, payment status, and PDF download link (`download_uri` /
+  `cdn_download_uri`). Accepts a `business_id` directly or an `account_id`
+  (the owning business is resolved automatically), plus optional `start_date` /
+  `end_date` / `invoice_id` / `type` (`CM` / `DM` / `INV` / `PRO_FORMA`)
+  filters. Annotated `READ`. Meta only exposes invoices for businesses on a
+  credit line / monthly invoicing and requires a token with the
+  `FINANCE_EDITOR` or `FINANCE_ANALYST` role; the tool returns a clear
+  explanatory message for card-billed accounts that have no API invoices.
+  Tool count: 96 → 97.
+
 ## [3.2.1] — 2026-06-04
 
 Documentation and validation hardening. No new tools — tool count stays at 96.

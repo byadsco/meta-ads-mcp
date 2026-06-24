@@ -17,7 +17,7 @@
 - [Who is this for?](#who-is-this-for)
 - [Aligned with Meta's official MCP](#aligned-with-metas-official-mcp)
 - [Features](#features)
-- [Tools (96 total)](#tools-96-total)
+- [Tools (97 total)](#tools-97-total)
 - [Quick start](#quick-start)
 - [Authentication — three modes](#authentication--three-modes)
 - [Setting up Sign in with Meta](#setting-up-sign-in-with-meta)
@@ -62,7 +62,7 @@ both servers.
 | | Meta's official MCP (`mcp.facebook.com/ads`) | This project |
 |---|---|---|
 | Auth model | Per-user OAuth in your AI client | **Multi-tenant**: agency operator handles N client accounts from one server |
-| Tool surface | 29 tools (campaigns, ads, catalogs, 5 insight views, opportunity_score, dataset, errors, help) | **96 tools** including the official 29-equivalent + audiences, lookalikes, lead forms, automated rules, A/B studies, async reports, custom conversions, asset uploads, comment moderation, cross-account macros |
+| Tool surface | 29 tools (campaigns, ads, catalogs, 5 insight views, opportunity_score, dataset, errors, help) | **97 tools** including the official 29-equivalent + audiences, lookalikes, lead forms, automated rules, A/B studies, async reports, billing invoices, custom conversions, asset uploads, comment moderation, cross-account macros |
 | Hosting | Hosted by Meta | Self-hosted on Cloud Run / your infra; tokens encrypted at rest in Firestore |
 | Cross-account | Per-user, single Meta login | Yes — `ads_portfolio_summary` aggregates across N accounts |
 | Token control | Lives in your AI client | Server-side System User token registry per agency operator |
@@ -78,7 +78,7 @@ When to use which:
 
 ## Features
 
-- **96 tools** covering campaign management, creatives, targeting, audiences, reporting, comments, billing, tokens, Instagram workflows, rate-limit observability, semantic insight views, diagnostics, help-center search, and agency-tier cross-account macros.
+- **97 tools** covering campaign management, creatives, targeting, audiences, reporting, comments, billing, invoices, tokens, Instagram workflows, rate-limit observability, semantic insight views, diagnostics, help-center search, and agency-tier cross-account macros.
 - **Aligned vocabulary** with Meta's official MCP server so agents transfer cleanly between both.
 - **Sign in with Meta (Facebook Login)** — replaces shared PINs. Each user lands their own long-lived (60-day) Meta token.
 - **System User token registry** — for tokens that don't expire, register them per user from the consent UI.
@@ -94,7 +94,7 @@ When to use which:
 - **Async reports with safe polling** — `ads_run_report_and_wait` one-shot with 5 s-min / 60 s-max backoff, proper `Job Failed` / `Job Skipped` handling.
 - **Retry logic** — exponential backoff on truly transient errors only (never on throttled requests).
 
-## Tools (96 total)
+## Tools (97 total)
 
 All tools use the `ads_*` naming convention, aligned with Meta's official MCP server. Read tools declare `readOnlyHint: true`; mutating tools declare `destructiveHint` / `idempotentHint` and prefix descriptions with `⚠️ Modifies live ads/account data.`
 
@@ -118,7 +118,7 @@ All tools use the `ads_*` naming convention, aligned with Meta's official MCP se
 | Rules | 5 | Automated rules and rule details |
 | A/B Testing | 3 | Ad study creation and inspection |
 | Reports | 4 | Async report creation, status, retrieval, and one-shot run+wait |
-| Billing | 3 | Billing info and spend limits |
+| Billing | 4 | Billing info, spend limits, and invoices (`ads_get_invoices`) |
 | Diagnostics | 3 | `ads_get_opportunity_score`, `ads_get_dataset_quality`, `ads_get_errors` |
 | Help search | 1 | `ads_get_help_article` — curated Meta Business Help Center search |
 | Agency macros | 2 | `ads_diagnose_underperformance`, `ads_portfolio_summary` (cross-account) |

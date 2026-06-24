@@ -3,12 +3,13 @@ import { registerAllTools } from "../../src/tools/index.js";
 import { createMockMcpServer } from "../setup.js";
 
 describe("registerAllTools", () => {
-  it("registers exactly 96 tools total", () => {
+  it("registers exactly 97 tools total", () => {
     // 79 v2 tools renamed (with account_insights removed → 79) + 14 new in v3 +
-    //   3 audience-sharing tools (share / unshare / get-shared-accounts).
+    //   3 audience-sharing tools (share / unshare / get-shared-accounts) +
+    //   1 invoices tool (ads_get_invoices).
     const server = createMockMcpServer();
     registerAllTools(server as never);
-    expect(server.registerTool).toHaveBeenCalledTimes(96);
+    expect(server.registerTool).toHaveBeenCalledTimes(97);
   });
 
   it("registers all tools with unique names", () => {
@@ -110,6 +111,7 @@ describe("registerAllTools", () => {
     expect(names).toContain("ads_get_ad_studies");
     expect(names).toContain("ads_create_async_report");
     expect(names).toContain("ads_get_billing_info");
+    expect(names).toContain("ads_get_invoices");
 
     // Renamed in v3
     expect(names).toContain("ads_get_pages_for_business");
@@ -136,7 +138,9 @@ describe("registerAllTools", () => {
     const campaignTools = names.filter((n) => n.includes("campaign"));
     expect(campaignTools.length).toBeGreaterThanOrEqual(4);
 
-    const billingTools = names.filter((n) => n.includes("billing") || n.includes("spend"));
-    expect(billingTools.length).toBeGreaterThanOrEqual(3);
+    const billingTools = names.filter(
+      (n) => n.includes("billing") || n.includes("spend") || n.includes("invoice"),
+    );
+    expect(billingTools.length).toBeGreaterThanOrEqual(4);
   });
 });

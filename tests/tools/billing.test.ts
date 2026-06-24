@@ -12,10 +12,10 @@ describe("registerBillingTools", () => {
     vi.restoreAllMocks();
   });
 
-  it("registers exactly 3 tools", () => {
+  it("registers exactly 4 tools", () => {
     const server = createMockMcpServer();
     registerBillingTools(server as never);
-    expect(server.registerTool).toHaveBeenCalledTimes(3);
+    expect(server.registerTool).toHaveBeenCalledTimes(4);
   });
 
   it("registers tools with correct names", () => {
@@ -26,6 +26,7 @@ describe("registerBillingTools", () => {
       "ads_get_billing_info",
       "ads_get_spend_limit",
       "ads_update_spend_cap",
+      "ads_get_invoices",
     ]);
   });
 
@@ -120,6 +121,90 @@ describe("registerBillingTools", () => {
       };
 
       expect(result.content[0].text).toContain("No limit (removed)");
+    });
+  });
+
+  describe("ads_get_invoices handler", () => {
+    it("lists invoices for a business_id with their PDF links", async () => {
+      const server = createMockMcpServer();
+      registerBillingTools(server as never);
+
+      const fetchMock = vi.fn().mockResolvedValue(
+        mockFetchResponse({
+          data: [
+            {
+              id: "9001",
+              invoice_id: "INV-2026-001",
+              billing_period: "2026-05",
+              amount_due: "1500.00",
+              currency: "USD",
+              payment_status: "PAID",
+              due_date: "2026-06-15",
+              download_uri: "https://business.facebook.com/invoice/INV-2026-001.pdf",
+            },
+          ],
+        }),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+
+      const handler = server._registeredTools[3].handler;
+      const result = (await handler({ business_id: "100" })) as {
+        content: Array<{ type: string; text: string }>;
+      };
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(fetchMock.mock.calls[0][0] as string).toContain("/100/business_invoices");
+      expect(result.content[0].text).toContain("INV-2026-001");
+      expect(result.content[0].text).toContain("PAID");
+      expect(result.content[0].text).toContain("https://business.facebook.com/invoice/INV-2026-001.pdf");
+    });
+
+    it("resolves the business from account_id before fetching invoices", async () => {
+      const server = createMockMcpServer();
+      registerBillingTools(server as never);
+
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(mockFetchResponse({ business: { id: "100", name: "Biz" } }))
+        .mockResolvedValueOnce(
+          mockFetchResponse({
+            data: [{ id: "9001", invoice_id: "INV-1", payment_status: "NOT_PAID" }],
+          }),
+        );
+      vi.stubGlobal("fetch", fetchMock);
+
+      const handler = server._registeredTools[3].handler;
+      const result = (await handler({ account_id: "123" })) as {
+        content: Array<{ type: string; text: string }>;
+      };
+
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(fetchMock.mock.calls[0][0] as string).toContain("/act_123");
+      expect(fetchMock.mock.calls[1][0] as string).toContain("/100/business_invoices");
+      expect(result.content[0].text).toContain("INV-1");
+    });
+
+    it("returns an explanatory message when there are no invoices", async () => {
+      const server = createMockMcpServer();
+      registerBillingTools(server as never);
+
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockFetchResponse({ data: [] })));
+
+      const handler = server._registeredTools[3].handler;
+      const result = (await handler({ business_id: "100" })) as {
+        content: Array<{ type: string; text: string }>;
+      };
+
+      expect(result.content[0].text).toContain("No invoices found");
+      expect(result.content[0].text).toContain("FINANCE");
+    });
+
+    it("throws when neither business_id nor account_id is provided", async () => {
+      const server = createMockMcpServer();
+      registerBillingTools(server as never);
+
+      const handler = server._registeredTools[3].handler;
+      await expect(handler({})).rejects.toThrow(/business_id or account_id/);
     });
   });
 });
