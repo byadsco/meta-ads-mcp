@@ -797,15 +797,15 @@ export function registerAdSetTools(server: McpServer): void {
   server.registerTool(
     "ads_create_ad_set",
     {
-      description: `${WRITE_WARNING}Create a new ad set within a campaign. Requires targeting specification, optimization goal, budget, and destination_type (required for ODAX campaigns). Common destination_type values: WEBSITE (traffic/sales to website), APP (app installs), MESSENGER/WHATSAPP/INSTAGRAM_DIRECT (messaging), ON_AD (lead forms, instant experiences). Ad sets are created in PAUSED status by default.`,
+      description: `${WRITE_WARNING}Create a new ad set within a campaign. Requires targeting specification, optimization goal, and destination_type (required for ODAX campaigns). Budget belongs at exactly one level: when the parent campaign has either daily_budget or lifetime_budget (campaign budget / CBO), omit both ad-set budget fields. Only pass daily_budget or lifetime_budget here for ad-set budget / ABO campaigns. Common destination_type values: WEBSITE (traffic/sales to website), APP (app installs), MESSENGER/WHATSAPP/INSTAGRAM_DIRECT (messaging), ON_AD (lead forms, instant experiences). Ad sets are created in PAUSED status by default.`,
       inputSchema: {
         account_id: z.string().describe("Ad account ID"),
         campaign_id: z.string().describe("Parent campaign ID"),
         name: z.string().min(1).describe("Ad set name"),
         destination_type: destinationTypeEnum.describe("Where the ad traffic is directed. Required for ODAX campaigns. Common values: WEBSITE (website traffic/conversions), APP (app installs), MESSENGER (Messenger conversations), WHATSAPP (WhatsApp conversations), INSTAGRAM_DIRECT (Instagram DMs), ON_AD (lead forms, instant experiences, post engagement), ON_VIDEO (video views), ON_PAGE (page engagement), SHOP_AUTOMATIC (shop)"),
         status: z.enum(["ACTIVE", "PAUSED"]).default("PAUSED"),
-        daily_budget: z.number().optional().describe("Daily budget in cents (e.g., 2000 = $20.00)"),
-        lifetime_budget: z.number().optional().describe("Lifetime budget in cents"),
+        daily_budget: z.number().optional().describe("Ad-set daily budget in cents (e.g., 2000 = $20.00). Omit when the parent campaign has a daily or lifetime budget."),
+        lifetime_budget: z.number().optional().describe("Ad-set lifetime budget in cents. Omit when the parent campaign has a daily or lifetime budget."),
         optimization_goal: optimizationGoalEnum.describe("Optimization goal"),
         billing_event: billingEventEnum.default("IMPRESSIONS"),
         bid_amount: z.number().optional().describe("Bid cap in cents"),
