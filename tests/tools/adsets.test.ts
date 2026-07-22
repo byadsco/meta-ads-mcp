@@ -625,6 +625,34 @@ describe("registerAdSetTools", () => {
     });
   });
 
+  describe("ads_create_ad_set handler", () => {
+    it("does not send an ad-set budget when both optional budget fields are omitted", async () => {
+      const server = createMockMcpServer();
+      registerAdSetTools(server as never);
+
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockFetchResponse({ id: "2001" })));
+
+      const tool = server._registeredTools.find((t) => t.name === "ads_create_ad_set");
+      expect(tool).toBeDefined();
+
+      await tool!.handler({
+        account_id: "act_123",
+        campaign_id: "1001",
+        name: "Campaign-budget ad set",
+        destination_type: "WEBSITE",
+        status: "PAUSED",
+        optimization_goal: "LINK_CLICKS",
+        billing_event: "IMPRESSIONS",
+        targeting: { geo_locations: { countries: ["MX"] } },
+      });
+
+      const call = vi.mocked(fetch).mock.calls[0];
+      const params = new URLSearchParams(call[1]?.body as string);
+      expect(params.has("daily_budget")).toBe(false);
+      expect(params.has("lifetime_budget")).toBe(false);
+    });
+  });
+
   describe("ads_update_ad_set handler", () => {
     it("issues POST /<ad_set_id> with only the budget field and confirms success", async () => {
       const server = createMockMcpServer();
