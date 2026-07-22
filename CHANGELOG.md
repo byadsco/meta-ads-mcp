@@ -7,6 +7,18 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [3.4.1] — 2026-07-22
+
+### Changed
+
+- **`ads_create_ad_set` budget guidance** (#97, thanks @gitlares) — the tool
+  description no longer claims a budget is required. It now documents that
+  budget belongs at exactly one level: omit both ad-set budget fields when the
+  parent campaign owns a daily/lifetime budget (CBO), and only pass them for
+  ABO campaigns. `daily_budget` / `lifetime_budget` field descriptions updated
+  to match, plus a regression test proving omitted budget fields are not sent
+  to Meta.
+
 ## [3.4.0] — 2026-07-22
 
 ### Added
