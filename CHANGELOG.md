@@ -9,6 +9,30 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
+- **WhatsApp Business management (27 new `whatsapp_*` tools)** — full
+  management surface for the WhatsApp Business Platform via the Graph API,
+  in four new modules:
+  - `src/tools/whatsapp.ts` (8): WABA discovery
+    (`whatsapp_get_business_accounts`, with automatic `/me/businesses`
+    scanning), phone number list/details, register/deregister,
+    request/verify ownership code, and business profile get/update.
+  - `src/tools/whatsapp-templates.ts` (6): message template CRUD
+    (`whatsapp_get_templates`, `whatsapp_create_template`,
+    `whatsapp_update_template`, `whatsapp_delete_template`) plus WABA
+    analytics (`whatsapp_get_analytics` — MESSAGING / CONVERSATION /
+    PRICING families) and `whatsapp_get_template_analytics`.
+  - `src/tools/whatsapp-flows.ts` (6): WhatsApp Flows lifecycle — list,
+    create (inline Flow JSON), update (metadata + Flow JSON asset upload),
+    publish, deprecate (irreversible), delete (drafts only).
+  - `src/tools/whatsapp-config.ts` (7): QR code deep links
+    (`message_qrdls` CRUD) and webhook subscription management
+    (`subscribed_apps` get/subscribe/unsubscribe). No webhook receiver
+    endpoint is included — events go to the Meta App's configured webhook.
+  Message sending and media upload are intentionally out of scope.
+  The OAuth flow now requests the `whatsapp_business_management` scope;
+  previously issued tokens must re-authorize before `whatsapp_*` tools work.
+  `MetaApiClient.delete()` now accepts optional query params (needed for
+  template deletion by name). Tool count: 97 → 124.
 - **`ads_get_invoices`** — read a business's invoices via Meta's
   `GET /{business_id}/business_invoices` edge, returning each invoice's amount,
   billing period, payment status, and PDF download link (`download_uri` /

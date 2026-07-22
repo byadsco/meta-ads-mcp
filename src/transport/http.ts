@@ -233,6 +233,7 @@ function renderConsentPage(ctx: ConsentContext): string {
         <li>• Leer y gestionar cuentas publicitarias de Meta</li>
         <li>• Crear, actualizar y pausar campañas</li>
         <li>• Acceder a reportes e insights</li>
+        <li>• Gestionar WhatsApp Business (números, plantillas, flows)</li>
       </ul>
     </div>
 

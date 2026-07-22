@@ -24,6 +24,10 @@ import { registerEntityTools } from "./entities.js";
 import { registerDiagnosticTools } from "./diagnostics.js";
 import { registerHelpTools } from "./help.js";
 import { registerMacroTools } from "./macros.js";
+import { registerWhatsAppTools } from "./whatsapp.js";
+import { registerWhatsAppTemplateTools } from "./whatsapp-templates.js";
+import { registerWhatsAppFlowTools } from "./whatsapp-flows.js";
+import { registerWhatsAppConfigTools } from "./whatsapp-config.js";
 
 /**
  * Register all Meta Ads tools on the MCP server.
@@ -69,8 +73,14 @@ export function registerAllTools(server: McpServer): void {
   // ─── Instagram ──────────────────────────────────────────
   registerInstagramTools(server);    // 2 tools — IG account & media lookup
 
+  // ─── WhatsApp Business ──────────────────────────────────
+  registerWhatsAppTools(server);         // 8 tools — WABAs, phone numbers, business profile
+  registerWhatsAppTemplateTools(server); // 6 tools — message templates + analytics
+  registerWhatsAppFlowTools(server);     // 6 tools — WhatsApp Flows lifecycle
+  registerWhatsAppConfigTools(server);   // 7 tools — QR deep links + webhook subscriptions
+
   // ─── Token Management ────────────────────────────────────
   registerTokenTools(server);        // 4 tools — list / set-active / register / delete
 
-  // Total: 97 tools (79 renamed + 14 new in v3 + 3 audience-sharing + 1 invoices)
+  // Total: 124 tools (79 renamed + 14 new in v3 + 3 audience-sharing + 1 invoices + 27 WhatsApp)
 }
