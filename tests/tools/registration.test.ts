@@ -3,13 +3,14 @@ import { registerAllTools } from "../../src/tools/index.js";
 import { createMockMcpServer } from "../setup.js";
 
 describe("registerAllTools", () => {
-  it("registers exactly 97 tools total", () => {
+  it("registers exactly 124 tools total", () => {
     // 79 v2 tools renamed (with account_insights removed → 79) + 14 new in v3 +
     //   3 audience-sharing tools (share / unshare / get-shared-accounts) +
-    //   1 invoices tool (ads_get_invoices).
+    //   1 invoices tool (ads_get_invoices) +
+    //   27 WhatsApp Business tools (whatsapp_*).
     const server = createMockMcpServer();
     registerAllTools(server as never);
-    expect(server.registerTool).toHaveBeenCalledTimes(97);
+    expect(server.registerTool).toHaveBeenCalledTimes(124);
   });
 
   it("registers all tools with unique names", () => {
@@ -21,14 +22,24 @@ describe("registerAllTools", () => {
     expect(uniqueNames.size).toBe(names.length);
   });
 
-  it("all tool names start with ads_ (no meta_ prefix)", () => {
+  it("all tool names start with ads_ or whatsapp_ (no meta_ prefix)", () => {
     const server = createMockMcpServer();
     registerAllTools(server as never);
 
     for (const tool of server._registeredTools) {
-      expect(tool.name).toMatch(/^ads_/);
+      expect(tool.name).toMatch(/^(ads|whatsapp)_/);
       expect(tool.name).not.toMatch(/^meta_/);
     }
+  });
+
+  it("registers exactly 27 whatsapp_ tools", () => {
+    const server = createMockMcpServer();
+    registerAllTools(server as never);
+
+    const whatsappTools = server._registeredTools.filter((t) =>
+      t.name.startsWith("whatsapp_"),
+    );
+    expect(whatsappTools.length).toBe(27);
   });
 
   it("all tools have non-empty descriptions", () => {
@@ -112,6 +123,16 @@ describe("registerAllTools", () => {
     expect(names).toContain("ads_create_async_report");
     expect(names).toContain("ads_get_billing_info");
     expect(names).toContain("ads_get_invoices");
+
+    // WhatsApp Business tools
+    expect(names).toContain("whatsapp_get_business_accounts");
+    expect(names).toContain("whatsapp_get_phone_numbers");
+    expect(names).toContain("whatsapp_get_templates");
+    expect(names).toContain("whatsapp_create_template");
+    expect(names).toContain("whatsapp_delete_template");
+    expect(names).toContain("whatsapp_get_flows");
+    expect(names).toContain("whatsapp_get_qr_codes");
+    expect(names).toContain("whatsapp_subscribe_webhook");
 
     // Renamed in v3
     expect(names).toContain("ads_get_pages_for_business");

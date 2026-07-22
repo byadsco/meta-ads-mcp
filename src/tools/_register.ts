@@ -47,3 +47,6 @@ export const TOKEN: ToolAnnotations = {
 
 /** Prefix every write-tool description so clients that ignore annotations still see the warning. */
 export const WRITE_WARNING = "⚠️ Modifies live ads/account data. ";
+
+/** Same, for WhatsApp Business tools. */
+export const WHATSAPP_WRITE_WARNING = "⚠️ Modifies live WhatsApp Business data. ";

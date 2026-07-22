@@ -330,6 +330,30 @@ describe("MetaApiClient", () => {
       expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
     });
 
+    it.each([
+      "/111/message_templates",
+      "/111/flows",
+      "/333/message_qrdls",
+      "/333/request_code",
+    ])("does NOT retry POST to WhatsApp creating edge %s on 5xx", async (path) => {
+      const retryClient = new MetaApiClient({
+        maxRetries: 3,
+        timeout: 5000,
+      });
+
+      const serverErrorResponse = mockFetchResponse({
+        error: { message: "Server error", type: "API_ERROR", code: 1 },
+      });
+
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(serverErrorResponse));
+
+      // WhatsApp creating edges live on plain-numeric WABA/phone paths. A retry
+      // after a server-side success would mint a duplicate flow/QR/template or a
+      // second real SMS, so they must not be transport-retried.
+      await expect(retryClient.post(path, { name: "x" })).rejects.toThrow();
+      expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
+    });
+
     it("uses caller-provided account scope for /copies write pacing", async () => {
       const scopedClient = new MetaApiClient({
         maxRetries: 0,
