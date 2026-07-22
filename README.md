@@ -17,7 +17,7 @@
 - [Who is this for?](#who-is-this-for)
 - [Aligned with Meta's official MCP](#aligned-with-metas-official-mcp)
 - [Features](#features)
-- [Tools (97 total)](#tools-97-total)
+- [Tools (124 total)](#tools-124-total)
 - [Quick start](#quick-start)
 - [Authentication — three modes](#authentication--three-modes)
 - [Setting up Sign in with Meta](#setting-up-sign-in-with-meta)
@@ -62,7 +62,7 @@ both servers.
 | | Meta's official MCP (`mcp.facebook.com/ads`) | This project |
 |---|---|---|
 | Auth model | Per-user OAuth in your AI client | **Multi-tenant**: agency operator handles N client accounts from one server |
-| Tool surface | 29 tools (campaigns, ads, catalogs, 5 insight views, opportunity_score, dataset, errors, help) | **97 tools** including the official 29-equivalent + audiences, lookalikes, lead forms, automated rules, A/B studies, async reports, billing invoices, custom conversions, asset uploads, comment moderation, cross-account macros |
+| Tool surface | 29 tools (campaigns, ads, catalogs, 5 insight views, opportunity_score, dataset, errors, help) | **124 tools** including the official 29-equivalent + audiences, lookalikes, lead forms, automated rules, A/B studies, async reports, billing invoices, custom conversions, asset uploads, comment moderation, cross-account macros, and full WhatsApp Business management (templates, phone numbers, flows, QR codes) |
 | Hosting | Hosted by Meta | Self-hosted on Cloud Run / your infra; tokens encrypted at rest in Firestore |
 | Cross-account | Per-user, single Meta login | Yes — `ads_portfolio_summary` aggregates across N accounts |
 | Token control | Lives in your AI client | Server-side System User token registry per agency operator |
@@ -78,7 +78,7 @@ When to use which:
 
 ## Features
 
-- **97 tools** covering campaign management, creatives, targeting, audiences, reporting, comments, billing, invoices, tokens, Instagram workflows, rate-limit observability, semantic insight views, diagnostics, help-center search, and agency-tier cross-account macros.
+- **124 tools** covering campaign management, creatives, targeting, audiences, reporting, comments, billing, invoices, tokens, Instagram workflows, WhatsApp Business management, rate-limit observability, semantic insight views, diagnostics, help-center search, and agency-tier cross-account macros.
 - **Aligned vocabulary** with Meta's official MCP server so agents transfer cleanly between both.
 - **Sign in with Meta (Facebook Login)** — replaces shared PINs. Each user lands their own long-lived (60-day) Meta token.
 - **System User token registry** — for tokens that don't expire, register them per user from the consent UI.
@@ -94,9 +94,9 @@ When to use which:
 - **Async reports with safe polling** — `ads_run_report_and_wait` one-shot with 5 s-min / 60 s-max backoff, proper `Job Failed` / `Job Skipped` handling.
 - **Retry logic** — exponential backoff on truly transient errors only (never on throttled requests).
 
-## Tools (97 total)
+## Tools (124 total)
 
-All tools use the `ads_*` naming convention, aligned with Meta's official MCP server. Read tools declare `readOnlyHint: true`; mutating tools declare `destructiveHint` / `idempotentHint` and prefix descriptions with `⚠️ Modifies live ads/account data.`
+Ads tools use the `ads_*` naming convention, aligned with Meta's official MCP server; WhatsApp Business tools use `whatsapp_*`. Read tools declare `readOnlyHint: true`; mutating tools declare `destructiveHint` / `idempotentHint` and prefix descriptions with a `⚠️` warning.
 
 | Category | Tools | Description |
 |---|---|---|
@@ -125,6 +125,12 @@ All tools use the `ads_*` naming convention, aligned with Meta's official MCP se
 | Instagram | 2 | IG account and media lookup |
 | Tokens | 4 | List / set-active / register / delete |
 | Rate Status | 1 | Live view of quota usage, open circuits and write-pacer state |
+| WhatsApp — WABAs & phones | 8 | `whatsapp_get_business_accounts`, phone number list/register/deregister/verify, business profile get/update |
+| WhatsApp — Templates & analytics | 6 | Message template CRUD (`whatsapp_create_template`, edit, delete), WABA analytics (messaging/conversation/pricing), per-template analytics |
+| WhatsApp — Flows | 6 | Flow list/create/update (incl. Flow JSON upload), publish, deprecate, delete |
+| WhatsApp — QR & webhooks | 7 | QR deep-link CRUD (`message_qrdls`), webhook subscription get/subscribe/unsubscribe |
+
+WhatsApp tools require the `whatsapp_business_management` permission. Tokens issued before this scope was added must be re-authorized (sign in again through the OAuth flow) before the `whatsapp_*` tools will work, and the Meta App must have the **WhatsApp product** added in the developer dashboard.
 
 Tool definitions live under [src/tools/](src/tools/), wired together in [src/tools/index.ts](src/tools/index.ts).
 
@@ -204,7 +210,7 @@ The repo is public but the deployment is private: nothing sensitive lives in the
 1. **Create a Meta App** at <https://developers.facebook.com>:
    - Add the *Facebook Login* product.
    - In *Facebook Login → Settings*, set the Valid OAuth Redirect URI to `<SERVER_URL>/auth/meta/callback`.
-   - In *App Review → Permissions and Features*, request `ads_management`, `ads_read`, `pages_show_list`, `pages_read_engagement`, `business_management`, `email`. While the app is in *Development* mode, only people listed under *Roles* can sign in.
+   - In *App Review → Permissions and Features*, request `ads_management`, `ads_read`, `pages_show_list`, `pages_read_engagement`, `business_management`, `whatsapp_business_management`, `email`. While the app is in *Development* mode, only people listed under *Roles* can sign in. For the `whatsapp_*` tools, also add the **WhatsApp product** to the app.
 
 2. **Provision Firestore** in your GCP project:
    - In the Cloud Console: Firestore → Create database → Native mode → pick a region.

@@ -109,8 +109,11 @@ export class MetaApiClient {
     return this.execute<T>("POST", url, path, { body: formData }, true);
   }
 
-  async delete<T>(path: string): Promise<T> {
-    const url = this.buildUrl(path);
+  async delete<T>(
+    path: string,
+    params?: Record<string, string | number | boolean | undefined>,
+  ): Promise<T> {
+    const url = this.buildUrl(path, params);
     return this.execute<T>("DELETE", url, path);
   }
 
@@ -206,11 +209,16 @@ export class MetaApiClient {
     // mint duplicates (e.g. two ad sets for one user intent). The /<id>/copies
     // edge (ad/ad set/campaign duplication) creates a resource on a non-act_
     // path, so it must be classed as creating too — otherwise a retried copy
-    // mints a duplicate ad. Other POSTs (updates on /<id>) and DELETEs are
+    // mints a duplicate ad. The WhatsApp creating edges live on plain-numeric
+    // WABA/phone paths: /message_templates, /flows, /message_qrdls create
+    // resources, and /request_code sends a real SMS/voice call — all mint
+    // duplicates on retry. Other POSTs (updates on /<id>) and DELETEs are
     // idempotent at the API level.
     const isCreatingRequest =
       method === "POST" &&
-      (/^\/?act_[A-Za-z0-9]+\//.test(path) || /\/copies$/.test(path));
+      (/^\/?act_[A-Za-z0-9]+\//.test(path) ||
+        /\/copies$/.test(path) ||
+        /\/(message_templates|flows|message_qrdls|request_code)$/.test(path));
     const canRetryTransport = !isCreatingRequest;
 
     let lastError: Error | undefined;
