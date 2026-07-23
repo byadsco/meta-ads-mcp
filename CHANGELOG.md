@@ -9,6 +9,16 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [3.4.1] — 2026-07-22
 
+### Security
+
+- **`npm audit` clean — 0 vulnerabilities.** Bumped `tsx` 4.21.0 → 4.23.1 and
+  `vitest` 4.1.8 → 4.1.10, pulling `esbuild` 0.28.1 (GHSA-g7r4-m6w7-qqqr,
+  dev-only arbitrary file read via dev server on Windows). Added an npm
+  override forcing `@hono/node-server` ^2.0.5 (resolved 2.0.11) inside
+  `@modelcontextprotocol/sdk`, fixing GHSA-frvp-7c67-39w9 (path traversal in
+  `serve-static` on Windows via encoded backslash). Full test suite, build,
+  and an HTTP-transport smoke test pass with the override.
+
 ### Changed
 
 - **`ads_create_ad_set` budget guidance** (#97, thanks @gitlares) — the tool
