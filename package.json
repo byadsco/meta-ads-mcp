@@ -1,6 +1,6 @@
 {
   "name": "@byadsco/meta-ads-mcp",
-  "version": "3.4.0",
+  "version": "3.4.1",
   "description": "MCP server for Meta Ads (Facebook/Instagram) management - agency multi-account",
   "author": {
     "name": "Santiago Bastidas",
@@ -54,6 +54,11 @@
     "pino": "^9.6.0",
     "pino-pretty": "^13.0.0",
     "zod": "^3.24.0"
+  },
+  "overrides": {
+    "@modelcontextprotocol/sdk": {
+      "@hono/node-server": "^2.0.5"
+    }
   },
   "devDependencies": {
     "@types/cookie-parser": "^1.4.10",
