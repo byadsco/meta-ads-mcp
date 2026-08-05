@@ -1,6 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { registerCreativeTools } from "../../src/tools/creatives.js";
-import { CREATIVE_DEFAULT_FIELDS } from "../../src/meta/types/creative.js";
+import {
+  CREATIVE_DEFAULT_FIELDS,
+  SYNTHETIC_CREATIVE_FIELDS,
+} from "../../src/meta/types/creative.js";
 import {
   createMockMcpServer,
   setupTestToken,
@@ -18,8 +21,10 @@ describe("registerCreativeTools", () => {
     vi.restoreAllMocks();
   });
 
-  it("never requests effective_link_url — not a real Meta AdCreative field (Graph API rejects it with #100)", () => {
-    expect(CREATIVE_DEFAULT_FIELDS).not.toContain("effective_link_url");
+  it("never requests a synthetic field from Meta — the Graph API rejects them with #100", () => {
+    for (const synthetic of SYNTHETIC_CREATIVE_FIELDS) {
+      expect(CREATIVE_DEFAULT_FIELDS).not.toContain(synthetic);
+    }
   });
 
   it("registers exactly 9 tools", () => {
@@ -75,7 +80,7 @@ describe("registerCreativeTools", () => {
       const url = new URL(vi.mocked(fetch).mock.calls[0][0] as string);
       expect(url.pathname).toContain("/40123");
       expect(url.searchParams.get("fields")).toBe(
-        "id,name,title,body,image_hash,image_url,thumbnail_url,object_story_spec,asset_feed_spec,call_to_action_type,link_url,effective_object_story_id,status",
+        "id,name,title,body,image_hash,image_url,thumbnail_url,object_story_spec,asset_feed_spec,call_to_action_type,link_url,effective_object_story_id,status,url_tags",
       );
     });
 
@@ -127,6 +132,160 @@ describe("registerCreativeTools", () => {
 
       expect(result.content[0].text).toContain("Link URL: https://ugc.byads.co/chile");
       expect(result.content[1].text).toContain("\"effective_link_url\": \"https://ugc.byads.co/chile\"");
+    });
+
+    it("accepts effective_link_url in fields by requesting its sources instead", async () => {
+      const server = createMockMcpServer();
+      registerCreativeTools(server as never);
+
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockFetchResponse({
+        id: "40777",
+        name: "Virtual Field Creative",
+        link_url: "https://byads.co/landing",
+      })));
+
+      const handler = server._registeredTools[1].handler;
+      const result = await handler({
+        creative_id: "40777",
+        fields: ["name", "effective_link_url"],
+      }) as { content: Array<{ type: string; text: string }> };
+
+      const fieldsParam = new URL(vi.mocked(fetch).mock.calls[0][0] as string)
+        .searchParams.get("fields");
+      expect(fieldsParam).toBe("name,link_url,object_story_spec,asset_feed_spec");
+      expect(fieldsParam).not.toContain("effective_link_url");
+      expect(result.content[1].text).toContain("\"effective_link_url\": \"https://byads.co/landing\"");
+    });
+
+    it("derives effective_link_url when it is the only requested field", async () => {
+      const server = createMockMcpServer();
+      registerCreativeTools(server as never);
+
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockFetchResponse({
+        id: "40778",
+        name: "Link Data Creative",
+        object_story_spec: {
+          page_id: "6001",
+          link_data: { link: "https://byads.co/promo" },
+        },
+      })));
+
+      const handler = server._registeredTools[1].handler;
+      const result = await handler({
+        creative_id: "40778",
+        fields: ["effective_link_url"],
+      }) as { content: Array<{ type: string; text: string }> };
+
+      const fieldsParam = new URL(vi.mocked(fetch).mock.calls[0][0] as string)
+        .searchParams.get("fields");
+      expect(fieldsParam).toBe("link_url,object_story_spec,asset_feed_spec");
+      expect(result.content[0].text).toContain("Link URL: https://byads.co/promo");
+    });
+
+    it("does not duplicate source fields already requested by the caller", async () => {
+      const server = createMockMcpServer();
+      registerCreativeTools(server as never);
+
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockFetchResponse({ id: "40779" })));
+
+      const handler = server._registeredTools[1].handler;
+      await handler({
+        creative_id: "40779",
+        fields: ["link_url", "effective_link_url"],
+      });
+
+      expect(new URL(vi.mocked(fetch).mock.calls[0][0] as string).searchParams.get("fields"))
+        .toBe("link_url,object_story_spec,asset_feed_spec");
+    });
+  });
+
+  describe("ads_get_ad_creatives handler", () => {
+    it("requests url_tags by default and reports them per creative", async () => {
+      const server = createMockMcpServer();
+      registerCreativeTools(server as never);
+
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockFetchResponse({
+        data: [{ id: "4001", name: "C1", url_tags: "utm_source=meta" }],
+      })));
+
+      const handler = server._registeredTools[0].handler;
+      const result = await handler({
+        ad_id: undefined,
+        account_id: "act_123",
+        limit: 25,
+        fields: undefined,
+      }) as { content: Array<{ type: string; text: string }> };
+
+      expect(new URL(vi.mocked(fetch).mock.calls[0][0] as string).searchParams.get("fields"))
+        .toContain("url_tags");
+      expect(result.content[0].text).toContain("utm_source=meta");
+    });
+
+    it("strips effective_link_url from caller fields and derives it per creative", async () => {
+      const server = createMockMcpServer();
+      registerCreativeTools(server as never);
+
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockFetchResponse({
+        data: [{
+          id: "4002",
+          name: "C2",
+          object_story_spec: {
+            page_id: "6001",
+            video_data: {
+              video_id: "8001",
+              call_to_action: { type: "SHOP_NOW", value: { link: "https://byads.co/shop" } },
+            },
+          },
+        }],
+      })));
+
+      const handler = server._registeredTools[0].handler;
+      const result = await handler({
+        ad_id: undefined,
+        account_id: "act_123",
+        limit: 25,
+        fields: ["id", "effective_link_url"],
+      }) as { content: Array<{ type: string; text: string }> };
+
+      expect(new URL(vi.mocked(fetch).mock.calls[0][0] as string).searchParams.get("fields"))
+        .toBe("id,link_url,object_story_spec,asset_feed_spec");
+      expect(result.content[1].text).toContain("\"effective_link_url\": \"https://byads.co/shop\"");
+    });
+  });
+
+  describe("ads_update_ad_creative handler", () => {
+    it("refuses an empty update instead of reporting a false success", async () => {
+      const server = createMockMcpServer();
+      registerCreativeTools(server as never);
+
+      vi.stubGlobal("fetch", vi.fn());
+
+      const handler = server._registeredTools[3].handler;
+      await expect(handler({ creative_id: "4001", name: undefined }))
+        .rejects.toThrow(/immutable/i);
+      await expect(handler({ creative_id: "4001", name: undefined }))
+        .rejects.toThrow(/ads_update_ad_url_tags/);
+
+      expect(vi.mocked(fetch)).not.toHaveBeenCalled();
+    });
+
+    it("updates the creative name", async () => {
+      const server = createMockMcpServer();
+      registerCreativeTools(server as never);
+
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockFetchResponse({ success: true })));
+
+      const handler = server._registeredTools[3].handler;
+      const result = await handler({
+        creative_id: "4001",
+        name: "Renamed Creative",
+      }) as { content: Array<{ type: string; text: string }> };
+
+      const call = vi.mocked(fetch).mock.calls[0];
+      expect(new URL(call[0] as string).pathname).toMatch(/\/4001$/);
+      expect(call[1]?.method).toBe("POST");
+      expect(new URLSearchParams(call[1]?.body as string).get("name")).toBe("Renamed Creative");
+      expect(result.content[0].text).toContain("updated successfully");
     });
   });
 

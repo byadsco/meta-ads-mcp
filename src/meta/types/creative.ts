@@ -32,7 +32,19 @@ export interface AdCreative {
   effective_link_url?: string;
   effective_object_story_id?: string;
   status?: string;
+  url_tags?: string;
+  instagram_user_id?: string;
 }
+
+/** Fields this server derives locally; they are stripped before hitting Meta. */
+export const SYNTHETIC_CREATIVE_FIELDS = ["effective_link_url"] as const;
+
+/** Real fields extractEffectiveLinkUrl reads to derive effective_link_url. */
+export const EFFECTIVE_LINK_URL_SOURCE_FIELDS = [
+  "link_url",
+  "object_story_spec",
+  "asset_feed_spec",
+] as const;
 
 export interface ImageUploadResult {
   images: Record<
@@ -61,4 +73,5 @@ export const CREATIVE_DEFAULT_FIELDS = [
   "link_url",
   "effective_object_story_id",
   "status",
+  "url_tags",
 ] as const;

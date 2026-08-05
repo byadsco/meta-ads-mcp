@@ -3,7 +3,11 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { metaApiClient } from "../meta/client.js";
 import { normalizeAccountId, validateMetaId } from "../utils/format.js";
 import { buildFieldsParam } from "../utils/validation.js";
-import { CREATIVE_DEFAULT_FIELDS } from "../meta/types/creative.js";
+import {
+  CREATIVE_DEFAULT_FIELDS,
+  EFFECTIVE_LINK_URL_SOURCE_FIELDS,
+  SYNTHETIC_CREATIVE_FIELDS,
+} from "../meta/types/creative.js";
 import { IMAGE_DEFAULT_FIELDS } from "../meta/types/image.js";
 import { VIDEO_DEFAULT_FIELDS, VIDEO_DETAIL_FIELDS } from "../meta/types/video.js";
 import type { AdCreative, AdImage, AdVideo, MetaApiResponse } from "../meta/types/index.js";
@@ -75,21 +79,50 @@ function extractEffectiveLinkUrl(creative: AdCreative): string | undefined {
   );
 }
 
+// Clients read effective_link_url off our responses and echo it back in `fields`.
+// It is derived here, not stored by Meta, so forwarding it would fail with #100:
+// strip it and request the fields it is derived from instead.
+function buildCreativeFieldsParam(fields?: string[]): string {
+  if (!fields || fields.length === 0) {
+    return buildFieldsParam(undefined, [...CREATIVE_DEFAULT_FIELDS]);
+  }
+
+  const synthetic = new Set<string>(SYNTHETIC_CREATIVE_FIELDS);
+  const requested = fields.filter((field) => !synthetic.has(field));
+
+  const expanded = fields.includes("effective_link_url")
+    ? [...new Set([...requested, ...EFFECTIVE_LINK_URL_SOURCE_FIELDS])]
+    : requested;
+
+  return buildFieldsParam(expanded, [...CREATIVE_DEFAULT_FIELDS]);
+}
+
+function withDerivedEffectiveLinkUrl(creative: AdCreative): AdCreative {
+  const effectiveLinkUrl = extractEffectiveLinkUrl(creative);
+  return effectiveLinkUrl && !creative.effective_link_url
+    ? { ...creative, effective_link_url: effectiveLinkUrl }
+    : creative;
+}
+
 export function registerCreativeTools(server: McpServer): void {
   // ─── Get Ad Creatives ────────────────────────────────────────
   server.registerTool(
     "ads_get_ad_creatives",
     {
-      description: "Get creative details for an ad or list creatives for an ad account.",
+      description: "Get creative details for an ad or list creatives for an ad account. Returns url_tags (UTM parameters) by default, so a single call can audit tracking across an account.",
       inputSchema: {
         ad_id: z.string().optional().describe("Ad ID to get creatives for"),
         account_id: z.string().optional().describe("Account ID to list all creatives"),
         limit: z.number().min(1).max(100).default(25),
+        fields: z
+          .array(z.string())
+          .optional()
+          .describe("Creative fields to request. 'effective_link_url' is a virtual field derived by this server (never sent to Meta) — requesting it fetches link_url, object_story_spec and asset_feed_spec instead."),
       },
       annotations: { ...READ },
     },
-    async ({ ad_id, account_id, limit }) => {
-      const fieldsParam = buildFieldsParam(undefined, [...CREATIVE_DEFAULT_FIELDS]);
+    async ({ ad_id, account_id, limit, fields }) => {
+      const fieldsParam = buildCreativeFieldsParam(fields);
 
       let path: string;
       if (ad_id) {
@@ -104,7 +137,7 @@ export function registerCreativeTools(server: McpServer): void {
         path,
         { fields: fieldsParam, limit },
       );
-      const creatives = response.data ?? [];
+      const creatives = (response.data ?? []).map(withDerivedEffectiveLinkUrl);
 
       const text =
         creatives.length === 0
@@ -112,7 +145,7 @@ export function registerCreativeTools(server: McpServer): void {
           : creatives
               .map(
                 (c) =>
-                  `• ${c.name ?? "Unnamed"} (${c.id}) — CTA: ${c.call_to_action_type ?? "N/A"} — Image: ${c.image_url ? "Yes" : "No"}`,
+                  `• ${c.name ?? "Unnamed"} (${c.id}) — CTA: ${c.call_to_action_type ?? "N/A"} — Image: ${c.image_url ? "Yes" : "No"} — UTMs: ${c.url_tags ?? "N/A"}`,
               )
               .join("\n");
 
@@ -129,30 +162,30 @@ export function registerCreativeTools(server: McpServer): void {
   server.registerTool(
     "ads_get_creative_details",
     {
-      description: "Get detailed information about a specific creative.",
+      description: "Get detailed information about a specific creative. 'effective_link_url' is a virtual field this server derives from link_url / object_story_spec / asset_feed_spec — it is accepted in `fields` but never forwarded to Meta.",
       inputSchema: {
         creative_id: z.string().describe("Creative ID"),
-        fields: z.array(z.string()).optional(),
+        fields: z
+          .array(z.string())
+          .optional()
+          .describe("Creative fields to request. 'effective_link_url' is a virtual field derived by this server (never sent to Meta) — requesting it fetches link_url, object_story_spec and asset_feed_spec instead."),
       },
       annotations: { ...READ },
     },
     async ({ creative_id, fields }) => {
       const id = validateMetaId(creative_id, "creative");
-      const fieldsParam = buildFieldsParam(fields, [...CREATIVE_DEFAULT_FIELDS]);
+      const fieldsParam = buildCreativeFieldsParam(fields);
       const creative = await metaApiClient.get<AdCreative>(`/${id}`, {
         fields: fieldsParam,
       });
-      const effectiveLinkUrl = extractEffectiveLinkUrl(creative);
-      const responseCreative =
-        effectiveLinkUrl && !creative.effective_link_url
-          ? { ...creative, effective_link_url: effectiveLinkUrl }
-          : creative;
+      const responseCreative = withDerivedEffectiveLinkUrl(creative);
 
       const lines: string[] = [
         `Creative: ${creative.name ?? "Unnamed"} (${creative.id})`,
         `Status: ${creative.status ?? "N/A"}`,
         `CTA: ${creative.call_to_action_type ?? "N/A"}`,
-        `Link URL: ${effectiveLinkUrl ?? "N/A"}`,
+        `Link URL: ${responseCreative.effective_link_url ?? "N/A"}`,
+        `UTMs (url_tags): ${creative.url_tags ?? "N/A"}`,
         `Post ID: ${creative.effective_object_story_id ?? "N/A"}`,
       ];
 
@@ -313,7 +346,7 @@ export function registerCreativeTools(server: McpServer): void {
   server.registerTool(
     "ads_update_ad_creative",
     {
-      description: `${WRITE_WARNING}Update an existing creative's name. Note: most creative fields are immutable after creation.`,
+      description: `${WRITE_WARNING}Update an existing creative's name. Every other creative field (content, links, url_tags) is immutable after creation — to change an ad's UTM parameters use ads_update_ad_url_tags, which clones the creative and repoints the ad.`,
       inputSchema: {
         creative_id: z.string().describe("Creative ID to update"),
         name: z.string().optional().describe("New name for the creative"),
@@ -321,6 +354,12 @@ export function registerCreativeTools(server: McpServer): void {
       annotations: { ...UPDATE },
     },
     async ({ creative_id, name }) => {
+      if (name === undefined) {
+        throw new Error(
+          "Nothing to update: name is the only mutable creative field. Content, links and url_tags are immutable after creation — use ads_update_ad_url_tags to change UTM parameters (it clones the creative and repoints the ad).",
+        );
+      }
+
       const id = validateMetaId(creative_id, "creative");
       const body: Record<string, string | number | boolean> = {};
       if (name !== undefined) body.name = name;
