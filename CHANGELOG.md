@@ -7,6 +7,16 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Security
+
+- **`npm audit` clean again — 0 vulnerabilities.** Advisories published after
+  v3.4.1 had turned CI red on `main`: `ip-address` (SSRF / trust-boundary
+  bypass via leading-zero octets, CIDR suffixes and IPv4-mapped IPv6),
+  `fast-uri` (host confusion via backslash authority introducer),
+  `brace-expansion` (DoS) and `hono` (ReDoS in CORS middleware). Resolved by
+  patch-level bumps of six transitive packages; lockfile only, no direct
+  dependency changed.
+
 ### Added
 
 - **`ads_update_ad_url_tags` — edit the UTM parameters of live ads (1-50 per
