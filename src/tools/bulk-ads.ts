@@ -12,8 +12,17 @@ const MAX_VIDEOS_PER_CALL = 20;
 
 // Cloud Run kills the request at 300s (--timeout=300 in deploy.yml). Finishing
 // under that is what keeps already-created ad IDs in the response: losing them
-// makes a retry create paid duplicates.
+// makes a retry create paid duplicates. A single Graph request can still take
+// up to its own timeout, so these reserves keep headroom rather than pretending
+// to be an exact clock.
 const BATCH_BUDGET_MS = 240_000;
+const ITEM_START_RESERVE_MS = 30_000;
+const FINALIZE_RESERVE_MS = 15_000;
+
+// A shared bad input (page_id, ad_set_id, creative option) fails every video the
+// same way. Meta reports it per request, so the only signal is the repetition:
+// stop rather than push 20 doomed uploads.
+const REPEATED_FAILURE_LIMIT = 2;
 
 interface VideoStatus {
   status?: { video_status?: string };
@@ -87,7 +96,7 @@ export function registerBulkAdTools(server: McpServer): void {
   server.registerTool(
     "ads_bulk_create_video_ads",
     {
-      description: `${WRITE_WARNING}Turn a list of public video URLs into ads in one call: uploads each video, waits for Meta to finish processing, auto-selects a thumbnail, builds the creative, and creates the ad in the given ad set. Ads are created PAUSED by default. Per-video copy overrides the shared defaults. A video rejected by Meta does not abort the rest — every item reports its own outcome and the stage it failed at — but an expired token, rate limit or abuse signal stops the batch immediately. The whole call is capped at ${BATCH_BUDGET_MS / 1000}s so it always returns the IDs it created; videos left unprocessed come back marked "skipped", and re-running with only those is safe. Use this instead of chaining ads_upload_ad_video → ads_create_ad_creative → ads_create_ad manually.`,
+      description: `${WRITE_WARNING}Turn a list of public video URLs into ads in one call: uploads each video, waits for Meta to finish processing, auto-selects a thumbnail, builds the creative, and creates the ad in the given ad set. Ads are created PAUSED by default. Per-video copy overrides the shared defaults. A video rejected by Meta does not abort the rest — every item reports its own outcome and the stage it failed at — but an expired token, rate limit or abuse signal stops the batch immediately, as does the same failure repeating (which means a shared input like page_id or ad_set_id is wrong). The whole call is capped at ${BATCH_BUDGET_MS / 1000}s so it always returns the IDs it created; videos left unprocessed come back marked "skipped", and re-running with only those is safe. Use this instead of chaining ads_upload_ad_video → ads_create_ad_creative → ads_create_ad manually.`,
       inputSchema: {
         account_id: z.string().describe("Ad account ID"),
         ad_set_id: z.string().describe("Ad set ID that will hold the new ads"),
@@ -144,18 +153,20 @@ export function registerBulkAdTools(server: McpServer): void {
         : undefined;
 
       const batchDeadline = Date.now() + BATCH_BUDGET_MS;
+      const remainingMs = () => batchDeadline - Date.now();
       const results: ItemResult[] = [];
       let systemicError: unknown;
+      let lastFailure: string | undefined;
+      let repeatedFailures = 0;
 
       for (const [index, video] of videos.entries()) {
         const adName = video.ad_name ?? video.video_name ?? `Video ad ${index + 1}`;
         const result: ItemResult = { file_url: video.file_url, ad_name: adName };
 
-        const remainingMs = batchDeadline - Date.now();
-        if (systemicError || remainingMs <= 0) {
+        if (systemicError || remainingMs() <= ITEM_START_RESERVE_MS) {
           result.skipped = true;
           result.error = systemicError
-            ? "Not attempted — the batch stopped after an account-wide error."
+            ? "Not attempted — the batch stopped after an error that affects every video."
             : "Not attempted — the batch time budget ran out. Re-run with the remaining videos.";
           results.push(result);
           continue;
@@ -179,7 +190,8 @@ export function registerBulkAdTools(server: McpServer): void {
           result.video_id = uploaded.id;
 
           stage = "processing";
-          const budgetSeconds = Math.min(max_wait_seconds, Math.floor(remainingMs / 1000));
+          const waitBudgetMs = Math.max(0, remainingMs() - FINALIZE_RESERVE_MS);
+          const budgetSeconds = Math.min(max_wait_seconds, Math.floor(waitBudgetMs / 1000));
           const ready = await waitForVideoReady(uploaded.id, budgetSeconds);
 
           stage = "creative";
@@ -240,10 +252,19 @@ export function registerBulkAdTools(server: McpServer): void {
             status,
           });
           result.ad_id = ad.id;
+          lastFailure = undefined;
+          repeatedFailures = 0;
         } catch (err) {
           result.error = err instanceof Error ? err.message : String(err);
           result.failed_stage = err instanceof StageError ? err.stage : stage;
-          if (!isItemScopedError(err)) systemicError = err;
+
+          const signature = `${result.failed_stage}:${result.error}`;
+          repeatedFailures = signature === lastFailure ? repeatedFailures + 1 : 1;
+          lastFailure = signature;
+
+          if (!isItemScopedError(err) || repeatedFailures >= REPEATED_FAILURE_LIMIT) {
+            systemicError = err;
+          }
         }
 
         results.push(result);
@@ -263,7 +284,7 @@ export function registerBulkAdTools(server: McpServer): void {
       if (systemicError) {
         lines.push(
           "",
-          `⚠️ The batch stopped early on an account-wide error: ${
+          `⚠️ The batch stopped early — this error affects every video, not just one: ${
             systemicError instanceof Error ? systemicError.message : String(systemicError)
           }`,
           "Fix that first, then re-run with the skipped videos only.",

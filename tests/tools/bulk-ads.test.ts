@@ -363,7 +363,7 @@ describe("registerBulkAdTools", () => {
       expect(payload[0].ad_id).toBe("ad_1");
       expect(payload[1].error).toBeTruthy();
       expect(payload[2].skipped).toBe(true);
-      expect(res.content[0].text).toContain("account-wide error");
+      expect(res.content[0].text).toContain("affects every video");
     }, 30_000);
 
     it("throws the account-wide error when nothing was created", async () => {
@@ -384,6 +384,104 @@ describe("registerBulkAdTools", () => {
         }),
       ).rejects.toThrow(/token|expired/i);
     });
+
+    it("stops after the same failure repeats, instead of burning the whole batch", async () => {
+      const tool = handlerFor("ads_bulk_create_video_ads");
+
+      // A shared bad page_id/ad_set_id looks item-scoped (InvalidParams) but
+      // condemns every video: identical failures must halt the run.
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(mockFetchResponse({ id: "vid_1" }))
+        .mockResolvedValueOnce(
+          mockFetchResponse({
+            status: { video_status: "ready" },
+            thumbnails: { data: [{ uri: "https://cdn.example/t.jpg", is_preferred: true }] },
+          }),
+        )
+        .mockResolvedValueOnce(mockFetchResponse({ id: "cre_1" }))
+        .mockResolvedValueOnce(mockFetchResponse({ id: "ad_1" }))
+        .mockResolvedValue(
+          mockFetchResponse({ error: { message: "Invalid parameter", code: 100 } }, { status: 400 }),
+        );
+      vi.stubGlobal("fetch", fetchMock);
+
+      const res = await tool.handler({
+        ...BASE_ARGS,
+        videos: [
+          { file_url: "https://cdn.example/a.mp4", ad_name: "uno" },
+          { file_url: "https://cdn.example/b.mp4", ad_name: "dos" },
+          { file_url: "https://cdn.example/c.mp4", ad_name: "tres" },
+          { file_url: "https://cdn.example/d.mp4", ad_name: "cuatro" },
+        ],
+      });
+
+      const payload = JSON.parse(res.content[1].text);
+      expect(payload[0].ad_id).toBe("ad_1");
+      expect(payload[1].error).toBeTruthy();
+      expect(payload[2].error).toBeTruthy();
+      expect(payload[3].skipped).toBe(true);
+      // 4 calls for the first video, then one doomed upload each for videos 2-3.
+      expect(fetchMock).toHaveBeenCalledTimes(6);
+    }, 30_000);
+
+    it("throws when the same failure repeats and nothing was created", async () => {
+      const tool = handlerFor("ads_bulk_create_video_ads");
+
+      const fetchMock = vi.fn().mockResolvedValue(
+        mockFetchResponse({ error: { message: "Invalid parameter", code: 100 } }, { status: 400 }),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+
+      await expect(
+        tool.handler({
+          ...BASE_ARGS,
+          videos: [
+            { file_url: "https://cdn.example/a.mp4" },
+            { file_url: "https://cdn.example/b.mp4" },
+            { file_url: "https://cdn.example/c.mp4" },
+          ],
+        }),
+      ).rejects.toThrow(/Invalid parameter/);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    }, 30_000);
+
+    it("keeps going when failures differ between videos", async () => {
+      const tool = handlerFor("ads_bulk_create_video_ads");
+
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(mockFetchResponse({ id: "vid_1" }))
+        .mockResolvedValueOnce(mockFetchResponse({ status: { video_status: "ready" }, thumbnails: { data: [] } }))
+        .mockResolvedValueOnce(mockFetchResponse({ id: "vid_2" }))
+        .mockResolvedValueOnce(mockFetchResponse({ status: { video_status: "ready" }, thumbnails: { data: [] } }))
+        .mockResolvedValueOnce(mockFetchResponse({ id: "vid_3" }))
+        .mockResolvedValueOnce(
+          mockFetchResponse({
+            status: { video_status: "ready" },
+            thumbnails: { data: [{ uri: "https://cdn.example/t.jpg", is_preferred: true }] },
+          }),
+        )
+        .mockResolvedValueOnce(mockFetchResponse({ id: "cre_3" }))
+        .mockResolvedValueOnce(mockFetchResponse({ id: "ad_3" }));
+      vi.stubGlobal("fetch", fetchMock);
+
+      const res = await tool.handler({
+        ...BASE_ARGS,
+        videos: [
+          { file_url: "https://cdn.example/a.mp4" },
+          { file_url: "https://cdn.example/b.mp4" },
+          { file_url: "https://cdn.example/c.mp4" },
+        ],
+      });
+
+      // Each no-thumbnail message names its own video_id, so the signatures
+      // differ and the third video still gets its ad.
+      const payload = JSON.parse(res.content[1].text);
+      expect(payload[0].failed_stage).toBe("creative");
+      expect(payload[1].failed_stage).toBe("creative");
+      expect(payload[2].ad_id).toBe("ad_3");
+    }, 30_000);
 
     it("labels a failure at the ad stage without losing the creative id", async () => {
       const tool = handlerFor("ads_bulk_create_video_ads");
