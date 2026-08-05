@@ -29,11 +29,11 @@ Before **any** `git commit -m`, `git push`, `gcloud run deploy`, `docker push`, 
 3. `npm test` passes (runs vitest).
 4. `npm run build` passes (TypeScript build).
 5. **No prohibited files in staging**: `.env`, `.env.*` (except `.env.example`), `*.key`, `*.pem`, `credentials.json`, `service-account*.json`, SSH private keys, `*.p12`, `*.pfx`.
-6. **`gitleaks detect --staged --config .gitleaks.toml`** finds no secrets.
+6. **`gitleaks git --staged --config .gitleaks.toml`** finds no secrets.
 7. **No project-specific patterns** appear in the staged diff. Custom regex covers (full list in [.gitleaks.toml](.gitleaks.toml)):
    - `META_APP_SECRET=`, `OAUTH_SECRET=`, `OAUTH_APPROVAL_PIN=`, `SESSION_COOKIE_SECRET=`, `TOKEN_ENCRYPTION_KEY=`, `MCP_API_KEY=`
    - Meta access tokens: `EAA[A-Za-z0-9]{20,}`
-   - `META_TOKENS={…EAA…}` (multi-tenant token map)
+   - `META_TOKENS` as a JSON map of `EAA…` tokens (multi-tenant)
    - Google: `AIza[A-Za-z0-9_-]{35}`, `ya29\.[A-Za-z0-9_-]+`, GCP service account JSON
    - Generic: `-----BEGIN … PRIVATE KEY-----`, GitHub PATs (`gh[pousr]_`), AWS keys (`AKIA`)
 8. `.gitignore` covers `.env`, `.env.local`, `*.key`, `*.pem`, `credentials.json`, `service-account*.json`, `dist/`, `node_modules/`.
@@ -48,7 +48,16 @@ If you have **Claude Code** with the user-scoped `pre-deploy-guard` skill instal
 - A `PreToolUse` hook intercepts `git commit -m` / `git push` / `gcloud run deploy` and runs the guard. If anything fails, the command is blocked.
 - For deep audits on large diffs, delegate to the `pre-deploy-guard` subagent (`Agent({ subagent_type: "pre-deploy-guard", ... })`).
 
-To install the skill on your machine, see the bottom of this file.
+The scripts live in [.github/pre-deploy-guard/scripts/](.github/pre-deploy-guard/scripts/) and can be run directly without Claude Code:
+
+```bash
+bash .github/pre-deploy-guard/scripts/quick-checks.sh   # pre-commit
+bash .github/pre-deploy-guard/scripts/run-checks.sh     # pre-push / pre-deploy
+```
+
+`quick-checks.sh` is the fast gate: file guard, both secret scanners and typecheck. It does **not** run lint, tests or build — `run-checks.sh` does, and it is what has to pass before anything is pushed. The full script also scans the commits about to be pushed, not just the index, since after a commit the index is empty. Neither script runs `npm ci`; install dependencies yourself if `node_modules` is stale, or the npm steps will fail on a missing local `tsc`.
+
+To install the Claude Code integration on your machine, see the bottom of this file.
 
 If you don't have Claude Code, you can replicate the checks manually:
 
@@ -56,11 +65,11 @@ If you don't have Claude Code, you can replicate the checks manually:
 # Quick (pre-commit)
 npm run lint && npm run typecheck && npm test
 git diff --cached --name-only | grep -E '^\.env(\..*)?$|\.key$|\.pem$|credentials\.json$|service-account.*\.json$' && echo "PROHIBITED FILE STAGED" && exit 1
-gitleaks detect --staged --redact --no-banner --config .gitleaks.toml
+gitleaks git --staged --redact --no-banner --config .gitleaks.toml
 
 # Full (pre-push / pre-deploy)
 npm ci && npm run lint && npm run typecheck && npm test && npm run build
-gitleaks detect --redact --no-banner --config .gitleaks.toml
+gitleaks git --redact --no-banner --config .gitleaks.toml
 ```
 
 CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs the same checks on every PR and on push to `main`. The deploy job in [deploy.yml](.github/workflows/deploy.yml) depends on the preflight job, so a failed lint/test/build/scan blocks deployment.
@@ -81,7 +90,7 @@ Source: [.env.example](.env.example). Each one is treated as a hard secret.
 | `MCP_API_KEY` | Service-to-service key | Bypass OAuth entirely. |
 | GCP creds (WIF / service account) | Cloud auth | Deploy malicious revisions, read Firestore, escalate via IAM. |
 
-If any of these leaks, see the rotation playbooks in `~/.claude/skills/pre-deploy-guard/references/sensitive-patterns.md` (or replicate the steps documented in the headers of those env vars).
+If any of these leaks, see the rotation playbooks in [.github/pre-deploy-guard/references/sensitive-patterns.md](.github/pre-deploy-guard/references/sensitive-patterns.md).
 
 ## Useful commands
 
@@ -106,7 +115,13 @@ npm run typecheck         # tsc --noEmit
 
 If you're using Claude Code on this repo and want the same automatic pre-commit/pre-push guard the maintainers use:
 
-1. **Skill + agent**: copy `~/.claude/skills/pre-deploy-guard/` and `~/.claude/agents/pre-deploy-guard.md` from a maintainer's setup, or write your own using the procedures documented in this file.
+Everything ships in this repo under [.github/pre-deploy-guard/](.github/pre-deploy-guard/) — see its [README](.github/pre-deploy-guard/README.md) for the full walkthrough.
+
+1. **Skill + agent**:
+   ```bash
+   cp -r .github/pre-deploy-guard ~/.claude/skills/
+   cp .github/pre-deploy-guard/agent.md ~/.claude/agents/pre-deploy-guard.md
+   ```
 2. **Hook**: in `~/.claude/settings.json`, add:
    ```json
    "hooks": {
@@ -120,6 +135,6 @@ If you're using Claude Code on this repo and want the same automatic pre-commit/
      ]
    }
    ```
-3. **Opt this repo in**: create the marker file `.github/pre-deploy-guard.enabled` (empty file) so the hook activates here. The hook is silently inert in any repo without this marker (or whose path doesn't match the canonical maintainer path).
+3. **Opt a repo in**: the marker file `.github/pre-deploy-guard.enabled` is already committed here, so the hook activates automatically. The hook is silently inert in any repo without that marker.
 
 The guard is defense-in-depth — even without it on your machine, [.github/workflows/ci.yml](.github/workflows/ci.yml) and the deploy preflight job catch the same issues server-side. The local hook just shortens the feedback loop.
