@@ -15,7 +15,7 @@ const MAX_VIDEOS_PER_CALL = 20;
 // makes a retry create paid duplicates. A single Graph request can still take
 // up to its own timeout, so these reserves keep headroom rather than pretending
 // to be an exact clock.
-const BATCH_BUDGET_MS = 240_000;
+const BATCH_BUDGET_MS = 180_000;
 const ITEM_START_RESERVE_MS = 30_000;
 const FINALIZE_RESERVE_MS = 15_000;
 
@@ -167,7 +167,7 @@ export function registerBulkAdTools(server: McpServer): void {
           result.skipped = true;
           result.error = systemicError
             ? "Not attempted — the batch stopped after an error that affects every video."
-            : "Not attempted — the batch time budget ran out. Re-run with the remaining videos.";
+            : "Not attempted — too little of the batch time budget left to start another video. Re-run with the remaining videos.";
           results.push(result);
           continue;
         }
@@ -258,9 +258,17 @@ export function registerBulkAdTools(server: McpServer): void {
           result.error = err instanceof Error ? err.message : String(err);
           result.failed_stage = err instanceof StageError ? err.stage : stage;
 
-          const signature = `${result.failed_stage}:${result.error}`;
-          repeatedFailures = signature === lastFailure ? repeatedFailures + 1 : 1;
-          lastFailure = signature;
+          // Only Meta's own verdicts can betray a shared bad input. Locally
+          // decided rejections (unsafe URL, missing thumbnail) are per-video by
+          // construction and would otherwise halt a batch over two bad URLs.
+          if (err instanceof McpError) {
+            const signature = `${result.failed_stage}:${result.error}`;
+            repeatedFailures = signature === lastFailure ? repeatedFailures + 1 : 1;
+            lastFailure = signature;
+          } else {
+            lastFailure = undefined;
+            repeatedFailures = 0;
+          }
 
           if (!isItemScopedError(err) || repeatedFailures >= REPEATED_FAILURE_LIMIT) {
             systemicError = err;
@@ -274,9 +282,11 @@ export function registerBulkAdTools(server: McpServer): void {
       const skipped = results.filter((r) => r.skipped);
       const failed = results.filter((r) => !r.ad_id && !r.skipped);
 
-      // Nothing was created, so there are no IDs worth preserving: surface the
-      // account-wide error the way every other tool does.
-      if (systemicError && created.length === 0) throw systemicError;
+      // Throw only when the batch left nothing behind on Meta's side. A video or
+      // creative without its ad still has an ID the caller needs to finish or
+      // clean up, and an exception would discard the whole report.
+      const leftArtifacts = results.some((r) => r.video_id ?? r.creative_id ?? r.ad_id);
+      if (systemicError && !leftArtifacts) throw systemicError;
 
       const lines = [
         `Created ${created.length} of ${results.length} ad(s) in ad set ${adSetIdValidated} with status ${status}.`,
@@ -308,7 +318,7 @@ export function registerBulkAdTools(server: McpServer): void {
         lines.push(
           "",
           `Not attempted (${skipped.length}):`,
-          ...skipped.map((r) => `• ${r.ad_name} — ${r.file_url}`),
+          ...skipped.map((r) => `• ${r.ad_name} — ${r.file_url}\n  ${r.error}`),
         );
       }
 

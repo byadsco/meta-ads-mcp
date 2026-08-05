@@ -17,9 +17,11 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   A video rejected by Meta does not abort the batch — each item reports its own
   outcome and failure stage — but an account-wide error (expired token, rate
   limit, abuse signal) stops it immediately instead of retrying under a block.
-  The call is capped at 240s so it always returns under the Cloud Run request
-  timeout with the ad IDs it already created; videos left over come back marked
-  `skipped`, making a re-run of just those safe from paid duplicates.
+  The call aims to finish within 180s, well under the Cloud Run request timeout,
+  so it returns the IDs it already created; videos left over come back marked
+  `skipped`, making a re-run of just those safe from paid duplicates. As with
+  `ads_run_report_and_wait`, the budget is best-effort — an individual Graph
+  request can still overrun it.
 
 ## [3.4.1] — 2026-07-22
 

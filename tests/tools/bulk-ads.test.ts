@@ -425,6 +425,87 @@ describe("registerBulkAdTools", () => {
       expect(fetchMock).toHaveBeenCalledTimes(6);
     }, 30_000);
 
+    it("does not let two locally-rejected URLs stop a healthy batch", async () => {
+      const tool = handlerFor("ads_bulk_create_video_ads");
+
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(mockFetchResponse({ id: "vid_3" }))
+        .mockResolvedValueOnce(
+          mockFetchResponse({
+            status: { video_status: "ready" },
+            thumbnails: { data: [{ uri: "https://cdn.example/t.jpg", is_preferred: true }] },
+          }),
+        )
+        .mockResolvedValueOnce(mockFetchResponse({ id: "cre_3" }))
+        .mockResolvedValueOnce(mockFetchResponse({ id: "ad_3" }));
+      vi.stubGlobal("fetch", fetchMock);
+
+      // Both http:// URLs yield the identical guard message; that must not be
+      // mistaken for a shared bad input and skip the valid third video.
+      const res = await tool.handler({
+        ...BASE_ARGS,
+        videos: [
+          { file_url: "http://a.example/v.mp4" },
+          { file_url: "http://b.example/v.mp4" },
+          { file_url: "https://cdn.example/good.mp4" },
+        ],
+      });
+
+      const payload = JSON.parse(res.content[1].text);
+      expect(payload[0].failed_stage).toBe("upload");
+      expect(payload[1].failed_stage).toBe("upload");
+      expect(payload[2].skipped).toBeUndefined();
+      expect(payload[2].ad_id).toBe("ad_3");
+    }, 30_000);
+
+    it("reports partial artifacts instead of throwing them away", async () => {
+      const tool = handlerFor("ads_bulk_create_video_ads");
+
+      // Creatives get built, then every ad creation fails identically: the run
+      // stops but the video and creative IDs must survive in the report.
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(mockFetchResponse({ id: "vid_1" }))
+        .mockResolvedValueOnce(
+          mockFetchResponse({
+            status: { video_status: "ready" },
+            thumbnails: { data: [{ uri: "https://cdn.example/t.jpg", is_preferred: true }] },
+          }),
+        )
+        .mockResolvedValueOnce(mockFetchResponse({ id: "cre_1" }))
+        .mockResolvedValueOnce(
+          mockFetchResponse({ error: { message: "Invalid adset", code: 100 } }, { status: 400 }),
+        )
+        .mockResolvedValueOnce(mockFetchResponse({ id: "vid_2" }))
+        .mockResolvedValueOnce(
+          mockFetchResponse({
+            status: { video_status: "ready" },
+            thumbnails: { data: [{ uri: "https://cdn.example/t.jpg", is_preferred: true }] },
+          }),
+        )
+        .mockResolvedValueOnce(mockFetchResponse({ id: "cre_2" }))
+        .mockResolvedValue(
+          mockFetchResponse({ error: { message: "Invalid adset", code: 100 } }, { status: 400 }),
+        );
+      vi.stubGlobal("fetch", fetchMock);
+
+      const res = await tool.handler({
+        ...BASE_ARGS,
+        videos: [
+          { file_url: "https://cdn.example/a.mp4" },
+          { file_url: "https://cdn.example/b.mp4" },
+          { file_url: "https://cdn.example/c.mp4" },
+        ],
+      });
+
+      const payload = JSON.parse(res.content[1].text);
+      expect(payload[0].creative_id).toBe("cre_1");
+      expect(payload[1].creative_id).toBe("cre_2");
+      expect(payload[0].ad_id).toBeUndefined();
+      expect(payload[2].skipped).toBe(true);
+    }, 60_000);
+
     it("throws when the same failure repeats and nothing was created", async () => {
       const tool = handlerFor("ads_bulk_create_video_ads");
 
