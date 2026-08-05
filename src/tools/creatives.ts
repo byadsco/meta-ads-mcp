@@ -79,6 +79,14 @@ function extractEffectiveLinkUrl(creative: AdCreative): string | undefined {
   );
 }
 
+// Callers sometimes pass Graph-style comma-joined lists as a single array
+// entry. Split those so a synthetic field hidden inside one cannot slip
+// through, but leave nested selectors like `object_story_spec{link_data,name}`
+// intact — their commas are part of the expression.
+function splitFieldEntry(entry: string): string[] {
+  return entry.includes("{") ? [entry] : entry.split(",");
+}
+
 // Clients read effective_link_url off our responses and echo it back in `fields`.
 // It is derived here, not stored by Meta, so forwarding it would fail with #100:
 // strip it and request the fields it is derived from instead.
@@ -87,10 +95,11 @@ function buildCreativeFieldsParam(fields?: string[]): string {
     return buildFieldsParam(undefined, [...CREATIVE_DEFAULT_FIELDS]);
   }
 
+  const tokens = fields.flatMap(splitFieldEntry).map((field) => field.trim()).filter(Boolean);
   const synthetic = new Set<string>(SYNTHETIC_CREATIVE_FIELDS);
-  const requested = fields.filter((field) => !synthetic.has(field));
+  const requested = tokens.filter((field) => !synthetic.has(field));
 
-  const expanded = fields.includes("effective_link_url")
+  const expanded = tokens.includes("effective_link_url")
     ? [...new Set([...requested, ...EFFECTIVE_LINK_URL_SOURCE_FIELDS])]
     : requested;
 

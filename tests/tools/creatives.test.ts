@@ -182,6 +182,40 @@ describe("registerCreativeTools", () => {
       expect(result.content[0].text).toContain("Link URL: https://byads.co/promo");
     });
 
+    it("strips a synthetic field hidden inside a comma-joined entry", async () => {
+      const server = createMockMcpServer();
+      registerCreativeTools(server as never);
+
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockFetchResponse({ id: "40780" })));
+
+      const handler = server._registeredTools[1].handler;
+      await handler({
+        creative_id: "40780",
+        fields: ["id,name,effective_link_url"],
+      });
+
+      const fieldsParam = new URL(vi.mocked(fetch).mock.calls[0][0] as string)
+        .searchParams.get("fields");
+      expect(fieldsParam).toBe("id,name,link_url,object_story_spec,asset_feed_spec");
+      expect(fieldsParam).not.toContain("effective_link_url");
+    });
+
+    it("keeps nested field selectors intact", async () => {
+      const server = createMockMcpServer();
+      registerCreativeTools(server as never);
+
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockFetchResponse({ id: "40781" })));
+
+      const handler = server._registeredTools[1].handler;
+      await handler({
+        creative_id: "40781",
+        fields: ["object_story_spec{link_data,video_data}", "name"],
+      });
+
+      expect(new URL(vi.mocked(fetch).mock.calls[0][0] as string).searchParams.get("fields"))
+        .toBe("object_story_spec{link_data,video_data},name");
+    });
+
     it("does not duplicate source fields already requested by the caller", async () => {
       const server = createMockMcpServer();
       registerCreativeTools(server as never);

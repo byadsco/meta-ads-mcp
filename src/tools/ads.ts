@@ -10,9 +10,9 @@ import { READ, CREATE, UPDATE, DELETE, WRITE_WARNING } from "./_register.js";
 const statusEnum = z.enum(["ACTIVE", "PAUSED", "DELETED", "ARCHIVED"]);
 
 const CREATIVE_REBUILD_FIELDS =
-  "id,name,object_story_spec,asset_feed_spec,effective_object_story_id,url_tags,instagram_user_id";
+  "id,name,object_story_spec,asset_feed_spec,effective_object_story_id,url_tags,instagram_user_id,source_instagram_media_id,effective_instagram_media_id,link_url,degrees_of_freedom_spec";
 
-type RebuildStrategy = "reuse_post" | "clone_spec";
+type RebuildStrategy = "reuse_post" | "clone_spec" | "reuse_instagram_media";
 
 interface CreativeGroup {
   creative_id: string;
@@ -58,8 +58,11 @@ function resolveInstagramUserId(creative: AdCreative): string | undefined {
 }
 
 // Meta creatives are immutable except for name/status/adlabels, so changing
-// url_tags means minting a replacement. Reusing the existing post keeps the
-// ad's social proof (likes/comments); cloning the spec is the fallback.
+// url_tags means minting a replacement. Every strategy here re-references the
+// source wholesale (post, spec or Instagram media) rather than reconstructing
+// its parts, because a creative's destination link and CTA are not always
+// readable back — rebuilding them field by field could silently drop them.
+// Reusing the post also keeps the ad's social proof (likes/comments).
 function planRebuild(creative: AdCreative): RebuildStrategy | { reason: string } {
   if (creative.asset_feed_spec) {
     return {
@@ -68,7 +71,16 @@ function planRebuild(creative: AdCreative): RebuildStrategy | { reason: string }
   }
   if (creative.effective_object_story_id) return "reuse_post";
   if (asRecord(creative.object_story_spec)) return "clone_spec";
-  return { reason: "creative has no reusable post or object_story_spec to rebuild from" };
+  if (creative.source_instagram_media_id || creative.effective_instagram_media_id) {
+    return "reuse_instagram_media";
+  }
+  return { reason: "creative has no reusable post, object_story_spec or Instagram media to rebuild from" };
+}
+
+function describeStrategy(strategy: RebuildStrategy): string {
+  if (strategy === "reuse_post") return "reusing the existing post";
+  if (strategy === "reuse_instagram_media") return "reusing the Instagram post";
+  return "cloning the creative spec";
 }
 
 function buildReplacementCreativeBody(
@@ -79,12 +91,27 @@ function buildReplacementCreativeBody(
   const body: Record<string, string | number | boolean> = {};
   if (creative.name) body.name = creative.name;
 
+  const instagramUserId = resolveInstagramUserId(creative);
+
   if (strategy === "reuse_post") {
     body.object_story_id = creative.effective_object_story_id as string;
-    const instagramUserId = resolveInstagramUserId(creative);
+    if (instagramUserId) body.instagram_user_id = instagramUserId;
+  } else if (strategy === "reuse_instagram_media") {
+    body.source_instagram_media_id =
+      (creative.source_instagram_media_id ?? creative.effective_instagram_media_id) as string;
     if (instagramUserId) body.instagram_user_id = instagramUserId;
   } else {
     body.object_story_spec = JSON.stringify(creative.object_story_spec);
+  }
+
+  // Carried across because they live beside the story/spec rather than inside
+  // it: link_url is a creatable destination override, and dropping
+  // degrees_of_freedom_spec would silently reset the ad's Advantage+ creative
+  // enhancements. call_to_action_type is readable but not creatable, so the
+  // CTA can only travel with the source it is attached to.
+  if (creative.link_url) body.link_url = creative.link_url;
+  if (creative.degrees_of_freedom_spec) {
+    body.degrees_of_freedom_spec = JSON.stringify(creative.degrees_of_freedom_spec);
   }
 
   if (urlTags !== "") body.url_tags = urlTags;
@@ -268,7 +295,7 @@ export function registerAdTools(server: McpServer): void {
   server.registerTool(
     "ads_update_ad_url_tags",
     {
-      description: `${WRITE_WARNING}Change the UTM parameters (url_tags) of one or more live ads. Meta creatives are immutable, so each ad's creative is cloned with the new url_tags and the ad is repointed at the clone — the existing post is reused when possible, preserving likes and comments. Side effect: every updated ad re-enters Meta review. Ads whose url_tags already match are skipped, so re-running is safe. Dynamic creatives (asset_feed_spec) are reported as skipped. Use dry_run to preview.`,
+      description: `${WRITE_WARNING}Change the UTM parameters (url_tags) of one or more live ads. Meta creatives are immutable, so each ad's creative is cloned with the new url_tags and the ad is repointed at the clone. The clone re-references the source wholesale — the existing Facebook post, the creative spec, or the Instagram post — so media, copy, destination link and CTA are preserved, along with the post's likes and comments. Side effect: every updated ad re-enters Meta review. Ads whose url_tags already match are skipped, so re-running is safe. Dynamic creatives (asset_feed_spec) are reported as skipped. Use dry_run to preview.`,
       inputSchema: {
         ad_ids: z
           .array(z.string())
@@ -293,7 +320,7 @@ export function registerAdTools(server: McpServer): void {
       const planned: PlannedRebuild[] = [];
 
       const groups = new Map<string, CreativeGroup>();
-      for (const rawAdId of ad_ids) {
+      for (const rawAdId of new Set(ad_ids)) {
         try {
           const adId = validateMetaId(rawAdId, "ad");
           const ad = await metaApiClient.get<Ad & { account_id?: string }>(`/${adId}`, {
@@ -414,8 +441,7 @@ export function registerAdTools(server: McpServer): void {
         ? [
             `Dry run — no changes made. ${planned.length} ad(s) would get url_tags "${requestedTags || "(removed)"}".`,
             ...planned.map(
-              (p) =>
-                `• Ad ${p.ad_id}: clone creative ${p.old_creative_id} (${p.strategy === "reuse_post" ? "reusing the existing post" : "cloning the creative spec"})`,
+              (p) => `• Ad ${p.ad_id}: clone creative ${p.old_creative_id} (${describeStrategy(p.strategy)})`,
             ),
           ]
         : [

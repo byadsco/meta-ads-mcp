@@ -142,7 +142,7 @@ describe("registerAdTools", () => {
       const creativeFields = new URL(vi.mocked(fetch).mock.calls[1][0] as string)
         .searchParams.get("fields");
       expect(creativeFields).toBe(
-        "id,name,object_story_spec,asset_feed_spec,effective_object_story_id,url_tags,instagram_user_id",
+        "id,name,object_story_spec,asset_feed_spec,effective_object_story_id,url_tags,instagram_user_id,source_instagram_media_id,effective_instagram_media_id,link_url,degrees_of_freedom_spec",
       );
       expect(creativeFields).not.toContain("effective_link_url");
 
@@ -218,6 +218,56 @@ describe("registerAdTools", () => {
       expect(bodyOf(2).get("instagram_user_id")).toBe("9002");
     });
 
+    it("reuses the Instagram media when the creative has no post or spec", async () => {
+      const server = createMockMcpServer();
+      registerAdTools(server as never);
+      vi.stubGlobal("fetch", vi.fn()
+        .mockResolvedValueOnce(mockFetchResponse(adResponse()))
+        .mockResolvedValueOnce(mockFetchResponse({
+          id: "4001",
+          name: "IG Post Creative",
+          source_instagram_media_id: "7001",
+          effective_instagram_media_id: "7002",
+          instagram_user_id: "9003",
+          url_tags: "utm_source=old",
+        }))
+        .mockResolvedValueOnce(mockFetchResponse({ id: "4100" }))
+        .mockResolvedValueOnce(mockFetchResponse({ success: true })));
+
+      const handler = server._registeredTools[UPDATE_URL_TAGS].handler;
+      await handler({ ad_ids: ["3001"], url_tags: "utm_source=meta", dry_run: false });
+
+      expect(bodyOf(2).get("source_instagram_media_id")).toBe("7001");
+      expect(bodyOf(2).get("instagram_user_id")).toBe("9003");
+      expect(bodyOf(2).get("url_tags")).toBe("utm_source=meta");
+      expect(bodyOf(2).has("object_story_id")).toBe(false);
+      expect(bodyOf(2).has("object_story_spec")).toBe(false);
+    });
+
+    it("prefers the existing post over the Instagram media when both are present", async () => {
+      const server = createMockMcpServer();
+      registerAdTools(server as never);
+      vi.stubGlobal("fetch", vi.fn()
+        .mockResolvedValueOnce(mockFetchResponse(adResponse()))
+        .mockResolvedValueOnce(mockFetchResponse({
+          id: "4001",
+          name: "IG Post Creative",
+          effective_object_story_id: "6001_7777",
+          source_instagram_media_id: "7001",
+          instagram_user_id: "9003",
+          url_tags: "utm_source=old",
+        }))
+        .mockResolvedValueOnce(mockFetchResponse({ id: "4100" }))
+        .mockResolvedValueOnce(mockFetchResponse({ success: true })));
+
+      const handler = server._registeredTools[UPDATE_URL_TAGS].handler;
+      await handler({ ad_ids: ["3001"], url_tags: "utm_source=meta", dry_run: false });
+
+      expect(bodyOf(2).get("object_story_id")).toBe("6001_7777");
+      expect(bodyOf(2).has("source_instagram_media_id")).toBe(false);
+      expect(bodyOf(2).get("instagram_user_id")).toBe("9003");
+    });
+
     it("creates one creative for ads that share it", async () => {
       const server = createMockMcpServer();
       registerAdTools(server as never);
@@ -242,9 +292,51 @@ describe("registerAdTools", () => {
       expect(creativeCreations).toHaveLength(1);
       expect(JSON.parse(bodyOf(4).get("creative") ?? "{}")).toEqual({ creative_id: "4100" });
       expect(JSON.parse(bodyOf(5).get("creative") ?? "{}")).toEqual({ creative_id: "4100" });
+      expect([pathOf(4), pathOf(5)].map((p) => p.split("/").pop()).sort()).toEqual(["3001", "3002"]);
 
+      const report = JSON.parse(result.content[1].text) as { updated: Array<{ ad_id: string }> };
+      expect(report.updated.map((u) => u.ad_id).sort()).toEqual(["3001", "3002"]);
+    });
+
+    it("reads each ad once when an id is repeated", async () => {
+      const server = createMockMcpServer();
+      registerAdTools(server as never);
+      vi.stubGlobal("fetch", vi.fn()
+        .mockResolvedValueOnce(mockFetchResponse(adResponse()))
+        .mockResolvedValueOnce(mockFetchResponse(specCreative()))
+        .mockResolvedValueOnce(mockFetchResponse({ id: "4100" }))
+        .mockResolvedValueOnce(mockFetchResponse({ success: true })));
+
+      const handler = server._registeredTools[UPDATE_URL_TAGS].handler;
+      const result = await handler({
+        ad_ids: ["3001", "3001"],
+        url_tags: "utm_source=meta",
+        dry_run: false,
+      }) as ToolResult;
+
+      expect(vi.mocked(fetch)).toHaveBeenCalledTimes(4);
       const report = JSON.parse(result.content[1].text) as { updated: unknown[] };
-      expect(report.updated).toHaveLength(2);
+      expect(report.updated).toHaveLength(1);
+    });
+
+    it("carries the destination override and Advantage+ enhancement settings", async () => {
+      const server = createMockMcpServer();
+      registerAdTools(server as never);
+      const dof = { creative_features_spec: { standard_enhancements: { enroll_status: "OPT_IN" } } };
+      vi.stubGlobal("fetch", vi.fn()
+        .mockResolvedValueOnce(mockFetchResponse(adResponse()))
+        .mockResolvedValueOnce(mockFetchResponse(specCreative({
+          link_url: "https://byads.co/landing",
+          degrees_of_freedom_spec: dof,
+        })))
+        .mockResolvedValueOnce(mockFetchResponse({ id: "4100" }))
+        .mockResolvedValueOnce(mockFetchResponse({ success: true })));
+
+      const handler = server._registeredTools[UPDATE_URL_TAGS].handler;
+      await handler({ ad_ids: ["3001"], url_tags: "utm_source=meta", dry_run: false });
+
+      expect(bodyOf(2).get("link_url")).toBe("https://byads.co/landing");
+      expect(JSON.parse(bodyOf(2).get("degrees_of_freedom_spec") ?? "{}")).toEqual(dof);
     });
 
     it("skips ads whose url_tags already match", async () => {

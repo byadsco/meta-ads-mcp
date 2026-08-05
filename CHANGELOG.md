@@ -12,9 +12,12 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - **`ads_update_ad_url_tags` — edit the UTM parameters of live ads (1-50 per
   call).** Meta creatives are immutable (`POST /{creative_id}` only accepts
   `name` / `status` / `adlabels`), so the tool clones each ad's creative with
-  the new `url_tags` and repoints the ad at the clone. It reuses the existing
-  post via `object_story_id` when the creative has one, preserving likes and
-  comments, and falls back to cloning `object_story_spec`. Ads sharing a
+  the new `url_tags` and repoints the ad at the clone. Every strategy
+  re-references the source wholesale rather than rebuilding it field by field
+  — the existing Facebook post (`object_story_id`, preserving likes and
+  comments), the creative spec (`object_story_spec`), or the Instagram post
+  (`source_instagram_media_id`) — so media, copy, destination link and CTA
+  survive even when they are not readable back individually. Ads sharing a
   creative mint a single replacement. Ads whose `url_tags` already match are
   skipped, which makes re-running a batch safe; dynamic (`asset_feed_spec`)
   creatives are reported as skipped rather than silently altered. `url_tags:
