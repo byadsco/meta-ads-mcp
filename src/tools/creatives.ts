@@ -81,10 +81,27 @@ function extractEffectiveLinkUrl(creative: AdCreative): string | undefined {
 
 // Callers sometimes pass Graph-style comma-joined lists as a single array
 // entry. Split those so a synthetic field hidden inside one cannot slip
-// through, but leave nested selectors like `object_story_spec{link_data,name}`
-// intact — their commas are part of the expression.
+// through, but only on top-level commas: the ones inside a nested selector
+// like `object_story_spec{link_data,name}` are part of the expression.
 function splitFieldEntry(entry: string): string[] {
-  return entry.includes("{") ? [entry] : entry.split(",");
+  const parts: string[] = [];
+  let depth = 0;
+  let current = "";
+
+  for (const char of entry) {
+    if (char === "{") depth++;
+    else if (char === "}") depth = Math.max(0, depth - 1);
+
+    if (char === "," && depth === 0) {
+      parts.push(current);
+      current = "";
+      continue;
+    }
+    current += char;
+  }
+  parts.push(current);
+
+  return parts;
 }
 
 // Clients read effective_link_url off our responses and echo it back in `fields`.

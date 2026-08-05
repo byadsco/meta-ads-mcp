@@ -142,7 +142,7 @@ describe("registerAdTools", () => {
       const creativeFields = new URL(vi.mocked(fetch).mock.calls[1][0] as string)
         .searchParams.get("fields");
       expect(creativeFields).toBe(
-        "id,name,object_story_spec,asset_feed_spec,effective_object_story_id,url_tags,instagram_user_id,source_instagram_media_id,effective_instagram_media_id,link_url,degrees_of_freedom_spec",
+        "id,name,object_story_spec,asset_feed_spec,effective_object_story_id,url_tags,instagram_user_id,source_instagram_media_id,effective_instagram_media_id,link_url,degrees_of_freedom_spec,call_to_action_type,adlabels",
       );
       expect(creativeFields).not.toContain("effective_link_url");
 
@@ -242,6 +242,109 @@ describe("registerAdTools", () => {
       expect(bodyOf(2).get("url_tags")).toBe("utm_source=meta");
       expect(bodyOf(2).has("object_story_id")).toBe(false);
       expect(bodyOf(2).has("object_story_spec")).toBe(false);
+    });
+
+    it("rebuilds the CTA of an Instagram creative, which stores it on the creative", async () => {
+      const server = createMockMcpServer();
+      registerAdTools(server as never);
+      vi.stubGlobal("fetch", vi.fn()
+        .mockResolvedValueOnce(mockFetchResponse(adResponse()))
+        .mockResolvedValueOnce(mockFetchResponse({
+          id: "4001",
+          name: "IG Post Creative",
+          source_instagram_media_id: "7001",
+          call_to_action_type: "SHOP_NOW",
+          link_url: "https://byads.co/shop",
+          url_tags: "utm_source=old",
+        }))
+        .mockResolvedValueOnce(mockFetchResponse({ id: "4100" }))
+        .mockResolvedValueOnce(mockFetchResponse({ success: true })));
+
+      const handler = server._registeredTools[UPDATE_URL_TAGS].handler;
+      await handler({ ad_ids: ["3001"], url_tags: "utm_source=meta", dry_run: false });
+
+      expect(JSON.parse(bodyOf(2).get("call_to_action") ?? "{}")).toEqual({
+        type: "SHOP_NOW",
+        value: { link: "https://byads.co/shop" },
+      });
+    });
+
+    it("carries ad labels to the replacement creative", async () => {
+      const server = createMockMcpServer();
+      registerAdTools(server as never);
+      vi.stubGlobal("fetch", vi.fn()
+        .mockResolvedValueOnce(mockFetchResponse(adResponse()))
+        .mockResolvedValueOnce(mockFetchResponse(specCreative({
+          adlabels: [{ id: "5001", name: "Q3" }, { name: "Brand" }],
+        })))
+        .mockResolvedValueOnce(mockFetchResponse({ id: "4100" }))
+        .mockResolvedValueOnce(mockFetchResponse({ success: true })));
+
+      const handler = server._registeredTools[UPDATE_URL_TAGS].handler;
+      await handler({ ad_ids: ["3001"], url_tags: "utm_source=meta", dry_run: false });
+
+      expect(JSON.parse(bodyOf(2).get("adlabels") ?? "[]")).toEqual([{ id: "5001" }, { name: "Brand" }]);
+    });
+
+    it("counts a repoint as updated when the ad is confirmed to have moved", async () => {
+      const server = createMockMcpServer();
+      registerAdTools(server as never);
+      vi.stubGlobal("fetch", vi.fn()
+        .mockResolvedValueOnce(mockFetchResponse(adResponse()))
+        .mockResolvedValueOnce(mockFetchResponse(specCreative()))
+        .mockResolvedValueOnce(mockFetchResponse({ id: "4100" }))
+        .mockResolvedValueOnce(mockFetchResponse(
+          { error: { message: "(#100) lost response", type: "OAuthException", code: 100 } },
+          { status: 400 },
+        ))
+        .mockResolvedValueOnce(mockFetchResponse({ id: "3001", creative: { id: "4100" } })));
+
+      const handler = server._registeredTools[UPDATE_URL_TAGS].handler;
+      const result = await handler({
+        ad_ids: ["3001"],
+        url_tags: "utm_source=meta",
+        dry_run: false,
+      }) as ToolResult;
+
+      const report = JSON.parse(result.content[1].text) as {
+        updated: Array<{ ad_id: string }>;
+        failed: unknown[];
+        warnings: string[];
+      };
+      expect(report.updated.map((u) => u.ad_id)).toEqual(["3001"]);
+      expect(report.failed).toHaveLength(0);
+      expect(report.warnings[0]).toContain("4100");
+    });
+
+    it("reports an unknown state when the ad cannot be read back", async () => {
+      const server = createMockMcpServer();
+      registerAdTools(server as never);
+      vi.stubGlobal("fetch", vi.fn()
+        .mockResolvedValueOnce(mockFetchResponse(adResponse()))
+        .mockResolvedValueOnce(mockFetchResponse(specCreative()))
+        .mockResolvedValueOnce(mockFetchResponse({ id: "4100" }))
+        .mockResolvedValueOnce(mockFetchResponse(
+          { error: { message: "(#100) boom", type: "OAuthException", code: 100 } },
+          { status: 400 },
+        ))
+        .mockResolvedValueOnce(mockFetchResponse(
+          { error: { message: "(#100) unreadable", type: "OAuthException", code: 100 } },
+          { status: 400 },
+        )));
+
+      const handler = server._registeredTools[UPDATE_URL_TAGS].handler;
+      const result = await handler({
+        ad_ids: ["3001"],
+        url_tags: "utm_source=meta",
+        dry_run: false,
+      }) as ToolResult;
+
+      const report = JSON.parse(result.content[1].text) as {
+        failed: Array<{ ad_id: string; error: string; new_creative_id?: string }>;
+      };
+      expect(report.failed[0].ad_id).toBe("3001");
+      expect(report.failed[0].error).toMatch(/state is unknown/i);
+      expect(report.failed[0].new_creative_id).toBe("4100");
     });
 
     it("prefers the existing post over the Instagram media when both are present", async () => {
@@ -512,7 +615,8 @@ describe("registerAdTools", () => {
         .mockResolvedValueOnce(mockFetchResponse(
           { error: { message: "(#100) invalid ad", type: "OAuthException", code: 100 } },
           { status: 400 },
-        )));
+        ))
+        .mockResolvedValueOnce(mockFetchResponse({ id: "3002", creative: { id: "4001" } })));
 
       const handler = server._registeredTools[UPDATE_URL_TAGS].handler;
       const result = await handler({

@@ -37,6 +37,7 @@ export interface AdCreative {
   source_instagram_media_id?: string;
   effective_instagram_media_id?: string;
   degrees_of_freedom_spec?: Record<string, unknown>;
+  adlabels?: Array<{ id?: string; name?: string }>;
 }
 
 /** Fields this server derives locally; they are stripped before hitting Meta. */

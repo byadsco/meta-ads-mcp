@@ -17,8 +17,12 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   — the existing Facebook post (`object_story_id`, preserving likes and
   comments), the creative spec (`object_story_spec`), or the Instagram post
   (`source_instagram_media_id`) — so media, copy, destination link and CTA
-  survive even when they are not readable back individually. Ads sharing a
-  creative mint a single replacement. Ads whose `url_tags` already match are
+  survive even when they are not readable back individually. Fields that live
+  beside the story rather than inside it are carried explicitly: `link_url`,
+  `degrees_of_freedom_spec` (dropping it would silently reset an ad's
+  Advantage+ creative enhancements), `adlabels`, and the rebuilt
+  `call_to_action` for Instagram creatives, which store their CTA on the
+  creative itself. Ads sharing a creative mint a single replacement. Ads whose `url_tags` already match are
   skipped, which makes re-running a batch safe; dynamic (`asset_feed_spec`)
   creatives are reported as skipped rather than silently altered. `url_tags:
   ""` removes tracking parameters, a leading `?` is stripped, and `dry_run:

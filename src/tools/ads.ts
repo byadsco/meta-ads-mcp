@@ -10,7 +10,7 @@ import { READ, CREATE, UPDATE, DELETE, WRITE_WARNING } from "./_register.js";
 const statusEnum = z.enum(["ACTIVE", "PAUSED", "DELETED", "ARCHIVED"]);
 
 const CREATIVE_REBUILD_FIELDS =
-  "id,name,object_story_spec,asset_feed_spec,effective_object_story_id,url_tags,instagram_user_id,source_instagram_media_id,effective_instagram_media_id,link_url,degrees_of_freedom_spec";
+  "id,name,object_story_spec,asset_feed_spec,effective_object_story_id,url_tags,instagram_user_id,source_instagram_media_id,effective_instagram_media_id,link_url,degrees_of_freedom_spec,call_to_action_type,adlabels";
 
 type RebuildStrategy = "reuse_post" | "clone_spec" | "reuse_instagram_media";
 
@@ -77,6 +77,15 @@ function planRebuild(creative: AdCreative): RebuildStrategy | { reason: string }
   return { reason: "creative has no reusable post, object_story_spec or Instagram media to rebuild from" };
 }
 
+async function readCreativeIdAfterFailedRepoint(adId: string): Promise<string | undefined> {
+  try {
+    const ad = await metaApiClient.get<Ad>(`/${adId}`, { fields: "creative{id}" });
+    return ad.creative?.id;
+  } catch {
+    return undefined;
+  }
+}
+
 function describeStrategy(strategy: RebuildStrategy): string {
   if (strategy === "reuse_post") return "reusing the existing post";
   if (strategy === "reuse_instagram_media") return "reusing the Instagram post";
@@ -100,6 +109,15 @@ function buildReplacementCreativeBody(
     body.source_instagram_media_id =
       (creative.source_instagram_media_id ?? creative.effective_instagram_media_id) as string;
     if (instagramUserId) body.instagram_user_id = instagramUserId;
+    // Unlike a page post, an Instagram-media creative stores its CTA on the
+    // creative itself (see ads_create_ad_creative), so it has to be rebuilt or
+    // the replacement loses the button.
+    if (creative.call_to_action_type) {
+      body.call_to_action = JSON.stringify({
+        type: creative.call_to_action_type,
+        value: creative.link_url ? { link: creative.link_url } : undefined,
+      });
+    }
   } else {
     body.object_story_spec = JSON.stringify(creative.object_story_spec);
   }
@@ -113,6 +131,12 @@ function buildReplacementCreativeBody(
   if (creative.degrees_of_freedom_spec) {
     body.degrees_of_freedom_spec = JSON.stringify(creative.degrees_of_freedom_spec);
   }
+  // Agencies key reporting and automations off ad labels; a replacement without
+  // them drops out of those views silently.
+  const adlabels = (creative.adlabels ?? [])
+    .map((label) => (label.id ? { id: label.id } : label.name ? { name: label.name } : undefined))
+    .filter((label): label is { id: string } | { name: string } => label !== undefined);
+  if (adlabels.length > 0) body.adlabels = JSON.stringify(adlabels);
 
   if (urlTags !== "") body.url_tags = urlTags;
 
@@ -295,7 +319,7 @@ export function registerAdTools(server: McpServer): void {
   server.registerTool(
     "ads_update_ad_url_tags",
     {
-      description: `${WRITE_WARNING}Change the UTM parameters (url_tags) of one or more live ads. Meta creatives are immutable, so each ad's creative is cloned with the new url_tags and the ad is repointed at the clone. The clone re-references the source wholesale — the existing Facebook post, the creative spec, or the Instagram post — so media, copy, destination link and CTA are preserved, along with the post's likes and comments. Side effect: every updated ad re-enters Meta review. Ads whose url_tags already match are skipped, so re-running is safe. Dynamic creatives (asset_feed_spec) are reported as skipped. Use dry_run to preview.`,
+      description: `${WRITE_WARNING}Change the UTM parameters (url_tags) of one or more live ads. Meta creatives are immutable, so each ad's creative is cloned with the new url_tags and the ad is repointed at the clone. The clone re-references the source wholesale — the existing Facebook post, the creative spec, or the Instagram post — so media, copy, destination link and CTA are preserved, along with the post's likes and comments. Side effect: every updated ad re-enters Meta review. Ads whose url_tags already match are skipped, so re-running converges — though an ad whose write failed mid-flight gets its own replacement creative on retry, leaving the earlier one unused (the response reports its id). Do not run two batches over the same ads concurrently. Dynamic creatives (asset_feed_spec) are reported as skipped. Use dry_run to preview.`,
       inputSchema: {
         ad_ids: z
           .array(z.string())
@@ -318,6 +342,7 @@ export function registerAdTools(server: McpServer): void {
       const skipped: SkippedAd[] = [];
       const failed: FailedAd[] = [];
       const planned: PlannedRebuild[] = [];
+      const warnings: string[] = [];
 
       const groups = new Map<string, CreativeGroup>();
       for (const rawAdId of new Set(ad_ids)) {
@@ -418,9 +443,29 @@ export function registerAdTools(server: McpServer): void {
                 new_creative_id: newCreativeId,
               });
             } catch (err) {
+              // The write may have reached Meta with only its response lost, so
+              // read the ad back before claiming it was left untouched.
+              const outcome = await readCreativeIdAfterFailedRepoint(adId);
+
+              if (outcome === newCreativeId) {
+                updated.push({
+                  ad_id: adId,
+                  old_creative_id: group.creative_id,
+                  new_creative_id: newCreativeId,
+                });
+                warnings.push(
+                  `Ad ${adId} reported an error (${errorMessage(err)}) but is confirmed to point at creative ${newCreativeId}.`,
+                );
+                continue;
+              }
+
+              const state =
+                outcome === undefined
+                  ? `the ad's creative could not be read back, so its state is unknown`
+                  : `the ad still points at ${outcome}`;
               failed.push({
                 ad_id: adId,
-                error: `Creative ${newCreativeId} was created but the ad still points at ${group.creative_id}: ${errorMessage(err)}. Retry with ads_update_ad { ad_id: "${adId}", creative_id: "${newCreativeId}" }.`,
+                error: `Creative ${newCreativeId} was created but ${state}: ${errorMessage(err)}. Retry with ads_update_ad { ad_id: "${adId}", creative_id: "${newCreativeId}" }.`,
                 new_creative_id: newCreativeId,
               });
             }
@@ -435,6 +480,7 @@ export function registerAdTools(server: McpServer): void {
         updated,
         skipped,
         failed,
+        warnings,
       };
 
       const lines: string[] = dry_run

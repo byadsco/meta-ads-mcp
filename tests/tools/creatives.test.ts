@@ -200,6 +200,25 @@ describe("registerCreativeTools", () => {
       expect(fieldsParam).not.toContain("effective_link_url");
     });
 
+    it("strips a synthetic field from an entry that also carries a nested selector", async () => {
+      const server = createMockMcpServer();
+      registerCreativeTools(server as never);
+
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockFetchResponse({ id: "40782" })));
+
+      const handler = server._registeredTools[1].handler;
+      await handler({
+        creative_id: "40782",
+        fields: ["id,effective_link_url,object_story_spec{link_data,name}"],
+      });
+
+      const fieldsParam = new URL(vi.mocked(fetch).mock.calls[0][0] as string)
+        .searchParams.get("fields");
+      expect(fieldsParam).not.toContain("effective_link_url");
+      expect(fieldsParam).toContain("object_story_spec{link_data,name}");
+      expect(fieldsParam).toContain("link_url");
+    });
+
     it("keeps nested field selectors intact", async () => {
       const server = createMockMcpServer();
       registerCreativeTools(server as never);
