@@ -43,7 +43,7 @@ export function registerAllTools(server: McpServer): void {
   registerAccountTools(server);      // 3 tools
   registerCampaignTools(server);     // 5 tools
   registerAdSetTools(server);        // 6 tools
-  registerAdTools(server);           // 5 tools
+  registerAdTools(server);           // 6 tools
   registerCreativeTools(server);     // 9 tools
   registerEntityTools(server);       // 3 tools — generic helpers (get_ad_entities, update_entity, activate_entity)
   registerInsightsTools(server);     // 1 tool  — power-tool ads_get_insights
@@ -82,5 +82,5 @@ export function registerAllTools(server: McpServer): void {
   // ─── Token Management ────────────────────────────────────
   registerTokenTools(server);        // 4 tools — list / set-active / register / delete
 
-  // Total: 124 tools (79 renamed + 14 new in v3 + 3 audience-sharing + 1 invoices + 27 WhatsApp)
+  // Total: 125 tools (79 renamed + 14 new in v3 + 3 audience-sharing + 1 invoices + 27 WhatsApp + 1 url-tags)
 }

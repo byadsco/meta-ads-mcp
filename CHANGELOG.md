@@ -7,6 +7,58 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Security
+
+- **`npm audit` clean again — 0 vulnerabilities.** Advisories published after
+  v3.4.1 had turned CI red on `main`: `ip-address` (SSRF / trust-boundary
+  bypass via leading-zero octets, CIDR suffixes and IPv4-mapped IPv6),
+  `fast-uri` (host confusion via backslash authority introducer),
+  `brace-expansion` (DoS) and `hono` (ReDoS in CORS middleware). Resolved by
+  patch-level bumps of six transitive packages; lockfile only, no direct
+  dependency changed.
+
+### Added
+
+- **`ads_update_ad_url_tags` — edit the UTM parameters of live ads (1-50 per
+  call).** Meta creatives are immutable (`POST /{creative_id}` only accepts
+  `name` / `status` / `adlabels`), so the tool clones each ad's creative with
+  the new `url_tags` and repoints the ad at the clone. Every strategy
+  re-references the source wholesale rather than rebuilding it field by field
+  — the existing Facebook post (`object_story_id`, preserving likes and
+  comments), the creative spec (`object_story_spec`), or the Instagram post
+  (`source_instagram_media_id`) — so media, copy, destination link and CTA
+  survive even when they are not readable back individually. Fields that live
+  beside the story rather than inside it are carried explicitly: `link_url`,
+  `degrees_of_freedom_spec` (dropping it would silently reset an ad's
+  Advantage+ creative enhancements), `adlabels`, and the rebuilt
+  `call_to_action` for Instagram creatives, which store their CTA on the
+  creative itself. Ads sharing a creative mint a single replacement. Ads whose `url_tags` already match are
+  skipped, which makes re-running a batch safe; dynamic (`asset_feed_spec`)
+  creatives are reported as skipped rather than silently altered. `url_tags:
+  ""` removes tracking parameters, a leading `?` is stripped, and `dry_run:
+  true` previews the plan without writing. The response reports every ad as
+  updated / skipped / failed and warns that updated ads re-enter Meta review.
+- **`url_tags` in creative reads** — added to the creative default fields (so
+  `ads_get_creative_details` and `ads_get_ad_creatives` surface UTMs) and
+  `ads_get_ad_creatives` gained an optional `fields` param, making an
+  account-wide UTM audit a single call.
+
+### Fixed
+
+- **`effective_link_url` no longer fails with Meta error #100.** The field is
+  derived by this server, not stored by Meta, but it appears in responses — so
+  clients echoed it back in `fields` and every such call died with
+  `-32602 Invalid parameter: (#100) Tried accessing nonexisting field`. Both
+  creative read tools now accept it as a virtual field: it is stripped from the
+  Graph request, its sources (`link_url`, `object_story_spec`,
+  `asset_feed_spec`) are requested instead, and the derived value is still
+  returned.
+- **Empty updates no longer report a false success.** `ads_update_ad_creative`
+  called without `name`, and `ads_update_ad` called with no updatable field,
+  used to POST an empty body to Meta and answer "updated successfully". Both
+  now fail with an explanation — the creative error points at
+  `ads_update_ad_url_tags` for UTM changes.
+
 ## [3.4.1] — 2026-07-22
 
 ### Security
