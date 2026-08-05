@@ -24,6 +24,7 @@ import { registerEntityTools } from "./entities.js";
 import { registerDiagnosticTools } from "./diagnostics.js";
 import { registerHelpTools } from "./help.js";
 import { registerMacroTools } from "./macros.js";
+import { registerBulkAdTools } from "./bulk-ads.js";
 import { registerWhatsAppTools } from "./whatsapp.js";
 import { registerWhatsAppTemplateTools } from "./whatsapp-templates.js";
 import { registerWhatsAppFlowTools } from "./whatsapp-flows.js";
@@ -69,6 +70,7 @@ export function registerAllTools(server: McpServer): void {
 
   // ─── Agency Macros (cross-account) ──────────────────────
   registerMacroTools(server);        // 2 tools — diagnose_underperformance, portfolio_summary
+  registerBulkAdTools(server);       // 1 tool  — ads_bulk_create_video_ads (upload → creative → ad)
 
   // ─── Instagram ──────────────────────────────────────────
   registerInstagramTools(server);    // 2 tools — IG account & media lookup
@@ -82,5 +84,5 @@ export function registerAllTools(server: McpServer): void {
   // ─── Token Management ────────────────────────────────────
   registerTokenTools(server);        // 4 tools — list / set-active / register / delete
 
-  // Total: 125 tools (79 renamed + 14 new in v3 + 3 audience-sharing + 1 invoices + 27 WhatsApp + 1 url-tags)
+  // Total: 126 tools (79 renamed + 14 new in v3 + 3 audience-sharing + 1 invoices + 27 WhatsApp + 1 url-tags + 1 bulk video ads)
 }
