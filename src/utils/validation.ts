@@ -29,3 +29,12 @@ export function buildFieldsParam(
 ): string {
   return (fields && fields.length > 0 ? fields : defaults).join(",");
 }
+
+/**
+ * Normalize a url_tags value: Meta stores it without the leading "?", and
+ * keeping it would produce "??utm_source=..." in the final click URL.
+ */
+export function normalizeUrlTags(value: string): string {
+  const trimmed = value.trim();
+  return trimmed.startsWith("?") ? trimmed.slice(1) : trimmed;
+}

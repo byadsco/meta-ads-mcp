@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { requireOneOf, buildFieldsParam } from "../../src/utils/validation.js";
+import { requireOneOf, buildFieldsParam, normalizeUrlTags } from "../../src/utils/validation.js";
 
 describe("requireOneOf", () => {
   it("does not throw when at least one field is present", () => {
@@ -62,5 +62,33 @@ describe("buildFieldsParam", () => {
 
   it("handles single field", () => {
     expect(buildFieldsParam(["id"], ["id", "name"])).toBe("id");
+  });
+});
+
+describe("normalizeUrlTags", () => {
+  it("leaves a plain query string untouched", () => {
+    expect(normalizeUrlTags("utm_source=meta&utm_medium=paid")).toBe(
+      "utm_source=meta&utm_medium=paid",
+    );
+  });
+
+  it("strips a single leading question mark", () => {
+    expect(normalizeUrlTags("?utm_source=meta")).toBe("utm_source=meta");
+  });
+
+  it("strips only one question mark", () => {
+    expect(normalizeUrlTags("??utm_source=meta")).toBe("?utm_source=meta");
+  });
+
+  it("trims surrounding whitespace before stripping", () => {
+    expect(normalizeUrlTags("  ?utm_source=meta  ")).toBe("utm_source=meta");
+  });
+
+  it("returns an empty string unchanged", () => {
+    expect(normalizeUrlTags("")).toBe("");
+  });
+
+  it("returns an empty string for whitespace only", () => {
+    expect(normalizeUrlTags("   ")).toBe("");
   });
 });
