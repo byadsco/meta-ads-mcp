@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { McpError, ErrorCode } from "@modelcontextprotocol/sdk/types.js";
 import { metaApiClient } from "../meta/client.js";
 import { normalizeAccountId, validateMetaId } from "../utils/format.js";
 import { assertSafePublicUrl, UnsafeUrlError } from "../utils/url-guard.js";
@@ -8,6 +9,11 @@ import { CREATE, WRITE_WARNING } from "./_register.js";
 
 const POLL_INTERVAL_MS = 5000;
 const MAX_VIDEOS_PER_CALL = 20;
+
+// Cloud Run kills the request at 300s (--timeout=300 in deploy.yml). Finishing
+// under that is what keeps already-created ad IDs in the response: losing them
+// makes a retry create paid duplicates.
+const BATCH_BUDGET_MS = 240_000;
 
 interface VideoStatus {
   status?: { video_status?: string };
@@ -23,6 +29,7 @@ interface ItemResult {
   creative_id?: string;
   ad_id?: string;
   thumbnail_url?: string;
+  skipped?: boolean;
   error?: string;
   failed_stage?: Stage;
 }
@@ -33,6 +40,18 @@ class StageError extends Error {
   }
 }
 
+/**
+ * Meta errors that only condemn the current video (bad file, rejected params)
+ * versus ones that condemn every remaining video (expired token, rate limit,
+ * abuse signal, open circuit). Only the former may be isolated per item —
+ * retrying the rest under a throttle or abuse signal makes the block worse.
+ */
+function isItemScopedError(err: unknown): boolean {
+  if (err instanceof StageError || err instanceof UnsafeUrlError) return true;
+  if (err instanceof McpError) return err.code === ErrorCode.InvalidParams;
+  return false;
+}
+
 async function waitForVideoReady(videoId: string, maxWaitSeconds: number): Promise<VideoStatus> {
   const deadline = Date.now() + maxWaitSeconds * 1000;
 
@@ -41,16 +60,17 @@ async function waitForVideoReady(videoId: string, maxWaitSeconds: number): Promi
       fields: "status,thumbnails{uri,is_preferred}",
     });
 
-    if (video.status?.video_status === "ready") return video;
+    const videoStatus = video.status?.video_status;
+    if (videoStatus === "ready") return video;
 
-    if (video.status?.video_status === "error") {
+    if (videoStatus === "error") {
       throw new StageError("processing", `Meta reported a processing error for video ${videoId}.`);
     }
 
-    if (Date.now() >= deadline) {
+    if (Date.now() + POLL_INTERVAL_MS >= deadline) {
       throw new StageError(
         "processing",
-        `Video ${videoId} was still "${video.status?.video_status ?? "unknown"}" after ${maxWaitSeconds}s. It keeps processing on Meta's side — retry later with ads_create_ad_creative using this video_id.`,
+        `Video ${videoId} was still "${videoStatus ?? "unknown"}" when the ${maxWaitSeconds}s processing budget ran out. The video is uploaded and keeps processing on Meta's side — finish it later with ads_create_ad_creative using this video_id.`,
       );
     }
 
@@ -67,7 +87,7 @@ export function registerBulkAdTools(server: McpServer): void {
   server.registerTool(
     "ads_bulk_create_video_ads",
     {
-      description: `${WRITE_WARNING}Turn a list of public video URLs into live ads in one call: uploads each video, waits for Meta to finish processing, auto-selects a thumbnail, builds the creative, and creates the ad in the given ad set. Ads are created PAUSED by default. Per-video copy overrides the shared defaults. One video failing does not abort the rest — every item reports its own outcome and the stage it failed at. Use this instead of chaining ads_upload_ad_video → ads_create_ad_creative → ads_create_ad manually.`,
+      description: `${WRITE_WARNING}Turn a list of public video URLs into ads in one call: uploads each video, waits for Meta to finish processing, auto-selects a thumbnail, builds the creative, and creates the ad in the given ad set. Ads are created PAUSED by default. Per-video copy overrides the shared defaults. A video rejected by Meta does not abort the rest — every item reports its own outcome and the stage it failed at — but an expired token, rate limit or abuse signal stops the batch immediately. The whole call is capped at ${BATCH_BUDGET_MS / 1000}s so it always returns the IDs it created; videos left unprocessed come back marked "skipped", and re-running with only those is safe. Use this instead of chaining ads_upload_ad_video → ads_create_ad_creative → ads_create_ad manually.`,
       inputSchema: {
         account_id: z.string().describe("Ad account ID"),
         ad_set_id: z.string().describe("Ad set ID that will hold the new ads"),
@@ -79,13 +99,13 @@ export function registerBulkAdTools(server: McpServer): void {
         videos: z
           .array(
             z.object({
-              file_url: z.string().describe("Public URL of the video file (MP4/MOV)"),
-              ad_name: z.string().optional().describe("Name of the resulting ad. Defaults to the video name or file URL."),
-              video_name: z.string().optional().describe("Name of the video in the ad account library"),
+              file_url: z.string().min(1).describe("Public https URL of the video file (MP4/MOV)"),
+              ad_name: z.string().min(1).optional().describe("Name of the resulting ad. Defaults to the video name, then to 'Video ad N'."),
+              video_name: z.string().min(1).optional().describe("Name of the video in the ad account library"),
               message: z.string().optional().describe("Primary text. Overrides the shared message."),
               headline: z.string().optional().describe("Headline. Overrides the shared headline."),
               description: z.string().optional().describe("Description below the headline. Overrides the shared description."),
-              link_url: z.string().optional().describe("Destination URL. Overrides the shared link_url."),
+              link_url: z.string().min(1).optional().describe("Destination URL. Overrides the shared link_url."),
               call_to_action_type: ctaEnum.optional().describe("CTA button. Overrides the shared call_to_action_type."),
             }),
           )
@@ -95,7 +115,7 @@ export function registerBulkAdTools(server: McpServer): void {
         message: z.string().optional().describe("Shared primary text applied to every video without its own message"),
         headline: z.string().optional().describe("Shared headline applied to every video without its own headline"),
         description: z.string().optional().describe("Shared description applied to every video without its own description"),
-        link_url: z.string().optional().describe("Shared destination URL applied to every video without its own link_url"),
+        link_url: z.string().min(1).optional().describe("Shared destination URL applied to every video without its own link_url"),
         call_to_action_type: ctaEnum.optional().describe("Shared CTA button applied to every video without its own CTA"),
         url_tags: z.string().optional().describe("Query params appended to clicked URLs (e.g. 'utm_source=meta&utm_medium=paid')"),
         status: z
@@ -105,9 +125,9 @@ export function registerBulkAdTools(server: McpServer): void {
         max_wait_seconds: z
           .number()
           .min(0)
-          .max(600)
-          .default(180)
-          .describe("How long to wait for each video to finish processing before giving up on it"),
+          .max(240)
+          .default(120)
+          .describe("Per-video cap on waiting for Meta to finish processing. Also bounded by the batch-wide time budget."),
       },
       annotations: { ...CREATE },
     },
@@ -123,14 +143,25 @@ export function registerBulkAdTools(server: McpServer): void {
         ? validateMetaId(instagram_actor_id, "instagram_actor")
         : undefined;
 
+      const batchDeadline = Date.now() + BATCH_BUDGET_MS;
       const results: ItemResult[] = [];
+      let systemicError: unknown;
 
       for (const [index, video] of videos.entries()) {
         const adName = video.ad_name ?? video.video_name ?? `Video ad ${index + 1}`;
         const result: ItemResult = { file_url: video.file_url, ad_name: adName };
 
-        // A bulk tool must not lose the successful items to one bad input, so each
-        // stage failure is recorded per item instead of rejecting the whole call.
+        const remainingMs = batchDeadline - Date.now();
+        if (systemicError || remainingMs <= 0) {
+          result.skipped = true;
+          result.error = systemicError
+            ? "Not attempted — the batch stopped after an account-wide error."
+            : "Not attempted — the batch time budget ran out. Re-run with the remaining videos.";
+          results.push(result);
+          continue;
+        }
+
+        let stage: Stage = "upload";
         try {
           try {
             await assertSafePublicUrl(video.file_url);
@@ -147,7 +178,11 @@ export function registerBulkAdTools(server: McpServer): void {
           });
           result.video_id = uploaded.id;
 
-          const ready = await waitForVideoReady(uploaded.id, max_wait_seconds);
+          stage = "processing";
+          const budgetSeconds = Math.min(max_wait_seconds, Math.floor(remainingMs / 1000));
+          const ready = await waitForVideoReady(uploaded.id, budgetSeconds);
+
+          stage = "creative";
           const thumbnailUrl = pickThumbnail(ready);
           if (!thumbnailUrl) {
             throw new StageError(
@@ -191,43 +226,49 @@ export function registerBulkAdTools(server: McpServer): void {
           };
           if (url_tags) creativeBody.url_tags = url_tags;
 
-          let creative: { id: string };
-          try {
-            creative = await metaApiClient.postForm<{ id: string }>(
-              `/${accountPath}/adcreatives`,
-              creativeBody,
-            );
-          } catch (err) {
-            throw new StageError("creative", err instanceof Error ? err.message : String(err));
-          }
+          const creative = await metaApiClient.postForm<{ id: string }>(
+            `/${accountPath}/adcreatives`,
+            creativeBody,
+          );
           result.creative_id = creative.id;
 
-          let ad: { id: string };
-          try {
-            ad = await metaApiClient.postForm<{ id: string }>(`/${accountPath}/ads`, {
-              name: adName,
-              adset_id: adSetIdValidated,
-              creative: JSON.stringify({ creative_id: creative.id }),
-              status,
-            });
-          } catch (err) {
-            throw new StageError("ad", err instanceof Error ? err.message : String(err));
-          }
+          stage = "ad";
+          const ad = await metaApiClient.postForm<{ id: string }>(`/${accountPath}/ads`, {
+            name: adName,
+            adset_id: adSetIdValidated,
+            creative: JSON.stringify({ creative_id: creative.id }),
+            status,
+          });
           result.ad_id = ad.id;
         } catch (err) {
           result.error = err instanceof Error ? err.message : String(err);
-          result.failed_stage = err instanceof StageError ? err.stage : "upload";
+          result.failed_stage = err instanceof StageError ? err.stage : stage;
+          if (!isItemScopedError(err)) systemicError = err;
         }
 
         results.push(result);
       }
 
       const created = results.filter((r) => r.ad_id);
-      const failed = results.filter((r) => !r.ad_id);
+      const skipped = results.filter((r) => r.skipped);
+      const failed = results.filter((r) => !r.ad_id && !r.skipped);
+
+      // Nothing was created, so there are no IDs worth preserving: surface the
+      // account-wide error the way every other tool does.
+      if (systemicError && created.length === 0) throw systemicError;
 
       const lines = [
         `Created ${created.length} of ${results.length} ad(s) in ad set ${adSetIdValidated} with status ${status}.`,
       ];
+      if (systemicError) {
+        lines.push(
+          "",
+          `⚠️ The batch stopped early on an account-wide error: ${
+            systemicError instanceof Error ? systemicError.message : String(systemicError)
+          }`,
+          "Fix that first, then re-run with the skipped videos only.",
+        );
+      }
       if (created.length > 0) {
         lines.push(
           "",
@@ -240,6 +281,13 @@ export function registerBulkAdTools(server: McpServer): void {
           "",
           "Failed:",
           ...failed.map((r) => `• ${r.ad_name} — failed at ${r.failed_stage}: ${r.error}`),
+        );
+      }
+      if (skipped.length > 0) {
+        lines.push(
+          "",
+          `Not attempted (${skipped.length}):`,
+          ...skipped.map((r) => `• ${r.ad_name} — ${r.file_url}`),
         );
       }
 

@@ -12,8 +12,14 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - `ads_bulk_create_video_ads` — turns a list of public video URLs into ads in a
   single call: uploads each video, waits for Meta to finish processing, picks the
   preferred thumbnail automatically, builds the creative and creates the ad in the
-  target ad set. Ads are created `PAUSED` by default and a failing video no longer
-  aborts the rest of the batch — each item reports its own outcome and failure stage.
+  target ad set. Ads are created `PAUSED` by default.
+
+  A video rejected by Meta does not abort the batch — each item reports its own
+  outcome and failure stage — but an account-wide error (expired token, rate
+  limit, abuse signal) stops it immediately instead of retrying under a block.
+  The call is capped at 240s so it always returns under the Cloud Run request
+  timeout with the ad IDs it already created; videos left over come back marked
+  `skipped`, making a re-run of just those safe from paid duplicates.
 
 ## [3.4.1] — 2026-07-22
 
