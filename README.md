@@ -17,7 +17,7 @@
 - [Who is this for?](#who-is-this-for)
 - [Aligned with Meta's official MCP](#aligned-with-metas-official-mcp)
 - [Features](#features)
-- [Tools (126 total)](#tools-126-total)
+- [Tools (127 total)](#tools-127-total)
 - [Quick start](#quick-start)
 - [Authentication — three modes](#authentication--three-modes)
 - [Setting up Sign in with Meta](#setting-up-sign-in-with-meta)
@@ -78,7 +78,7 @@ When to use which:
 
 ## Features
 
-- **126 tools** covering campaign management, creatives, targeting, audiences, reporting, comments, billing, invoices, tokens, Instagram workflows, WhatsApp Business management, rate-limit observability, semantic insight views, diagnostics, help-center search, and agency-tier cross-account macros.
+- **127 tools** covering campaign management, creatives, targeting, audiences, reporting, comments, billing, invoices, tokens, Instagram workflows, WhatsApp Business management, rate-limit observability, semantic insight views, diagnostics, help-center search, and agency-tier cross-account macros.
 - **Aligned vocabulary** with Meta's official MCP server so agents transfer cleanly between both.
 - **Sign in with Meta (Facebook Login)** — replaces shared PINs. Each user lands their own long-lived (60-day) Meta token.
 - **System User token registry** — for tokens that don't expire, register them per user from the consent UI.
@@ -94,7 +94,7 @@ When to use which:
 - **Async reports with safe polling** — `ads_run_report_and_wait` one-shot with 5 s-min / 60 s-max backoff, proper `Job Failed` / `Job Skipped` handling.
 - **Retry logic** — exponential backoff on truly transient errors only (never on throttled requests).
 
-## Tools (126 total)
+## Tools (127 total)
 
 Ads tools use the `ads_*` naming convention, aligned with Meta's official MCP server; WhatsApp Business tools use `whatsapp_*`. Read tools declare `readOnlyHint: true`; mutating tools declare `destructiveHint` / `idempotentHint` and prefix descriptions with a `⚠️` warning.
 
@@ -105,6 +105,7 @@ Ads tools use the `ads_*` naming convention, aligned with Meta's official MCP se
 | Ad Sets | 6 | CRUD + clone bundle (native ad-copy, 100% creative-type coverage incl. dynamic/Advantage+) |
 | Ads | 6 | CRUD with creative assignment, UTM (`url_tags`) editing |
 | Creatives | 9 | List, details, create/update, image/video library and uploads |
+| Creative media | 1 | `ads_get_creative_media` — downloads an ad's images (incl. carousel cards and video thumbnails) and returns them as inline MCP image blocks for visual analysis; videos come with a signed source URL for external download |
 | Generic entity helpers | 3 | `ads_get_ad_entities`, `ads_update_entity`, `ads_activate_entity` (mirror official MCP) |
 | Insights — power tool | 1 | `ads_get_insights` — full control over breakdowns, attribution, time series |
 | Insights views | 5 | `performance_trend`, `anomaly_signal`, `auction_ranking_benchmarks`, `industry_benchmark`, `advertiser_context` |

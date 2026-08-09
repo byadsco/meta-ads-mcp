@@ -3,16 +3,17 @@ import { registerAllTools } from "../../src/tools/index.js";
 import { createMockMcpServer } from "../setup.js";
 
 describe("registerAllTools", () => {
-  it("registers exactly 126 tools total", () => {
+  it("registers exactly 127 tools total", () => {
     // 79 v2 tools renamed (with account_insights removed → 79) + 14 new in v3 +
     //   3 audience-sharing tools (share / unshare / get-shared-accounts) +
     //   1 invoices tool (ads_get_invoices) +
     //   27 WhatsApp Business tools (whatsapp_*) +
     //   1 UTM editing tool (ads_update_ad_url_tags) +
-    //   1 bulk video-ad macro (ads_bulk_create_video_ads).
+    //   1 bulk video-ad macro (ads_bulk_create_video_ads) +
+    //   1 creative media tool (ads_get_creative_media).
     const server = createMockMcpServer();
     registerAllTools(server as never);
-    expect(server.registerTool).toHaveBeenCalledTimes(126);
+    expect(server.registerTool).toHaveBeenCalledTimes(127);
   });
 
   it("registers all tools with unique names", () => {
@@ -102,6 +103,7 @@ describe("registerAllTools", () => {
     expect(names).toContain("ads_create_campaign");
     expect(names).toContain("ads_get_insights");
     expect(names).toContain("ads_get_creative_details");
+    expect(names).toContain("ads_get_creative_media");
     expect(names).toContain("ads_update_ad_url_tags");
     expect(names).toContain("ads_clone_ad_set_bundle");
 

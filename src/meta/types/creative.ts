@@ -18,6 +18,7 @@ export type CallToActionType =
 export interface AdCreative {
   id: string;
   name: string;
+  account_id?: string;
   title?: string;
   body?: string;
   image_hash?: string;

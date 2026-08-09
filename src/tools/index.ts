@@ -4,6 +4,7 @@ import { registerCampaignTools } from "./campaigns.js";
 import { registerAdSetTools } from "./adsets.js";
 import { registerAdTools } from "./ads.js";
 import { registerCreativeTools } from "./creatives.js";
+import { registerCreativeMediaTools } from "./creative-media.js";
 import { registerInsightsTools } from "./insights.js";
 import { registerInsightsViewTools } from "./insights-views.js";
 import { registerTargetingTools } from "./targeting.js";
@@ -46,6 +47,7 @@ export function registerAllTools(server: McpServer): void {
   registerAdSetTools(server);        // 6 tools
   registerAdTools(server);           // 6 tools
   registerCreativeTools(server);     // 9 tools
+  registerCreativeMediaTools(server); // 1 tool — creative media as inline image blocks
   registerEntityTools(server);       // 3 tools — generic helpers (get_ad_entities, update_entity, activate_entity)
   registerInsightsTools(server);     // 1 tool  — power-tool ads_get_insights
   registerInsightsViewTools(server); // 5 tools — semantic insight views
@@ -84,5 +86,5 @@ export function registerAllTools(server: McpServer): void {
   // ─── Token Management ────────────────────────────────────
   registerTokenTools(server);        // 4 tools — list / set-active / register / delete
 
-  // Total: 126 tools (79 renamed + 14 new in v3 + 3 audience-sharing + 1 invoices + 27 WhatsApp + 1 url-tags + 1 bulk video ads)
+  // Total: 127 tools (79 renamed + 14 new in v3 + 3 audience-sharing + 1 invoices + 27 WhatsApp + 1 url-tags + 1 bulk video ads + 1 creative media)
 }

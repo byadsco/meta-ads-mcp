@@ -42,16 +42,16 @@ export const ctaEnum = z.enum([
   "SHOP_WITH_AI", "TRY_ON_WITH_AI",
 ]);
 
-function asRecord(value: unknown): Record<string, unknown> | undefined {
+export function asRecord(value: unknown): Record<string, unknown> | undefined {
   return typeof value === "object" && value !== null ? value as Record<string, unknown> : undefined;
 }
 
-function getString(record: Record<string, unknown> | undefined, key: string): string | undefined {
+export function getString(record: Record<string, unknown> | undefined, key: string): string | undefined {
   const value = record?.[key];
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
-function getNestedString(record: Record<string, unknown> | undefined, path: string[]): string | undefined {
+export function getNestedString(record: Record<string, unknown> | undefined, path: string[]): string | undefined {
   let current: unknown = record;
   for (const key of path) {
     if (typeof current !== "object" || current === null || !(key in current)) {
