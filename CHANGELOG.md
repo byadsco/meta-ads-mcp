@@ -19,6 +19,22 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
+- **`ads_get_creative_media` — see the actual creative, not just its URLs.**
+  Given an `ad_id` or `creative_id`, the tool walks the creative
+  (`image_url`/`image_hash`, `object_story_spec` link/video data including
+  carousel `child_attachments`, `asset_feed_spec` assets, and the upsized
+  `thumbnail_url` fallback for boosted posts), resolves image hashes through a
+  single batched `adimages` lookup, downloads each image through the existing
+  SSRF-hardened downloader, and returns them as inline MCP `image` content
+  blocks that a multimodal model (Claude, Gemini) can analyze directly. Videos
+  cannot be embedded as MCP blocks, so each one returns its best thumbnail as
+  an image block plus a signed short-lived `source` URL (and a ready-to-use
+  download hint) in the JSON metadata for external download or video-capable
+  models. Response size is bounded by a `max_images` cap (default 5), an 8 MB
+  per-image limit and a 20 MB cumulative budget; `image_size: "small"` swaps in
+  128px previews to save context. Partial failures (an expired CDN URL, an
+  unresolvable hash) are reported per-asset without failing the call.
+
 - **`ads_update_ad_url_tags` — edit the UTM parameters of live ads (1-50 per
   call).** Meta creatives are immutable (`POST /{creative_id}` only accepts
   `name` / `status` / `adlabels`), so the tool clones each ad's creative with
