@@ -45,7 +45,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@google-cloud/firestore": "^8.5.0",
+    "@google-cloud/firestore": "^8.7.1",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
