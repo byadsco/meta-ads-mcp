@@ -7,6 +7,8 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [3.5.0] — 2026-08-09
+
 ### Security
 
 - **`npm audit` clean again — 0 vulnerabilities.** Advisories published after
@@ -59,6 +61,20 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   `ads_get_ad_creatives` gained an optional `fields` param, making an
   account-wide UTM audit a single call.
 
+- **`ads_bulk_create_video_ads`** — turns a list of public video URLs into ads
+  in a single call: uploads each video, waits for Meta to finish processing,
+  picks the preferred thumbnail automatically, builds the creative and creates
+  the ad in the target ad set. Ads are created `PAUSED` by default.
+
+  A video rejected by Meta does not abort the batch — each item reports its own
+  outcome and failure stage — but an account-wide error (expired token, rate
+  limit, abuse signal) stops it immediately instead of retrying under a block.
+  The call aims to finish within 180s, well under the Cloud Run request timeout,
+  so it returns the IDs it already created; videos left over come back marked
+  `skipped`, making a re-run of just those safe from paid duplicates. As with
+  `ads_run_report_and_wait`, the budget is best-effort — an individual Graph
+  request can still overrun it.
+
 ### Fixed
 
 - **`effective_link_url` no longer fails with Meta error #100.** The field is
@@ -74,20 +90,6 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   used to POST an empty body to Meta and answer "updated successfully". Both
   now fail with an explanation — the creative error points at
   `ads_update_ad_url_tags` for UTM changes.
-
-- `ads_bulk_create_video_ads` — turns a list of public video URLs into ads in a
-  single call: uploads each video, waits for Meta to finish processing, picks the
-  preferred thumbnail automatically, builds the creative and creates the ad in the
-  target ad set. Ads are created `PAUSED` by default.
-
-  A video rejected by Meta does not abort the batch — each item reports its own
-  outcome and failure stage — but an account-wide error (expired token, rate
-  limit, abuse signal) stops it immediately instead of retrying under a block.
-  The call aims to finish within 180s, well under the Cloud Run request timeout,
-  so it returns the IDs it already created; videos left over come back marked
-  `skipped`, making a re-run of just those safe from paid duplicates. As with
-  `ads_run_report_and_wait`, the budget is best-effort — an individual Graph
-  request can still overrun it.
 
 ## [3.4.1] — 2026-07-22
 
