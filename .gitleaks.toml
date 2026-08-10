@@ -6,6 +6,10 @@
 #
 # Update CLAUDE.md and ~/.claude/skills/pre-deploy-guard/scripts/scan-secrets.sh
 # in tandem when adding rules here so the local guard and CI agree.
+#
+# The scanner version is pinned in .gitleaks-version and read by both CI
+# (.github/workflows/ci.yml) and the local guard. Keep them on the same
+# version — gitleaks releases genuinely disagree about allowlist semantics.
 
 title = "meta-ads-mcp gitleaks rules"
 
@@ -140,15 +144,29 @@ paths = [
   '''(^|/)pnpm-lock\.yaml$''',
   '''(^|/)yarn\.lock$''',
 ]
+# EVERY entry below MUST start with an explicit (?i) or (?-i).
+#
+# gitleaks >= ~8.30 joins these into a single alternation, so a bare inline
+# (?i) leaks into every regex that follows it and silently widens the
+# allowlist. That is not theoretical: it made `test[-_]?(token|secret|key)`
+# case-insensitive, which allowlisted a real-looking `apify_api_TESTtoken…`
+# value that gitleaks 8.24.3 (what CI runs) correctly flagged. The two
+# spellings of `placeholder` below are the tell that case-sensitivity was
+# always the intent here.
+#
+# Stating the flag on each entry makes the list mean the same thing on every
+# gitleaks version, regardless of ordering.
 regexes = [
   # Common placeholder values used in docs and examples.
   '''(?i)YOUR_(META|OAUTH|TOKEN|SESSION|MCP|API)_[A-Z_]+''',
   '''(?i)EXAMPLE_(SECRET|KEY|TOKEN)''',
   '''(?i)<your-[a-z-]+>''',
-  # Synthetic values used in tests — clearly not real secrets.
-  '''dummy[-_]?(token|secret|key)''',
-  '''test[-_]?(token|secret|key)''',
-  '''fixture''',
-  '''placeholder''',
-  '''PLACEHOLDER''',
+  # Synthetic values used in tests — clearly not real secrets. Case-sensitive
+  # on purpose: an uppercase TEST/DUMMY inside an otherwise real-looking
+  # credential must NOT buy an exemption.
+  '''(?-i)dummy[-_]?(token|secret|key)''',
+  '''(?-i)test[-_]?(token|secret|key)''',
+  '''(?-i)fixture''',
+  '''(?-i)placeholder''',
+  '''(?-i)PLACEHOLDER''',
 ]

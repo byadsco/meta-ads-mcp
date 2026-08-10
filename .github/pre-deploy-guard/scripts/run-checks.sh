@@ -218,6 +218,22 @@ fi
 # ─────────────────────────────────────────────────────────────────
 echo "── gitleaks ─────────────────────────────────────────────────"
 if command -v gitleaks >/dev/null 2>&1; then
+  # Version drift between here and CI is not cosmetic: gitleaks releases
+  # disagree about allowlist semantics (an inline (?i) leaks across entries
+  # from ~8.30 on), so a mismatched local binary can report "clean" on
+  # content CI rejects. .gitleaks-version is the shared pin.
+  if [ -f .gitleaks-version ]; then
+    want="$(tr -d '[:space:]' < .gitleaks-version)"
+    have="$(gitleaks version 2>/dev/null | tr -d '[:space:]')"
+    if [ -n "$want" ] && [ "$have" != "$want" ]; then
+      mark_fail "gitleaks version mismatch — CI pins $want, this machine has ${have:-unknown}"
+      echo "        A green scan here would not predict CI. Install the pinned version:"
+      echo "          brew install gitleaks@$want   # or download the $want release binary"
+      echo "          https://github.com/gitleaks/gitleaks/releases/tag/v$want"
+      echo "        If the pin itself is stale, bump .gitleaks-version (CI reads the same file)."
+    fi
+  fi
+
   GITLEAKS_ARGS=(git --staged --redact --no-banner)
   [ -f .gitleaks.toml ] && GITLEAKS_ARGS+=(--config .gitleaks.toml)
   gitleaks "${GITLEAKS_ARGS[@]}" >"$LOG" 2>&1

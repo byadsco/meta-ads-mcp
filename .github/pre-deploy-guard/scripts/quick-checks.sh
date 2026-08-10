@@ -73,6 +73,17 @@ fi
 # 3. gitleaks (staged-only). Pure Go binary — no npm fallback.
 echo "── gitleaks ─────────────────────────────────────────────────"
 if command -v gitleaks >/dev/null 2>&1; then
+  # See run-checks.sh: gitleaks releases disagree about allowlist semantics,
+  # so a version mismatch means a clean scan here does not predict CI.
+  if [ -f .gitleaks-version ]; then
+    want="$(tr -d '[:space:]' < .gitleaks-version)"
+    have="$(gitleaks version 2>/dev/null | tr -d '[:space:]')"
+    if [ -n "$want" ] && [ "$have" != "$want" ]; then
+      mark_fail "gitleaks version mismatch — CI pins $want, this machine has ${have:-unknown}"
+      echo "        Install the pinned version, or bump .gitleaks-version if the pin is stale."
+    fi
+  fi
+
   GITLEAKS_ARGS=(git --staged --redact --no-banner)
   [ -f .gitleaks.toml ] && GITLEAKS_ARGS+=(--config .gitleaks.toml)
   gitleaks "${GITLEAKS_ARGS[@]}" >"$LOG" 2>&1

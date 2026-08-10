@@ -7,6 +7,29 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Security
+
+- **The global gitleaks allowlist was silently far wider than written.** From
+  roughly gitleaks 8.30 on, the allowlist `regexes` are joined into a single
+  alternation, so an inline `(?i)` leaks into every entry that follows it. In
+  practice that turned `test[-_]?(token|secret|key)` case-insensitive, which
+  exempted any credential containing an uppercase `TEST` — a real-looking
+  `apify_api_TESTtoken…` value passed a local scan while CI (which runs the
+  older 8.24.3) correctly flagged it. The two spellings of `placeholder` in the
+  list were the tell that case-sensitivity had always been the intent.
+  Every entry now declares `(?i)` or `(?-i)` explicitly, so the list means the
+  same thing on every gitleaks version regardless of ordering.
+- Pinned the scanner version in [.gitleaks-version](.gitleaks-version), read by
+  both [ci.yml](.github/workflows/ci.yml) and the local guard scripts, which
+  now fail on a mismatch instead of letting a green local run imply a green CI.
+  The workflow validates the pin is a bare semver before it reaches
+  `GITHUB_ENV`, since it is checked-out repo content.
+- Added `tests/gitleaks-config.test.ts` to keep the case-flag convention from
+  regressing: it asserts every allowlist regex declares its flag, that the
+  fixture exemptions stay case-sensitive, and that the `apify-api-token` rule
+  still matches a production-shaped token while ignoring the repo's short
+  fixtures.
+
 ### Added
 
 - **Meta Ad Library scraping via Apify — 8 new `ads_library_*` tools (127 → 135).**
