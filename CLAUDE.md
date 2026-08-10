@@ -29,7 +29,11 @@ Before **any** `git commit -m`, `git push`, `gcloud run deploy`, `docker push`, 
 3. `npm test` passes (runs vitest).
 4. `npm run build` passes (TypeScript build).
 5. **No prohibited files in staging**: `.env`, `.env.*` (except `.env.example`), `*.key`, `*.pem`, `credentials.json`, `service-account*.json`, SSH private keys, `*.p12`, `*.pfx`.
-6. **`gitleaks git --staged --config .gitleaks.toml`** finds no secrets.
+6. **`gitleaks git --staged --config .gitleaks.toml`** finds no secrets. Your
+   local gitleaks must match the version pinned in [.gitleaks-version](.gitleaks-version)
+   — CI reads the same file, and different releases disagree about allowlist
+   semantics, so a mismatched binary can report "clean" on content CI rejects.
+   Both guard scripts fail loudly on a mismatch.
 7. **No project-specific patterns** appear in the staged diff. Custom regex covers (full list in [.gitleaks.toml](.gitleaks.toml)):
    - `META_APP_SECRET=`, `OAUTH_SECRET=`, `OAUTH_APPROVAL_PIN=`, `SESSION_COOKIE_SECRET=`, `TOKEN_ENCRYPTION_KEY=`, `MCP_API_KEY=`
    - Meta access tokens: `EAA[A-Za-z0-9]{20,}`

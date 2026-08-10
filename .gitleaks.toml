@@ -6,6 +6,10 @@
 #
 # Update CLAUDE.md and ~/.claude/skills/pre-deploy-guard/scripts/scan-secrets.sh
 # in tandem when adding rules here so the local guard and CI agree.
+#
+# The scanner version is pinned in .gitleaks-version and read by both CI
+# (.github/workflows/ci.yml) and the local guard. Keep them on the same
+# version — gitleaks releases genuinely disagree about allowlist semantics.
 
 title = "meta-ads-mcp gitleaks rules"
 
@@ -131,24 +135,44 @@ commits = [
   "245fa2cf1aa2aa43f80044ca206888e61e73eaf0",
   "79c5edcc82f8c5fa79b75d4bf16e6c14c785a0ad",
 ]
+# Same explicit-flag rule as `regexes` below — `paths` is joined the same way.
+# Verified: with a leading (?i) entry, a following case-sensitive pattern goes
+# case-insensitive and starts excluding files it was never meant to (a probe
+# named SECRETS.NOTES stopped being scanned). Every entry states its flag.
 paths = [
-  '''(^|/)\.env\.example$''',
-  '''(^|/)\.env(\..*)?$''',
-  '''(^|/)\.gitleaks\.toml$''',
-  '''(^|/)\.gitleaks-baseline\.json$''',
-  '''(^|/)package-lock\.json$''',
-  '''(^|/)pnpm-lock\.yaml$''',
-  '''(^|/)yarn\.lock$''',
+  '''(?-i)(^|/)\.env\.example$''',
+  '''(?-i)(^|/)\.env(\..*)?$''',
+  '''(?-i)(^|/)\.gitleaks\.toml$''',
+  '''(?-i)(^|/)\.gitleaks-baseline\.json$''',
+  '''(?-i)(^|/)package-lock\.json$''',
+  '''(?-i)(^|/)pnpm-lock\.yaml$''',
+  '''(?-i)(^|/)yarn\.lock$''',
 ]
+# EVERY entry below MUST start with an explicit (?i) or (?-i).
+#
+# gitleaks joins allowlist patterns into a single alternation (an optimization
+# promoted in 8.28.0), so a bare inline (?i) leaks into every pattern that
+# follows it and silently widens the allowlist. It applies to `paths` as well
+# as `regexes`.
+#
+# That is not theoretical: it made `test[-_]?(token|secret|key)`
+# case-insensitive, which allowlisted a real-looking `apify_api_TESTtoken…`
+# value that gitleaks 8.24.3 correctly flagged. The two spellings of
+# `placeholder` below are the tell that case-sensitivity was always the intent.
+#
+# Stating the flag on each entry makes the list mean the same thing on every
+# gitleaks version, regardless of ordering.
 regexes = [
   # Common placeholder values used in docs and examples.
   '''(?i)YOUR_(META|OAUTH|TOKEN|SESSION|MCP|API)_[A-Z_]+''',
   '''(?i)EXAMPLE_(SECRET|KEY|TOKEN)''',
   '''(?i)<your-[a-z-]+>''',
-  # Synthetic values used in tests — clearly not real secrets.
-  '''dummy[-_]?(token|secret|key)''',
-  '''test[-_]?(token|secret|key)''',
-  '''fixture''',
-  '''placeholder''',
-  '''PLACEHOLDER''',
+  # Synthetic values used in tests — clearly not real secrets. Case-sensitive
+  # on purpose: an uppercase TEST/DUMMY inside an otherwise real-looking
+  # credential must NOT buy an exemption.
+  '''(?-i)dummy[-_]?(token|secret|key)''',
+  '''(?-i)test[-_]?(token|secret|key)''',
+  '''(?-i)fixture''',
+  '''(?-i)placeholder''',
+  '''(?-i)PLACEHOLDER''',
 ]

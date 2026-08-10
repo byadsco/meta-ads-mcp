@@ -7,6 +7,39 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Security
+
+- **The global gitleaks allowlist was silently far wider than written.**
+  gitleaks joins allowlist patterns into a single alternation (an optimization
+  promoted in 8.28.0), so an inline `(?i)` leaks into every pattern that follows
+  it. In practice that turned `test[-_]?(token|secret|key)` case-insensitive,
+  which exempted any credential containing an uppercase `TEST` — a real-looking
+  `apify_api_TESTtoken…` value passed a local scan while CI (then on 8.24.3)
+  correctly flagged it. The two spellings of `placeholder` in the list were the
+  tell that case-sensitivity had always been the intent.
+  This affects **`paths` as well as `regexes`**: a probe confirmed that a
+  leading `(?i)` entry made a following case-sensitive path pattern exclude
+  `SECRETS.NOTES` too, so a file that should have been scanned was skipped
+  outright. Every pattern in both lists now declares `(?i)` or `(?-i)`
+  explicitly, so they mean the same thing on every gitleaks version regardless
+  of ordering.
+- The local guard scripts now **fail closed** around their own preconditions.
+  Previously a missing gitleaks binary was a `[SKIP]`, and a missing, empty or
+  non-semver `.gitleaks-version` silently disabled the version check — a green
+  run that reads as evidence the scan happened. All five states (no pin, empty
+  pin, non-semver pin, unreadable `gitleaks version`, binary absent) are now
+  blocking failures.
+- Pinned the scanner version in [.gitleaks-version](.gitleaks-version), read by
+  both [ci.yml](.github/workflows/ci.yml) and the local guard scripts, which
+  now fail on a mismatch instead of letting a green local run imply a green CI.
+  The workflow validates the pin is a bare semver before it reaches
+  `GITHUB_ENV`, since it is checked-out repo content.
+- Added `tests/gitleaks-config.test.ts` to keep the case-flag convention from
+  regressing: it asserts every allowlist regex declares its flag, that the
+  fixture exemptions stay case-sensitive, and that the `apify-api-token` rule
+  still matches a production-shaped token while ignoring the repo's short
+  fixtures.
+
 ### Added
 
 - **Meta Ad Library scraping via Apify — 8 new `ads_library_*` tools (127 → 135).**
