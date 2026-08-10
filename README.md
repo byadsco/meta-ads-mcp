@@ -17,7 +17,7 @@
 - [Who is this for?](#who-is-this-for)
 - [Aligned with Meta's official MCP](#aligned-with-metas-official-mcp)
 - [Features](#features)
-- [Tools (127 total)](#tools-127-total)
+- [Tools (135 total)](#tools-135-total)
 - [Quick start](#quick-start)
 - [Authentication — three modes](#authentication--three-modes)
 - [Setting up Sign in with Meta](#setting-up-sign-in-with-meta)
@@ -78,7 +78,7 @@ When to use which:
 
 ## Features
 
-- **127 tools** covering campaign management, creatives, targeting, audiences, reporting, comments, billing, invoices, tokens, Instagram workflows, WhatsApp Business management, rate-limit observability, semantic insight views, diagnostics, help-center search, and agency-tier cross-account macros.
+- **135 tools** covering campaign management, creatives, targeting, audiences, reporting, comments, billing, invoices, tokens, Instagram workflows, WhatsApp Business management, rate-limit observability, semantic insight views, diagnostics, help-center search, competitor research via the public Meta Ad Library, and agency-tier cross-account macros.
 - **Aligned vocabulary** with Meta's official MCP server so agents transfer cleanly between both.
 - **Sign in with Meta (Facebook Login)** — replaces shared PINs. Each user lands their own long-lived (60-day) Meta token.
 - **System User token registry** — for tokens that don't expire, register them per user from the consent UI.
@@ -94,7 +94,7 @@ When to use which:
 - **Async reports with safe polling** — `ads_run_report_and_wait` one-shot with 5 s-min / 60 s-max backoff, proper `Job Failed` / `Job Skipped` handling.
 - **Retry logic** — exponential backoff on truly transient errors only (never on throttled requests).
 
-## Tools (127 total)
+## Tools (135 total)
 
 Ads tools use the `ads_*` naming convention, aligned with Meta's official MCP server; WhatsApp Business tools use `whatsapp_*`. Read tools declare `readOnlyHint: true`; mutating tools declare `destructiveHint` / `idempotentHint` and prefix descriptions with a `⚠️` warning.
 
@@ -125,12 +125,35 @@ Ads tools use the `ads_*` naming convention, aligned with Meta's official MCP se
 | Agency macros | 2 | `ads_diagnose_underperformance`, `ads_portfolio_summary` (cross-account) |
 | Bulk ad creation | 1 | `ads_bulk_create_video_ads` — video URLs → upload, processing wait, auto-thumbnail, creative and ad in one call |
 | Instagram | 2 | IG account and media lookup |
+| Ad Library (Apify) | 8 | Competitor ad research: `ads_library_scrape` the public Meta Ad Library by keyword or Facebook page, poll run status, page through results, abort runs, plus per-user Apify token register/status/delete |
 | Tokens | 4 | List / set-active / register / delete |
 | Rate Status | 1 | Live view of quota usage, open circuits and write-pacer state |
 | WhatsApp — WABAs & phones | 8 | `whatsapp_get_business_accounts`, phone number list/register/deregister/verify, business profile get/update |
 | WhatsApp — Templates & analytics | 6 | Message template CRUD (`whatsapp_create_template`, edit, delete), WABA analytics (messaging/conversation/pricing), per-template analytics |
 | WhatsApp — Flows | 6 | Flow list/create/update (incl. Flow JSON upload), publish, deprecate, delete |
 | WhatsApp — QR & webhooks | 7 | QR deep-link CRUD (`message_qrdls`), webhook subscription get/subscribe/unsubscribe |
+
+The `ads_library_*` tools read the **public** Meta Ad Library through the
+[curious_coder/facebook-ads-library-scraper](https://apify.com/curious_coder/facebook-ads-library-scraper)
+Apify actor, so they need no Meta permissions — but they do need an Apify token
+and they cost money (about **$0.75 per 1,000 ads**). Each user registers their
+own token with `ads_library_register_apify_token`; it is validated against the
+Apify API and then stored encrypted with AES-256-GCM in Firestore, scoped to
+that user, exactly like Meta tokens. Every scrape sends Apify a hard
+`maxTotalChargeUsd` cap derived from the requested `count`, so a single run
+cannot bill past it (the cap is per run, not a per-tenant budget).
+
+Credential resolution **fails closed**: in multi-tenant mode a caller with no
+OAuth identity is refused rather than falling back to a shared credential. The
+`APIFY_TOKEN` environment variable is honoured only in single-tenant mode
+(stdio transport, or no Meta OAuth app configured), so one advertiser's scrapes
+can never be billed to the operator's Apify account.
+
+Two operational caveats worth knowing: runs execute against the actor's
+`latest` build, so an upstream change to its input schema or pricing can alter
+behaviour without a change in this repo; and a scrape start that times out is
+*indeterminate* rather than failed — Apify may have accepted it — so check
+`ads_library_list_runs` before starting another.
 
 WhatsApp tools require the `whatsapp_business_management` permission. Tokens issued before this scope was added must be re-authorized (sign in again through the OAuth flow) before the `whatsapp_*` tools will work, and the Meta App must have the **WhatsApp product** added in the developer dashboard.
 
@@ -575,6 +598,7 @@ services:
       - META_ACCESS_TOKEN=${META_ACCESS_TOKEN:-}
       - META_TOKENS=${META_TOKENS:-}
       - MCP_API_KEY=${MCP_API_KEY:-}
+      - APIFY_TOKEN=${APIFY_TOKEN:-}
       - META_API_VERSION=${META_API_VERSION:-v22.0}
       - PORT=3000
       - LOG_LEVEL=${LOG_LEVEL:-info}

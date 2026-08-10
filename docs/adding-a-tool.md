@@ -10,7 +10,7 @@ If you're contributing for the first time, also read [CONTRIBUTING.md](../CONTRI
 2. Add a `register*Tools(server)` function (or extend the existing one) that calls `server.registerTool(name, config, handler)`.
 3. Use the `ads_*` naming convention (no `meta_` prefix) and aligned vocabulary (`ad_set` not `adset`).
 4. Spread the appropriate annotation constant from [src/tools/_register.ts](../src/tools/_register.ts) into `annotations`. Prefix write-tool descriptions with `WRITE_WARNING`.
-5. In the handler, call **`metaApiClient.get / post / postForm / postMultipart / delete / getPaginated`** — never `fetch` directly.
+5. In the handler, call **`metaApiClient.get / post / postForm / postMultipart / delete / getPaginated`** — never `fetch` directly. (One exception exists: the `ads_library_*` tools talk to Apify, not the Graph API, and route through `apifyApiClient` in [src/apify/client.ts](../src/apify/client.ts), which provides the same timeout / retry / typed-`McpError` guarantees. Any *new* non-Meta upstream needs its own such client — never a bare `fetch` in a handler.)
 6. Validate IDs with `normalizeAccountId` / `validateMetaId` from [src/utils/format.ts](../src/utils/format.ts).
 7. Reuse type definitions from [src/meta/types/](../src/meta/types/), register the new module in [src/tools/index.ts](../src/tools/index.ts), and bump the tool count assertion in [tests/tools/registration.test.ts](../tests/tools/registration.test.ts).
 8. Mirror the source path under `tests/tools/` with a vitest, run `npm run lint && npm run typecheck && npm test && npm run build`, and open a PR using [.github/PULL_REQUEST_TEMPLATE.md](../.github/PULL_REQUEST_TEMPLATE.md).
@@ -380,7 +380,7 @@ The full checklist lives in [.github/PULL_REQUEST_TEMPLATE.md](../.github/PULL_R
 - [ ] Tool name uses `ads_*` prefix, with `ad_set` (not `adset`) where applicable.
 - [ ] `annotations` declared with the right constant from [src/tools/_register.ts](../src/tools/_register.ts); write-tool descriptions prefixed with `WRITE_WARNING`.
 - [ ] Zod schema with `.describe()` on every field; narrow enums where possible.
-- [ ] All Graph API calls go through `metaApiClient` — no direct `fetch`.
+- [ ] All Graph API calls go through `metaApiClient` — no direct `fetch`. (Apify calls go through `apifyApiClient`; any other upstream needs its own client.)
 - [ ] IDs validated with `normalizeAccountId` / `validateMetaId`.
 - [ ] If the endpoint hits `/insights`, `enforceInsightsGuardrails(...)` is called.
 - [ ] No raw token in logs (`hashToken` / `maskToken`).

@@ -7,6 +7,68 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Added
+
+- **Meta Ad Library scraping via Apify — 8 new `ads_library_*` tools (127 → 135).**
+  Competitor ad research against the *public* Meta Ad Library, which the Graph
+  API does not expose. Backed by the
+  [curious_coder/facebook-ads-library-scraper](https://apify.com/curious_coder/facebook-ads-library-scraper)
+  actor.
+  - `ads_library_scrape` starts an asynchronous run from either a keyword
+    search (country / active status / ad type / search type) or a
+    facebook.com Ad Library or page URL, and returns a `run_id` +
+    `dataset_id`.
+  - `ads_library_get_run_status`, `ads_library_get_results` (paginated, with a
+    compact per-ad projection and a `raw` escape hatch), `ads_library_abort_run`
+    and `ads_library_list_runs` cover the rest of the run lifecycle.
+  - `ads_library_register_apify_token`, `ads_library_get_apify_token_status`
+    and `ads_library_delete_apify_token` manage the credential.
+- **Per-tenant Apify tokens, encrypted at rest** (`src/store/apify-token-repo.ts`).
+  Each user registers their own token; it is validated against the Apify API
+  *before* being persisted, then stored AES-256-GCM-encrypted in
+  `users/{fbUserId}/apify_tokens/default`. The GCM AAD is namespaced
+  `apify_token:{fbUserId}:default`, so a ciphertext cannot be relocated between
+  users or between the `meta_tokens` and `apify_tokens` collections.
+- **`src/apify/client.ts`** — a dedicated Apify API client with the same
+  timeout / retry / typed-error guarantees as `metaApiClient`. The token travels
+  in an `Authorization: Bearer` header (never a query param, so it cannot leak
+  into a logged URL), the base URL is not env-overridable, run/dataset ids are
+  validated before path interpolation, and every error message is scrubbed both
+  of `apify_api_*` substrings and of the exact token value in play.
+
+### Security
+
+- **Tenant isolation fails closed.** In multi-tenant mode (Meta OAuth app
+  configured, HTTP transport) a caller with no OAuth identity — an API-key
+  request, or any flow that loses `fbUserId` — is refused rather than bucketed
+  into a shared credential. The `APIFY_TOKEN` environment variable is honoured
+  **only** in single-tenant mode (stdio, or no Meta app configured); it is
+  never used as a cross-tenant fallback, so one advertiser's scrapes can never
+  be billed to the operator's Apify account.
+- A stored token that fails authenticated decryption (GCM tag mismatch from a
+  relocated document, key rotation, or tampering) raises an error instead of
+  being reported as "no token" — degrading an integrity failure to absence
+  would have fallen through to a fallback credential.
+- Cost containment: each scrape sends Apify a hard `maxTotalChargeUsd` cap
+  derived from the requested `count`. The actor bills PAY_PER_EVENT
+  ($0.00075/ad), so Apify aborts the run server-side rather than billing past
+  the cap; `count` is additionally capped at 2,000 per call. Note this bounds
+  each *run*, not a tenant's aggregate spend — a client can still start many
+  runs, each against its own Apify account and credit.
+- `POST` is never retried automatically, which removes the client-side
+  duplicate-run path. It does **not** make double billing impossible: Apify can
+  accept a run and lose the response, so a timed-out start is *indeterminate*.
+  The timeout message says so and points at `ads_library_list_runs` to check
+  before retrying.
+- `ads_library_scrape` accepts URLs only over https on an exact `facebook.com`
+  host allowlist, and additionally rejects embedded credentials, non-default
+  ports, and Facebook's outbound redirect endpoints (`/l.php` and friends) that
+  would send the scraper off-site.
+- Added an `apify-api-token` rule to [.gitleaks.toml](.gitleaks.toml).
+- Pino now has a `redact` configuration (previously none at all) covering
+  token- and authorization-shaped keys, as defense in depth behind the existing
+  call-site hashing/masking convention.
+
 ## [3.5.0] — 2026-08-09
 
 ### Security

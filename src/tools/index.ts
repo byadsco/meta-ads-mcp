@@ -20,6 +20,7 @@ import { registerReportTools } from "./reports.js";
 import { registerBillingTools } from "./billing.js";
 import { registerTokenTools } from "./tokens.js";
 import { registerInstagramTools } from "./instagram.js";
+import { registerAdsLibraryTools } from "./ads-library.js";
 import { registerRateStatusTools } from "./rate-status.js";
 import { registerEntityTools } from "./entities.js";
 import { registerDiagnosticTools } from "./diagnostics.js";
@@ -83,8 +84,11 @@ export function registerAllTools(server: McpServer): void {
   registerWhatsAppFlowTools(server);     // 6 tools — WhatsApp Flows lifecycle
   registerWhatsAppConfigTools(server);   // 7 tools — QR deep links + webhook subscriptions
 
+  // ─── Ad Library scraping (Apify) ─────────────────────────
+  registerAdsLibraryTools(server);   // 8 tools — competitor ad research via Apify + token mgmt
+
   // ─── Token Management ────────────────────────────────────
   registerTokenTools(server);        // 4 tools — list / set-active / register / delete
 
-  // Total: 127 tools (79 renamed + 14 new in v3 + 3 audience-sharing + 1 invoices + 27 WhatsApp + 1 url-tags + 1 bulk video ads + 1 creative media)
+  // Total: 135 tools (79 renamed + 14 new in v3 + 3 audience-sharing + 1 invoices + 27 WhatsApp + 1 url-tags + 1 bulk video ads + 1 creative media + 8 Ad Library/Apify)
 }
