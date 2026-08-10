@@ -10,6 +10,7 @@ import {
   validateApifyId,
 } from "../apify/client.js";
 import {
+  DATASET_ITEM_EVENT,
   USD_PER_AD,
   USD_PER_RUN_START,
   type AdLibraryActiveStatus,
@@ -152,6 +153,14 @@ interface RawAd {
   [key: string]: unknown;
 }
 
+/** The actor returns some copy fields as `{ text }` objects and others as plain strings. */
+function flattenText(value: unknown): unknown {
+  if (value && typeof value === "object" && "text" in (value as Record<string, unknown>)) {
+    return (value as Record<string, unknown>).text ?? null;
+  }
+  return value ?? null;
+}
+
 function slimAd(ad: RawAd): Record<string, unknown> {
   const snapshot = (ad.snapshot ?? {}) as Record<string, unknown>;
   return {
@@ -164,7 +173,7 @@ function slimAd(ad: RawAd): Record<string, unknown> {
     publisher_platform: ad.publisher_platform ?? ad.publisherPlatform ?? null,
     currency: ad.currency ?? null,
     spend: ad.spend ?? null,
-    body: snapshot.body ?? null,
+    body: flattenText(snapshot.body),
     title: snapshot.title ?? null,
     cta_text: snapshot.cta_text ?? null,
     link_url: snapshot.link_url ?? null,
@@ -174,10 +183,32 @@ function slimAd(ad: RawAd): Record<string, unknown> {
   };
 }
 
+/**
+ * Apify populates usageTotalUsd with a lag, so a run that has just flipped to
+ * SUCCEEDED often still reports $0 — which reads as "this was free". The
+ * charged event count is accurate immediately, so fall back to deriving the
+ * amount from it and say plainly that Apify has not settled the figure yet.
+ */
+function describeCost(run: ApifyRun): string {
+  const ads = run.chargedEventCounts?.[DATASET_ITEM_EVENT];
+  const billed = run.eventUsage?.[DATASET_ITEM_EVENT]?.eventTotalUsd ?? run.usageTotalUsd;
+
+  if (billed) {
+    // The runs-list endpoint omits chargedEventCounts, so the ad count is only
+    // available on a single-run lookup.
+    return ads !== undefined
+      ? ` — ${ads} ad(s) charged, $${billed.toFixed(4)}`
+      : ` — $${billed.toFixed(4)} charged`;
+  }
+  if (ads) {
+    return ` — ${ads} ad(s) charged, ≈$${(ads * USD_PER_AD).toFixed(4)} (Apify has not settled the final amount yet)`;
+  }
+  return "";
+}
+
 function describeRun(run: ApifyRun): string {
-  const cost = run.usageTotalUsd !== undefined ? ` — cost so far $${run.usageTotalUsd.toFixed(4)}` : "";
   const runtime = run.stats?.runTimeSecs !== undefined ? ` — ${Math.round(run.stats.runTimeSecs)}s` : "";
-  return `${run.id} — ${run.status}${runtime}${cost}`;
+  return `${run.id} — ${run.status}${runtime}${describeCost(run)}`;
 }
 
 export function registerAdsLibraryTools(server: McpServer): void {

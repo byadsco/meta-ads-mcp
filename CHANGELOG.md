@@ -49,6 +49,11 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   relocated document, key rotation, or tampering) raises an error instead of
   being reported as "no token" — degrading an integrity failure to absence
   would have fallen through to a fallback credential.
+- Cost reporting derives from `chargedEventCounts` when Apify has not yet
+  settled `usageTotalUsd`. Verified against the live API: a run that has just
+  flipped to `SUCCEEDED` still reports `usageTotalUsd: 0` for a few seconds,
+  so a caller polling to completion would have been told a billable scrape was
+  free. The charged event count is accurate immediately.
 - Cost containment: each scrape sends Apify a hard `maxTotalChargeUsd` cap
   derived from the requested `count`. The actor bills PAY_PER_EVENT
   ($0.00075/ad), so Apify aborts the run server-side rather than billing past
