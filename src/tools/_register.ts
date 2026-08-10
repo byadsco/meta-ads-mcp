@@ -50,3 +50,6 @@ export const WRITE_WARNING = "⚠️ Modifies live ads/account data. ";
 
 /** Same, for WhatsApp Business tools. */
 export const WHATSAPP_WRITE_WARNING = "⚠️ Modifies live WhatsApp Business data. ";
+
+/** Same, for Apify-backed tools: these spend the tenant's Apify credit or touch their stored credentials. */
+export const APIFY_WRITE_WARNING = "⚠️ Uses your Apify account (paid credits / stored credentials). ";

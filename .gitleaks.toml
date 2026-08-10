@@ -33,6 +33,14 @@ regex = '''EAA[A-Za-z0-9]{40,}'''
 tags = ["meta", "token"]
 
 [[rules]]
+id = "apify-api-token"
+description = "Apify API token (apify_api_ prefix)"
+# Real tokens are apify_api_ + ~36 base62 chars; require ≥20 to skip short
+# fixtures like "apify_api_bogus" while still catching real leaks.
+regex = '''apify_api_[A-Za-z0-9]{20,}'''
+tags = ["apify", "token"]
+
+[[rules]]
 id = "meta-tokens-json"
 description = "Meta multi-tenant tokens JSON map containing real EAA tokens"
 regex = '''(?i)META_TOKENS\s*[:=]\s*["']?\{[^}]*EAA[A-Za-z0-9]{40,}'''

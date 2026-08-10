@@ -3,17 +3,18 @@ import { registerAllTools } from "../../src/tools/index.js";
 import { createMockMcpServer } from "../setup.js";
 
 describe("registerAllTools", () => {
-  it("registers exactly 127 tools total", () => {
+  it("registers exactly 135 tools total", () => {
     // 79 v2 tools renamed (with account_insights removed → 79) + 14 new in v3 +
     //   3 audience-sharing tools (share / unshare / get-shared-accounts) +
     //   1 invoices tool (ads_get_invoices) +
     //   27 WhatsApp Business tools (whatsapp_*) +
     //   1 UTM editing tool (ads_update_ad_url_tags) +
     //   1 bulk video-ad macro (ads_bulk_create_video_ads) +
-    //   1 creative media tool (ads_get_creative_media).
+    //   1 creative media tool (ads_get_creative_media) +
+    //   8 Ad Library scraping tools (ads_library_*, Apify-backed).
     const server = createMockMcpServer();
     registerAllTools(server as never);
-    expect(server.registerTool).toHaveBeenCalledTimes(127);
+    expect(server.registerTool).toHaveBeenCalledTimes(135);
   });
 
   it("registers all tools with unique names", () => {
@@ -43,6 +44,26 @@ describe("registerAllTools", () => {
       t.name.startsWith("whatsapp_"),
     );
     expect(whatsappTools.length).toBe(27);
+  });
+
+  it("registers exactly 8 ads_library_ tools", () => {
+    const server = createMockMcpServer();
+    registerAllTools(server as never);
+
+    const names = server._registeredTools
+      .map((t) => t.name)
+      .filter((n) => n.startsWith("ads_library_"));
+
+    expect(names.sort()).toEqual([
+      "ads_library_abort_run",
+      "ads_library_delete_apify_token",
+      "ads_library_get_apify_token_status",
+      "ads_library_get_results",
+      "ads_library_get_run_status",
+      "ads_library_list_runs",
+      "ads_library_register_apify_token",
+      "ads_library_scrape",
+    ]);
   });
 
   it("all tools have non-empty descriptions", () => {
