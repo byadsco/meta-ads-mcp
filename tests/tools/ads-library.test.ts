@@ -386,6 +386,55 @@ describe("ads_library_* tools", () => {
       expect(result.content[0].text).toContain("ads_library_get_results");
     });
 
+    it("reports charged ads from the event count when Apify has not settled the amount", async () => {
+      // Real behaviour observed against Apify: a run that has just flipped to
+      // SUCCEEDED still reports usageTotalUsd: 0, which reads as "free".
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue(
+          mockFetchResponse({
+            data: {
+              id: "run123abc",
+              status: "SUCCEEDED",
+              defaultDatasetId: "ds123abc",
+              usageTotalUsd: 0,
+              chargedEventCounts: { "apify-default-dataset-item": 20 },
+            },
+          }),
+        ),
+      );
+
+      const result = await setup().byName("ads_library_get_run_status")({ run_id: "run123abc" });
+
+      expect(result.content[0].text).toContain("20 ad(s) charged");
+      expect(result.content[0].text).toContain("≈$0.0150");
+      expect(result.content[0].text).toContain("not settled");
+      expect(result.content[0].text).not.toContain("$0.0000");
+    });
+
+    it("prefers the settled per-event amount once Apify reports it", async () => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue(
+          mockFetchResponse({
+            data: {
+              id: "run123abc",
+              status: "SUCCEEDED",
+              defaultDatasetId: "ds123abc",
+              usageTotalUsd: 0.015,
+              chargedEventCounts: { "apify-default-dataset-item": 20 },
+              eventUsage: { "apify-default-dataset-item": { eventTotalUsd: 0.015 } },
+            },
+          }),
+        ),
+      );
+
+      const result = await setup().byName("ads_library_get_run_status")({ run_id: "run123abc" });
+
+      expect(result.content[0].text).toContain("20 ad(s) charged, $0.0150");
+      expect(result.content[0].text).not.toContain("not settled");
+    });
+
     it("rejects a malformed run id before calling Apify", async () => {
       const fetchMock = vi.fn();
       vi.stubGlobal("fetch", fetchMock);
@@ -403,7 +452,8 @@ describe("ads_library_* tools", () => {
       page_id: "456",
       page_name: "Nike",
       is_active: true,
-      snapshot: { body: "Just do it", title: "Nike", cta_text: "Shop now" },
+      // The real actor wraps body in { text } while leaving title a plain string.
+      snapshot: { body: { text: "Just do it" }, title: "Nike", cta_text: "Shop now" },
       internal_noise: "x".repeat(100),
     };
 
@@ -522,6 +572,9 @@ describe("ads_library_* tools", () => {
       expect(url.searchParams.get("limit")).toBe("10");
       expect(result.content[0].text).toContain("Found 2 run(s)");
       expect(result.content[0].text).toContain("run1");
+      // The list endpoint omits chargedEventCounts, so no bogus "? ad(s)".
+      expect(result.content[0].text).toContain("$0.0200 charged");
+      expect(result.content[0].text).not.toContain("?");
     });
 
     it("handles an account with no runs", async () => {

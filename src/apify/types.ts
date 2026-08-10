@@ -17,6 +17,9 @@ export const TERMINAL_RUN_STATUSES: readonly ApifyRunStatus[] = [
   "TIMED-OUT",
 ];
 
+/** The PAY_PER_EVENT event this actor bills per scraped ad. */
+export const DATASET_ITEM_EVENT = "apify-default-dataset-item";
+
 export interface ApifyRun {
   id: string;
   actId: string;
@@ -24,7 +27,11 @@ export interface ApifyRun {
   startedAt: string;
   finishedAt: string | null;
   defaultDatasetId: string;
+  /** Populated with a lag — can still be 0 at the instant a run flips to SUCCEEDED. */
   usageTotalUsd?: number;
+  /** Billable events already counted. Trustworthy earlier than usageTotalUsd. */
+  chargedEventCounts?: Record<string, number>;
+  eventUsage?: Record<string, { eventTitle?: string; eventTotalUsd?: number }>;
   stats?: { runTimeSecs?: number };
 }
 
