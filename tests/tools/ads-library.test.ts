@@ -1,4 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { z } from "zod";
+import { zodToJsonSchema } from "zod-to-json-schema";
 import { McpError } from "@modelcontextprotocol/sdk/types.js";
 import { registerAdsLibraryTools } from "../../src/tools/ads-library.js";
 import {
@@ -274,10 +276,31 @@ describe("ads_library_* tools", () => {
     it("publishes period without an empty-string enum member (Gemini rejects empty enums)", () => {
       const { server } = setup();
       const tool = server._registeredTools.find((t) => t.name === "ads_library_scrape");
-      const shape = tool?.schema as { period: { safeParse: (v: unknown) => { success: boolean } } };
-      expect(shape.period.safeParse("").success).toBe(false);
-      expect(shape.period.safeParse(undefined).success).toBe(true);
-      expect(shape.period.safeParse("last7d").success).toBe(true);
+      const json = zodToJsonSchema(z.object(tool?.schema as z.ZodRawShape));
+      const enums: unknown[][] = [];
+      JSON.stringify(json, (_key, value: unknown) => {
+        if (value && typeof value === "object" && Array.isArray((value as { enum?: unknown[] }).enum)) {
+          enums.push((value as { enum: unknown[] }).enum);
+        }
+        return value;
+      });
+      expect(enums.length).toBeGreaterThan(0);
+      for (const values of enums) {
+        expect(values).not.toContain("");
+        expect(values).not.toContain(null);
+        expect(values.length).toBeGreaterThan(0);
+      }
+    });
+
+    it("still accepts a legacy explicit period of '' by normalizing it to undefined", () => {
+      const { server } = setup();
+      const tool = server._registeredTools.find((t) => t.name === "ads_library_scrape");
+      const shape = tool?.schema as {
+        period: { safeParse: (v: unknown) => { success: boolean; data?: unknown } };
+      };
+      expect(shape.period.safeParse("")).toEqual({ success: true, data: undefined });
+      expect(shape.period.safeParse("last7d")).toEqual({ success: true, data: "last7d" });
+      expect(shape.period.safeParse("bogus").success).toBe(false);
     });
 
     it("maps an omitted period to the actor's no-filter sentinel", async () => {
