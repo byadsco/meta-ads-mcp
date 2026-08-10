@@ -29,6 +29,32 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   (it existed byte-identically in `src/transport/http.ts` and
   `src/transport/auth-routes.ts`) and the consent page's inline CSS into
   `src/transport/html-pages.ts`, now shared by both surfaces.
+- **Meta Ad Library scraping via Apify — 8 new `ads_library_*` tools (127 → 135).**
+  Competitor ad research against the *public* Meta Ad Library, which the Graph
+  API does not expose. Backed by the
+  [curious_coder/facebook-ads-library-scraper](https://apify.com/curious_coder/facebook-ads-library-scraper)
+  actor.
+  - `ads_library_scrape` starts an asynchronous run from either a keyword
+    search (country / active status / ad type / search type) or a
+    facebook.com Ad Library or page URL, and returns a `run_id` +
+    `dataset_id`.
+  - `ads_library_get_run_status`, `ads_library_get_results` (paginated, with a
+    compact per-ad projection and a `raw` escape hatch), `ads_library_abort_run`
+    and `ads_library_list_runs` cover the rest of the run lifecycle.
+  - `ads_library_register_apify_token`, `ads_library_get_apify_token_status`
+    and `ads_library_delete_apify_token` manage the credential.
+- **Per-tenant Apify tokens, encrypted at rest** (`src/store/apify-token-repo.ts`).
+  Each user registers their own token; it is validated against the Apify API
+  *before* being persisted, then stored AES-256-GCM-encrypted in
+  `users/{fbUserId}/apify_tokens/default`. The GCM AAD is namespaced
+  `apify_token:{fbUserId}:default`, so a ciphertext cannot be relocated between
+  users or between the `meta_tokens` and `apify_tokens` collections.
+- **`src/apify/client.ts`** — a dedicated Apify API client with the same
+  timeout / retry / typed-error guarantees as `metaApiClient`. The token travels
+  in an `Authorization: Bearer` header (never a query param, so it cannot leak
+  into a logged URL), the base URL is not env-overridable, run/dataset ids are
+  validated before path interpolation, and every error message is scrubbed both
+  of `apify_api_*` substrings and of the exact token value in play.
 
 ### Security
 
@@ -51,10 +77,29 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   in registration order and a limiter added after the route would never run;
   verified against the booted server (10× 401 then 429).
 - `validateMetaAuthReturn` was hard-wired to `/authorize`, so login could not
-  return to a non-OAuth page. Widened by an exact-match, query-less allowlist
-  containing only `/auth/connections`; `new URL()` normalization means
-  traversal like `/auth/connections/../authorize` still falls through to the
-  OAuth check that rejects it. Covered by nine bypass tests.
+  return to a non-OAuth page. Widened by an exact-string allowlist containing
+  only `/auth/connections`, compared **before** any URL parsing.
+- **Closed an open redirect** that the first version of that widening exposed.
+  `safeReturnTo` rejected `//` but not `/\`, and the WHATWG URL parser (like
+  browsers) normalizes `\` to `/` for special schemes — so
+  `/\evil.example/auth/connections` kept the expected `pathname` while
+  resolving to an external host, and a `pathname`-only check accepted it. The
+  pre-existing `/authorize` branch was accidentally shielded by its
+  client_id/redirect_uri requirement; the new standalone path had no such
+  shield. Fixed in three layers: reject backslashes outright, compare
+  standalone paths as exact strings before parsing, and pin `parsed.origin` to
+  the fixed base instead of trusting `pathname`. Covered by nine bypass tests.
+- The new POSTs validate request provenance via Fetch Metadata
+  (`Sec-Fetch-Site`), falling back to `Origin` compared against the origin the
+  browser actually contacted. `SameSite=Lax` blocks a cross-*site* POST, but
+  same-site is not same-origin — on a custom domain a sibling subdomain could
+  otherwise swap a tenant's Apify token for the attacker's and silently
+  redirect their scrapes. Requests carrying neither header are not browser form
+  posts and fall through to the session check.
+- A failure reading the Apify status no longer takes down the consent page.
+  Apify is an optional add-on, but `/authorize` had made `getStatus()` a hard
+  dependency inside `Promise.all`, so a storage hiccup would have blocked OAuth
+  approval entirely. It now degrades to "not connected" and logs.
 - `safeReturnTo` takes an optional fallback typed as a literal union, so a
   caller can never route a user to an attacker-supplied destination.
 - `/auth/connections` sends a stricter CSP than the consent page (no external
@@ -65,9 +110,6 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - `fbUserId` on every new handler comes only from the session cookie, never
   from the request body. Verified that the web route and the MCP tools resolve
   the same tenant id, so the UI cannot write a token the tools would not read.
-
-### Security
-
 - **The global gitleaks allowlist was silently far wider than written.**
   gitleaks joins allowlist patterns into a single alternation (an optimization
   promoted in 8.28.0), so an inline `(?i)` leaks into every pattern that follows
@@ -98,38 +140,6 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   fixture exemptions stay case-sensitive, and that the `apify-api-token` rule
   still matches a production-shaped token while ignoring the repo's short
   fixtures.
-
-### Added
-
-- **Meta Ad Library scraping via Apify — 8 new `ads_library_*` tools (127 → 135).**
-  Competitor ad research against the *public* Meta Ad Library, which the Graph
-  API does not expose. Backed by the
-  [curious_coder/facebook-ads-library-scraper](https://apify.com/curious_coder/facebook-ads-library-scraper)
-  actor.
-  - `ads_library_scrape` starts an asynchronous run from either a keyword
-    search (country / active status / ad type / search type) or a
-    facebook.com Ad Library or page URL, and returns a `run_id` +
-    `dataset_id`.
-  - `ads_library_get_run_status`, `ads_library_get_results` (paginated, with a
-    compact per-ad projection and a `raw` escape hatch), `ads_library_abort_run`
-    and `ads_library_list_runs` cover the rest of the run lifecycle.
-  - `ads_library_register_apify_token`, `ads_library_get_apify_token_status`
-    and `ads_library_delete_apify_token` manage the credential.
-- **Per-tenant Apify tokens, encrypted at rest** (`src/store/apify-token-repo.ts`).
-  Each user registers their own token; it is validated against the Apify API
-  *before* being persisted, then stored AES-256-GCM-encrypted in
-  `users/{fbUserId}/apify_tokens/default`. The GCM AAD is namespaced
-  `apify_token:{fbUserId}:default`, so a ciphertext cannot be relocated between
-  users or between the `meta_tokens` and `apify_tokens` collections.
-- **`src/apify/client.ts`** — a dedicated Apify API client with the same
-  timeout / retry / typed-error guarantees as `metaApiClient`. The token travels
-  in an `Authorization: Bearer` header (never a query param, so it cannot leak
-  into a logged URL), the base URL is not env-overridable, run/dataset ids are
-  validated before path interpolation, and every error message is scrubbed both
-  of `apify_api_*` substrings and of the exact token value in play.
-
-### Security
-
 - **Tenant isolation fails closed.** In multi-tenant mode (Meta OAuth app
   configured, HTTP transport) a caller with no OAuth identity — an API-key
   request, or any flow that loses `fbUserId` — is refused rather than bucketed

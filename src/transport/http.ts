@@ -9,7 +9,7 @@ import { mcpAuthRouter } from "@modelcontextprotocol/sdk/server/auth/router.js";
 import { requireBearerAuth } from "@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js";
 import { oauthProvider } from "../auth/oauth-provider.js";
 import { isApiKeyConfigured, validateApiKey } from "../auth/api-key.js";
-import { requestContext } from "../auth/token-store.js";
+import { hashPii, requestContext } from "../auth/token-store.js";
 import { tokenManager } from "../auth/token-manager.js";
 import { configureSessionJtiStore, getSession } from "../auth/session.js";
 import { resolveSecurityConfig } from "./security-config.js";
@@ -23,6 +23,7 @@ import {
 } from "./html-pages.js";
 import { getApifyTokenRepo } from "../store/apify-token-repo.js";
 import type { ApifyTokenStatus } from "../store/apify-token-repo.js";
+
 import { validateAuthorizeQuery } from "./authorize-validation.js";
 import {
   FirestoreClientsStore,
@@ -54,6 +55,14 @@ interface PendingAuth {
 }
 
 const pendingAuthStorage = new AsyncLocalStorage<PendingAuth>();
+
+/** Rendered when the Apify status cannot be read — the section degrades, OAuth continues. */
+const UNKNOWN_APIFY_STATUS: ApifyTokenStatus = {
+  registered: false,
+  apifyUserId: null,
+  apifyUsername: null,
+  updatedAt: null,
+};
 
 function normalizeHostname(hostname: string): string {
   return hostname.startsWith("[") && hostname.endsWith("]")
@@ -536,7 +545,21 @@ export async function startHttpTransport(
       const [tokens, activeName, apify] = await Promise.all([
         listTokens(session.fbUserId),
         getDefaultTokenName(session.fbUserId),
-        getApifyTokenRepo().getStatus(session.fbUserId),
+        // Apify is an optional add-on, so a failure reading its status must not
+        // take down OAuth approval. Degrade to "not connected" and log it.
+        getApifyTokenRepo()
+          .getStatus(session.fbUserId)
+          .catch((error: unknown) => {
+            logger.warn(
+              {
+                event: "apify_status_unavailable",
+                fbUserId: hashPii(session.fbUserId),
+                error: error instanceof Error ? error.message : String(error),
+              },
+              "Could not read Apify status; rendering consent without it",
+            );
+            return UNKNOWN_APIFY_STATUS;
+          }),
       ]);
 
       res.setHeader(

@@ -42,6 +42,30 @@ const STANDALONE_RETURN_PATHS = new Set<string>([CONNECTIONS_PATH]);
  */
 const apifyValidationClient = new ApifyApiClient({ timeout: 10_000, maxRetries: 0 });
 
+/**
+ * SameSite=Lax blocks a cross-site POST, but "same-site" is not "same-origin":
+ * on a custom domain a sibling subdomain could still forge one, and swapping a
+ * tenant's Apify token for the attacker's would silently redirect their scrapes.
+ *
+ * Fetch Metadata is the primary check because it needs no configuration. The
+ * Origin fallback compares against the origin the browser actually contacted
+ * (not SERVER_URL) so a misconfigured env cannot lock legitimate users out.
+ * A request carrying neither header is not a browser form post, so it is
+ * allowed through to the session check rather than blocked here.
+ */
+function isSameOriginPost(req: express.Request): boolean {
+  const site = req.get("sec-fetch-site");
+  if (site) return site === "same-origin";
+
+  const origin = req.get("origin");
+  if (!origin) return true;
+  try {
+    return new URL(origin).origin === `${req.protocol}://${req.get("host")}`;
+  } catch {
+    return false;
+  }
+}
+
 export type ApifyTokenInputResult =
   | { ok: true; token: string }
   | { ok: false; reason: "empty" | "too-short" | "too-long" | "illegal-chars" };
@@ -99,6 +123,11 @@ export function safeReturnTo(
   if (input.length === 0 || input.length > 2048) return fallback;
   if (!input.startsWith("/")) return fallback;
   if (input.startsWith("//")) return fallback;
+  // Browsers and the WHATWG URL parser normalize "\" to "/" for special
+  // schemes, so "/\evil.example/x" becomes protocol-relative and escapes to an
+  // external host. Rejecting the character outright is simpler than trying to
+  // out-guess every normalization step.
+  if (input.includes("\\")) return fallback;
   // Reject control characters (0x00–0x1f and DEL).
   if (/[\x00-\x1f\x7f]/.test(input)) return fallback;
 
@@ -176,20 +205,22 @@ export async function validateMetaAuthReturn(
   const returnTo = safeReturnTo(input);
   if (returnTo !== input) return null;
 
+  // Login has to be able to return somewhere that is not an OAuth request.
+  // Compared as an exact string, before any URL parsing, so no normalization
+  // quirk can turn a hostile input into one of these paths.
+  if (STANDALONE_RETURN_PATHS.has(returnTo)) return returnTo;
+
+  const base = "http://mcp.local";
   let parsed: URL;
   try {
-    parsed = new URL(returnTo, "http://mcp.local");
+    parsed = new URL(returnTo, base);
   } catch {
     return null;
   }
-  // Login has to be able to return somewhere that is not an OAuth request.
-  // Query-less and exact-match only, so no parameters can be smuggled through;
-  // `new URL()` normalization means "/auth/connections/../authorize" resolves
-  // to "/authorize" and falls through to the OAuth check below, which rejects
-  // it for lacking client_id/redirect_uri.
-  if (STANDALONE_RETURN_PATHS.has(parsed.pathname) && parsed.search === "") {
-    return returnTo;
-  }
+  // Checking only `pathname` is not enough: a path that normalizes to another
+  // origin (e.g. via backslashes) keeps the expected pathname while pointing
+  // off-site. Pin the origin explicitly.
+  if (parsed.origin !== base) return null;
   if (parsed.pathname !== "/authorize") return null;
 
   const query = Object.fromEntries(parsed.searchParams.entries());
@@ -507,6 +538,15 @@ export function mountAuthRoutes(
     "/auth/register-apify-token",
     express.urlencoded({ extended: false }),
     async (req, res) => {
+      if (!isSameOriginPost(req)) {
+        logger.warn(
+          { event: "cross_origin_post_rejected", path: "/auth/register-apify-token" },
+          "Rejected a cross-origin form post",
+        );
+        renderError(res, 403, "Cross-origin request rejected.");
+        return;
+      }
+
       const session = await getSession(req);
       if (!session) {
         renderError(res, 401, "Session expired. Sign in again.");
@@ -575,6 +615,15 @@ export function mountAuthRoutes(
     "/auth/delete-apify-token",
     express.urlencoded({ extended: false }),
     async (req, res) => {
+      if (!isSameOriginPost(req)) {
+        logger.warn(
+          { event: "cross_origin_post_rejected", path: "/auth/delete-apify-token" },
+          "Rejected a cross-origin form post",
+        );
+        renderError(res, 403, "Cross-origin request rejected.");
+        return;
+      }
+
       const session = await getSession(req);
       if (!session) {
         renderError(res, 401, "Session expired. Sign in again.");

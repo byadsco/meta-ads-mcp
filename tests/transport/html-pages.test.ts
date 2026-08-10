@@ -1,8 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
   CONNECTIONS_PATH,
-  PAGE_EXTRA_STYLES,
-  PAGE_STYLES,
   renderApifySection,
   renderConnectionsPage,
 } from "../../src/transport/html-pages.js";
@@ -39,13 +37,25 @@ const metaToken = (over: Partial<MetaTokenSummary> = {}): MetaTokenSummary => ({
 
 const user = { fbUserId: "9001", email: "santiago@byads.co", name: "Santiago Bastidas" };
 
-/** Every class the renderers emit must actually be styled, or extraction drifted. */
-function assertClassesAreStyled(html: string, styles: string) {
+/**
+ * Every class a page emits must be styled by the <style> block that page
+ * actually ships. Reading the styles out of the rendered HTML (rather than
+ * being handed a block) is the point: an earlier version passed
+ * PAGE_STYLES + PAGE_EXTRA_STYLES by hand and so happily passed while the
+ * consent page, which embeds only PAGE_STYLES, shipped three unstyled classes.
+ */
+function assertClassesAreStyled(html: string) {
+  const styleBlock = /<style>([\s\S]*?)<\/style>/.exec(html);
+  expect(styleBlock, "page has no <style> block").not.toBeNull();
+  const styles = styleBlock![1];
+
   const emitted = new Set(
     [...html.matchAll(/class="([^"]+)"/g)].flatMap((m) => m[1].split(/\s+/)).filter(Boolean),
   );
-  const unstyled = [...emitted].filter((c) => !styles.includes(`.${c}`) && c !== "inline");
-  expect(unstyled, `classes emitted but not styled: ${unstyled.join(", ")}`).toEqual([]);
+  const unstyled = [...emitted].filter(
+    (c) => !new RegExp(`\\.${c}(?![\\w-])`).test(styles),
+  );
+  expect(unstyled, `classes emitted but not styled by this page: ${unstyled.join(", ")}`).toEqual([]);
 }
 
 describe("renderApifySection", () => {
@@ -231,7 +241,7 @@ describe("renderConnectionsPage", () => {
 
   it("only emits classes that are styled", () => {
     const html = renderConnectionsPage({ ...base, apify: REGISTERED });
-    assertClassesAreStyled(html, PAGE_STYLES + PAGE_EXTRA_STYLES);
+    assertClassesAreStyled(html);
   });
 });
 
@@ -282,6 +292,6 @@ describe("renderConsentPage", () => {
 
   it("only emits classes that are styled", () => {
     const html = renderConsentPage({ ...base, apify: REGISTERED });
-    assertClassesAreStyled(html, PAGE_STYLES + PAGE_EXTRA_STYLES);
+    assertClassesAreStyled(html);
   });
 });

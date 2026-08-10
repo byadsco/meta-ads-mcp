@@ -44,18 +44,17 @@ export const PAGE_STYLES = `    *{margin:0;padding:0;box-sizing:border-box}
     .approve:disabled{background:#444;cursor:not-allowed}
     .deny{background:#222;color:#aaa}
     .deny:hover{background:#333}
-    .inline{display:inline}`;
-
-export const PAGE_EXTRA_STYLES = `    .page-actions{display:flex;gap:0.5rem;margin-top:0.5rem}
+    .inline{display:inline}
+    .hint{color:#777;font-size:0.8rem;margin-top:0.5rem}
+    .hint a{color:#6cb4ee}
+    .manage-link{display:inline-block;margin-bottom:1rem;color:#6cb4ee;font-size:0.85rem}
     .row-actions{display:flex;gap:0.4rem;align-items:center}
     .row-actions button{padding:0.3rem 0.6rem;background:#222;color:#aaa;border:1px solid #333;border-radius:5px;font-size:0.75rem;cursor:pointer}
     .row-actions button:hover{border-color:#555;color:#ddd}
-    .active-mark{color:#6cb4ee;font-size:0.75rem}
     .danger{background:#2a1212;color:#fca5a5;border:1px solid #4a1f1f}
-    .danger:hover{background:#3b1111}
-    .hint{color:#777;font-size:0.8rem;margin-top:0.5rem}
-    .hint a{color:#6cb4ee}
-    .manage-link{display:inline-block;margin-top:0.5rem;color:#6cb4ee;font-size:0.85rem}`;
+    .danger:hover{background:#3b1111}`;
+
+export const PAGE_EXTRA_STYLES = `    .active-mark{color:#6cb4ee;font-size:0.75rem}`;
 
 export const CONNECTIONS_PATH = "/auth/connections";
 

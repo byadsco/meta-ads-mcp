@@ -151,3 +151,42 @@ describe("safeReturnTo fallback", () => {
     );
   });
 });
+
+describe("backslash origin escapes", () => {
+  // The WHATWG URL parser and browsers normalize "\\" to "/" for special
+  // schemes, so "/\\evil.example/x" becomes protocol-relative and lands on an
+  // external host while keeping the expected pathname. Checking only pathname
+  // is therefore not enough.
+  const getClient = makeGetClient({ "claude-client": claudeClient });
+
+  it.each([
+    ["single backslash", "/\\evil.example/auth/connections"],
+    ["backslash then slash", "/\\/evil.example/auth/connections"],
+    ["slash then backslash", "/\\\\evil.example/auth/connections"],
+    ["backslash toward authorize", "/\\evil.example/authorize"],
+    ["backslash mid-path", "/auth\\evil.example/connections"],
+  ])("safeReturnTo rejects %s", (_label, input) => {
+    expect(safeReturnTo(input, "/auth/connections")).toBe("/auth/connections");
+  });
+
+  it.each([
+    ["single backslash", "/\\evil.example/auth/connections"],
+    ["backslash then slash", "/\\/evil.example/auth/connections"],
+    ["backslash toward authorize", "/\\evil.example/authorize"],
+  ])("validateMetaAuthReturn rejects %s", async (_label, input) => {
+    await expect(validateMetaAuthReturn(input, getClient)).resolves.toBeNull();
+  });
+
+  it("leaves a percent-encoded backslash alone — it stays same-origin", () => {
+    // %5C is not decoded into a path separator, so it is a literal path
+    // segment, not an origin escape. Rejecting it would be cargo-culting.
+    const input = "/%5Cevil.example/auth/connections";
+    const out = safeReturnTo(input, "/auth/connections");
+    expect(new URL(out, "http://mcp.local").host).toBe("mcp.local");
+  });
+
+  it("keeps rejecting protocol-relative and absolute URLs", () => {
+    expect(safeReturnTo("//evil.example/x", "/auth/connections")).toBe("/auth/connections");
+    expect(safeReturnTo("https://evil.example/x", "/auth/connections")).toBe("/auth/connections");
+  });
+});
