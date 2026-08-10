@@ -135,7 +135,7 @@ export async function resolveApifyToken(): Promise<string> {
 
   throw new McpError(
     ErrorCode.InvalidRequest,
-    "No Apify token registered for this user. Register one with ads_library_register_apify_token.",
+    "No Apify token registered for this user. Register one on the /auth/connections page, or with ads_library_register_apify_token.",
   );
 }
 
@@ -171,7 +171,7 @@ function toMcpError(
     case 403:
       return new McpError(
         ErrorCode.InvalidRequest,
-        `Apify authentication failed — ${detail}. Re-register your token with ads_library_register_apify_token.`,
+        `Apify authentication failed — ${detail}. Re-register your token on the /auth/connections page, or with ads_library_register_apify_token.`,
       );
     case 402:
       return new McpError(

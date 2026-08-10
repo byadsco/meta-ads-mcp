@@ -101,4 +101,92 @@ describe("validateMetaAuthReturn", () => {
       ),
     ).resolves.toBe(returnTo);
   });
+
+  describe("the standalone connections path", () => {
+    // /auth/connections must be reachable after login even though it is not an
+    // OAuth request. The allowlist is exact-match and query-less on purpose.
+    const getClient = makeGetClient({ "claude-client": claudeClient });
+
+    it("accepts the exact connections path", async () => {
+      await expect(
+        validateMetaAuthReturn("/auth/connections", getClient),
+      ).resolves.toBe("/auth/connections");
+    });
+
+    it.each([
+      ["a query string", "/auth/connections?x=1"],
+      ["a fragment-ish suffix", "/auth/connectionsX"],
+      ["a deeper path", "/auth/connections/extra"],
+      ["a protocol-relative lookalike", "//auth/connections"],
+      ["an absolute URL", "https://evil.example/auth/connections"],
+      ["traversal back to /authorize", "/auth/connections/../authorize"],
+      ["traversal to another auth route", "/auth/connections/../auth/logout"],
+      ["a trailing slash", "/auth/connections/"],
+      ["an encoded separator", "/auth/connections%3Fx=1"],
+    ])("rejects %s", async (_label, input) => {
+      await expect(validateMetaAuthReturn(input, getClient)).resolves.toBeNull();
+    });
+  });
+});
+
+describe("safeReturnTo fallback", () => {
+  it("defaults to /authorize so existing call sites are unchanged", () => {
+    expect(safeReturnTo(undefined)).toBe("/authorize");
+    expect(safeReturnTo("https://evil.example/x")).toBe("/authorize");
+  });
+
+  it("honors an explicit connections fallback", () => {
+    expect(safeReturnTo(undefined, "/auth/connections")).toBe("/auth/connections");
+    expect(safeReturnTo("//evil", "/auth/connections")).toBe("/auth/connections");
+    expect(safeReturnTo("not-a-path", "/auth/connections")).toBe("/auth/connections");
+  });
+
+  it("still prefers a valid input over the fallback", () => {
+    expect(safeReturnTo("/auth/connections", "/authorize")).toBe("/auth/connections");
+  });
+
+  it("applies the fallback to a param-less /authorize query", () => {
+    expect(safeReturnTo("/authorize?client_id=only", "/auth/connections")).toBe(
+      "/auth/connections",
+    );
+  });
+});
+
+describe("backslash origin escapes", () => {
+  // The WHATWG URL parser and browsers normalize "\\" to "/" for special
+  // schemes, so "/\\evil.example/x" becomes protocol-relative and lands on an
+  // external host while keeping the expected pathname. Checking only pathname
+  // is therefore not enough.
+  const getClient = makeGetClient({ "claude-client": claudeClient });
+
+  it.each([
+    ["single backslash", "/\\evil.example/auth/connections"],
+    ["backslash then slash", "/\\/evil.example/auth/connections"],
+    ["slash then backslash", "/\\\\evil.example/auth/connections"],
+    ["backslash toward authorize", "/\\evil.example/authorize"],
+    ["backslash mid-path", "/auth\\evil.example/connections"],
+  ])("safeReturnTo rejects %s", (_label, input) => {
+    expect(safeReturnTo(input, "/auth/connections")).toBe("/auth/connections");
+  });
+
+  it.each([
+    ["single backslash", "/\\evil.example/auth/connections"],
+    ["backslash then slash", "/\\/evil.example/auth/connections"],
+    ["backslash toward authorize", "/\\evil.example/authorize"],
+  ])("validateMetaAuthReturn rejects %s", async (_label, input) => {
+    await expect(validateMetaAuthReturn(input, getClient)).resolves.toBeNull();
+  });
+
+  it("leaves a percent-encoded backslash alone — it stays same-origin", () => {
+    // %5C is not decoded into a path separator, so it is a literal path
+    // segment, not an origin escape. Rejecting it would be cargo-culting.
+    const input = "/%5Cevil.example/auth/connections";
+    const out = safeReturnTo(input, "/auth/connections");
+    expect(new URL(out, "http://mcp.local").host).toBe("mcp.local");
+  });
+
+  it("keeps rejecting protocol-relative and absolute URLs", () => {
+    expect(safeReturnTo("//evil.example/x", "/auth/connections")).toBe("/auth/connections");
+    expect(safeReturnTo("https://evil.example/x", "/auth/connections")).toBe("/auth/connections");
+  });
 });

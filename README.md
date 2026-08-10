@@ -143,6 +143,14 @@ that user, exactly like Meta tokens. Every scrape sends Apify a hard
 `maxTotalChargeUsd` cap derived from the requested `count`, so a single run
 cannot bill past it (the cap is per run, not a per-tenant budget).
 
+Registering the token does **not** require going through an assistant: the
+server serves an authenticated **`/auth/connections`** page that lists your
+stored Meta tokens and your Apify connection, and lets you register, replace or
+disconnect the Apify token at any time. The consent screen shown during OAuth
+approval carries the same Apify section for first-time setup, plus a link to
+that page. The `ads_library_register_apify_token` tool still works for agents
+and headless setups.
+
 Credential resolution **fails closed**: in multi-tenant mode a caller with no
 OAuth identity is refused rather than falling back to a shared credential. The
 `APIFY_TOKEN` environment variable is honoured only in single-tenant mode
