@@ -69,8 +69,7 @@
     "tsx": "^4.19.0",
     "typescript": "^5.7.0",
     "typescript-eslint": "^8.56.1",
-    "vitest": "^4.0.18",
-    "zod-to-json-schema": "^3.25.2"
+    "vitest": "^4.0.18"
   },
   "keywords": [
     "mcp",

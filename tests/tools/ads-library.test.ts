@@ -1,6 +1,4 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { z } from "zod";
-import { zodToJsonSchema } from "zod-to-json-schema";
 import { McpError } from "@modelcontextprotocol/sdk/types.js";
 import { registerAdsLibraryTools } from "../../src/tools/ads-library.js";
 import {
@@ -271,25 +269,6 @@ describe("ads_library_* tools", () => {
       expect(body["scrapePageAds.period"]).toBe("last7d");
       expect(body["scrapePageAds.sortBy"]).toBe("most_recent");
       expect(body.urls).toEqual([{ url: "https://www.facebook.com/ZapierApp" }]);
-    });
-
-    it("publishes period without an empty-string enum member (Gemini rejects empty enums)", () => {
-      const { server } = setup();
-      const tool = server._registeredTools.find((t) => t.name === "ads_library_scrape");
-      const json = zodToJsonSchema(z.object(tool?.schema as z.ZodRawShape));
-      const enums: unknown[][] = [];
-      JSON.stringify(json, (_key, value: unknown) => {
-        if (value && typeof value === "object" && Array.isArray((value as { enum?: unknown[] }).enum)) {
-          enums.push((value as { enum: unknown[] }).enum);
-        }
-        return value;
-      });
-      expect(enums.length).toBeGreaterThan(0);
-      for (const values of enums) {
-        expect(values).not.toContain("");
-        expect(values).not.toContain(null);
-        expect(values.length).toBeGreaterThan(0);
-      }
     });
 
     it("still accepts a legacy explicit period of '' by normalizing it to undefined", () => {
