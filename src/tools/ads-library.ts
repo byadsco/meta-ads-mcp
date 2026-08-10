@@ -135,7 +135,7 @@ function buildActorInput(opts: {
   scrapeAdDetails: boolean;
   activeStatus: AdLibraryActiveStatus;
   country: string;
-  period: AdLibraryPeriod;
+  period: AdLibraryPeriod | undefined;
   sortBy: AdLibrarySortBy;
 }): AdLibraryActorInput {
   return {
@@ -144,7 +144,7 @@ function buildActorInput(opts: {
     scrapeAdDetails: opts.scrapeAdDetails,
     "scrapePageAds.activeStatus": opts.activeStatus,
     "scrapePageAds.countryCode": opts.country,
-    "scrapePageAds.period": opts.period,
+    "scrapePageAds.period": opts.period ?? "",
     "scrapePageAds.sortBy": opts.sortBy,
   };
 }
@@ -403,10 +403,18 @@ export function registerAdsLibraryTools(server: McpServer): void {
           .enum(["keyword_unordered", "keyword_exact_phrase"])
           .default("keyword_unordered")
           .describe("Whether the keyword must match as an exact phrase"),
+        // Gemini's function_declarations reject empty enum members, which broke
+        // every request for clients with this server attached, so "" must never
+        // appear in the published schema. The preprocess keeps "" accepted for
+        // old clients; the actor's "" sentinel is applied in buildActorInput.
         period: z
-          .enum(["", "last24h", "last7d", "last14d", "last30d"])
-          .default("")
-          .describe("Date range filter. Only applies when scraping a Facebook page URL."),
+          .preprocess(
+            (v) => (v === "" ? undefined : v),
+            z.enum(["last24h", "last7d", "last14d", "last30d"]).optional(),
+          )
+          .describe(
+            "Date range filter. Only applies when scraping a Facebook page URL. Omit for no date filter.",
+          ),
         sort_by: z
           .enum(["impressions_desc", "most_recent"])
           .default("impressions_desc")

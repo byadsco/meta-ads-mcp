@@ -32,7 +32,7 @@ const SCRAPE_DEFAULTS = {
   active_status: "active",
   ad_type: "all",
   search_type: "keyword_unordered",
-  period: "",
+  period: undefined,
   sort_by: "impressions_desc",
   count: 100,
   scrape_ad_details: false,
@@ -269,6 +269,30 @@ describe("ads_library_* tools", () => {
       expect(body["scrapePageAds.period"]).toBe("last7d");
       expect(body["scrapePageAds.sortBy"]).toBe("most_recent");
       expect(body.urls).toEqual([{ url: "https://www.facebook.com/ZapierApp" }]);
+    });
+
+    it("still accepts a legacy explicit period of '' by normalizing it to undefined", () => {
+      const { server } = setup();
+      const tool = server._registeredTools.find((t) => t.name === "ads_library_scrape");
+      const shape = tool?.schema as {
+        period: { safeParse: (v: unknown) => { success: boolean; data?: unknown } };
+      };
+      expect(shape.period.safeParse("")).toEqual({ success: true, data: undefined });
+      expect(shape.period.safeParse("last7d")).toEqual({ success: true, data: "last7d" });
+      expect(shape.period.safeParse("bogus").success).toBe(false);
+    });
+
+    it("maps an omitted period to the actor's no-filter sentinel", async () => {
+      const fetchMock = stubRunStart();
+
+      await setup().byName("ads_library_scrape")({
+        ...SCRAPE_DEFAULTS,
+        url: "https://www.facebook.com/ZapierApp",
+      });
+
+      const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+      const body = JSON.parse(init.body as string) as Record<string, unknown>;
+      expect(body["scrapePageAds.period"]).toBe("");
     });
 
     it("sends a server-side spend cap derived from count", async () => {
