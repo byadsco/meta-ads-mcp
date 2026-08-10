@@ -53,12 +53,27 @@ jobs:
       - name: Build
         run: npm run build
 
+      # Same shared pin as ci.yml and the local guard. Without it the action
+      # supplies its own default, so this gate — the one that actually blocks
+      # production — would keep drifting from the version contributors run.
+      - name: Resolve pinned gitleaks version
+        run: |
+          version="$(tr -d '[:space:]' < .gitleaks-version)"
+          # Checked-out repo content: validate before it reaches GITHUB_ENV,
+          # where anything but a bare x.y.z could smuggle in extra variables.
+          if ! printf '%s' "$version" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::.gitleaks-version must contain a bare semver (got: $version)"
+            exit 1
+          fi
+          echo "GITLEAKS_VERSION=$version" >> "$GITHUB_ENV"
+
       - name: Run gitleaks
         uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7  # v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
           GITLEAKS_CONFIG: .gitleaks.toml
+          GITLEAKS_VERSION: ${{ env.GITLEAKS_VERSION }}
 
   deploy:
     needs: preflight
