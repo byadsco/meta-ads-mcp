@@ -20,11 +20,48 @@ import {
 import {
   deleteToken,
   getDefaultTokenName,
+  listTokens,
   saveToken,
   setDefaultToken,
   upsertUser,
 } from "../store/meta-token-repo.js";
 import { logger } from "../utils/logger.js";
+import { escapeHtml } from "../utils/html.js";
+import { hashToken } from "../auth/token-store.js";
+import { getApifyTokenRepo } from "../store/apify-token-repo.js";
+import { ApifyApiClient } from "../apify/client.js";
+import type { ApifyEnvelope, ApifyUser } from "../apify/types.js";
+import { CONNECTIONS_PATH, renderConnectionsPage } from "./html-pages.js";
+
+const STANDALONE_RETURN_PATHS = new Set<string>([CONNECTIONS_PATH]);
+
+/**
+ * Short timeout and no retries, unlike the shared `apifyApiClient` singleton
+ * (30s / 3 retries): this runs inside a user-facing request, so a stalling
+ * api.apify.com must not hold the connection for minutes.
+ */
+const apifyValidationClient = new ApifyApiClient({ timeout: 10_000, maxRetries: 0 });
+
+export type ApifyTokenInputResult =
+  | { ok: true; token: string }
+  | { ok: false; reason: "empty" | "too-short" | "too-long" | "illegal-chars" };
+
+/**
+ * The token is interpolated into an `Authorization: Bearer` header, so an
+ * embedded CR/LF is a header-injection attempt. Reject the whole class of
+ * control characters and inner whitespace rather than relying on the HTTP
+ * client to notice. The `apify_api_` prefix is deliberately not required —
+ * Apify may change the format, and /v2/users/me is the real authority.
+ */
+export function validateApifyTokenInput(input: unknown): ApifyTokenInputResult {
+  if (typeof input !== "string") return { ok: false, reason: "empty" };
+  const token = input.trim();
+  if (token.length === 0) return { ok: false, reason: "empty" };
+  if (token.length < 10) return { ok: false, reason: "too-short" };
+  if (token.length > 200) return { ok: false, reason: "too-long" };
+  if (/[\s\x00-\x1f\x7f]/.test(token)) return { ok: false, reason: "illegal-chars" };
+  return { ok: true, token };
+}
 import { hashPii } from "../auth/token-store.js";
 import { validateAuthorizeQuery } from "./authorize-validation.js";
 
@@ -48,13 +85,22 @@ const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
  * On any failure, fall back to "/authorize" — the landing page handles
  * unauthenticated users.
  */
-export function safeReturnTo(input: unknown): string {
-  if (typeof input !== "string") return "/authorize";
-  if (input.length === 0 || input.length > 2048) return "/authorize";
-  if (!input.startsWith("/")) return "/authorize";
-  if (input.startsWith("//")) return "/authorize";
+export type SafeReturnFallback = "/authorize" | typeof CONNECTIONS_PATH;
+
+/**
+ * `fallback` is a literal union on purpose: a caller can never route a user to
+ * an attacker-supplied destination by widening it.
+ */
+export function safeReturnTo(
+  input: unknown,
+  fallback: SafeReturnFallback = "/authorize",
+): string {
+  if (typeof input !== "string") return fallback;
+  if (input.length === 0 || input.length > 2048) return fallback;
+  if (!input.startsWith("/")) return fallback;
+  if (input.startsWith("//")) return fallback;
   // Reject control characters (0x00–0x1f and DEL).
-  if (/[\x00-\x1f\x7f]/.test(input)) return "/authorize";
+  if (/[\x00-\x1f\x7f]/.test(input)) return fallback;
 
   // If returnTo points at /authorize, make sure it has the OAuth params
   // the GET handler now requires. A path like "/authorize" alone is
@@ -65,7 +111,7 @@ export function safeReturnTo(input: unknown): string {
     if (qIdx === -1) return input; // bare /authorize → landing page is fine
     const params = new URLSearchParams(input.slice(qIdx + 1));
     if (!params.get("client_id") || !params.get("redirect_uri")) {
-      return "/authorize";
+      return fallback;
     }
   }
   return input;
@@ -87,15 +133,6 @@ function renderError(res: express.Response, status: number, message: string): vo
     h1{color:#fca5a5;margin:0 0 0.5rem}p{color:#aaa;margin:0}</style></head>
     <body><div class="card"><h1>Auth error</h1><p>${escapeHtml(message)}</p></div></body></html>`,
   );
-}
-
-function escapeHtml(raw: string): string {
-  return raw
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#x27;");
 }
 
 function setOAuthStateCookie(res: express.Response, nonce: string): void {
@@ -144,6 +181,14 @@ export async function validateMetaAuthReturn(
     parsed = new URL(returnTo, "http://mcp.local");
   } catch {
     return null;
+  }
+  // Login has to be able to return somewhere that is not an OAuth request.
+  // Query-less and exact-match only, so no parameters can be smuggled through;
+  // `new URL()` normalization means "/auth/connections/../authorize" resolves
+  // to "/authorize" and falls through to the OAuth check below, which rejects
+  // it for lacking client_id/redirect_uri.
+  if (STANDALONE_RETURN_PATHS.has(parsed.pathname) && parsed.search === "") {
+    return returnTo;
   }
   if (parsed.pathname !== "/authorize") return null;
 
@@ -417,6 +462,134 @@ export function mountAuthRoutes(
       }
       const returnTo = safeReturnTo(req.body?.return);
       res.redirect(302, returnTo);
+    },
+  );
+
+  app.get(CONNECTIONS_PATH, async (req, res) => {
+    const session = await getSession(req);
+    if (!session) {
+      // Literal destination, no user input — nothing to redirect-inject.
+      res.redirect(
+        302,
+        `/auth/meta?return=${encodeURIComponent(CONNECTIONS_PATH)}`,
+      );
+      return;
+    }
+
+    const [tokens, activeName, apify] = await Promise.all([
+      listTokens(session.fbUserId),
+      getDefaultTokenName(session.fbUserId),
+      getApifyTokenRepo().getStatus(session.fbUserId),
+    ]);
+
+    res.setHeader(
+      "Content-Security-Policy",
+      "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+    );
+    res.setHeader("Cache-Control", "no-store");
+    res.setHeader("Vary", "Cookie");
+
+    res.type("html").send(
+      renderConnectionsPage({
+        user: {
+          fbUserId: session.fbUserId,
+          email: session.email,
+          name: session.name,
+        },
+        tokens,
+        activeName,
+        apify,
+      }),
+    );
+  });
+
+  app.post(
+    "/auth/register-apify-token",
+    express.urlencoded({ extended: false }),
+    async (req, res) => {
+      const session = await getSession(req);
+      if (!session) {
+        renderError(res, 401, "Session expired. Sign in again.");
+        return;
+      }
+
+      const parsed = validateApifyTokenInput(req.body?.apify_token);
+      if (!parsed.ok) {
+        renderError(res, 400, "Invalid Apify token.");
+        return;
+      }
+
+      let user: ApifyUser;
+      try {
+        const response = await apifyValidationClient.get<ApifyEnvelope<ApifyUser>>(
+          "/v2/users/me",
+          undefined,
+          parsed.token,
+        );
+        user = response.data;
+      } catch (error) {
+        logger.warn(
+          {
+            event: "apify_token_register_failed",
+            fbUserId: hashPii(session.fbUserId),
+            tokenHash: hashToken(parsed.token),
+            error: error instanceof Error ? error.message : String(error),
+          },
+          "Apify token validation failed",
+        );
+        renderError(
+          res,
+          400,
+          "Apify token validation failed. The token may be revoked or lack API access. Check the server logs for details.",
+        );
+        return;
+      }
+
+      if (!user?.id || !user?.username) {
+        logger.warn(
+          { event: "apify_token_register_failed", fbUserId: hashPii(session.fbUserId) },
+          "Apify returned an unexpected /users/me shape",
+        );
+        renderError(res, 400, "Apify token validation failed.");
+        return;
+      }
+
+      await getApifyTokenRepo().saveToken(session.fbUserId, parsed.token, {
+        id: user.id,
+        username: user.username,
+      });
+      logger.info(
+        {
+          event: "apify_token_registered",
+          fbUserId: hashPii(session.fbUserId),
+          apifyUserId: user.id,
+        },
+        "Apify token registered via web UI",
+      );
+
+      res.redirect(302, safeReturnTo(req.body?.return, CONNECTIONS_PATH));
+    },
+  );
+
+  app.post(
+    "/auth/delete-apify-token",
+    express.urlencoded({ extended: false }),
+    async (req, res) => {
+      const session = await getSession(req);
+      if (!session) {
+        renderError(res, 401, "Session expired. Sign in again.");
+        return;
+      }
+
+      // Idempotent on purpose, unlike /auth/delete-token: a resubmitted form or
+      // a stale tab should land back on the page, not on an error.
+      await getApifyTokenRepo().deleteToken(session.fbUserId);
+      logger.info(
+        { event: "apify_token_deleted", fbUserId: hashPii(session.fbUserId) },
+        "Apify token deleted via web UI",
+      );
+
+      res.redirect(302, safeReturnTo(req.body?.return, CONNECTIONS_PATH));
     },
   );
 }

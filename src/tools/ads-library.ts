@@ -215,7 +215,7 @@ export function registerAdsLibraryTools(server: McpServer): void {
   server.registerTool(
     "ads_library_register_apify_token",
     {
-      description: `${APIFY_WRITE_WARNING}Register your Apify API token so the ads_library_* tools can scrape the public Meta Ad Library. The token is validated against the Apify API and then stored encrypted (AES-256-GCM) and scoped to your account. Get a token at console.apify.com/settings/integrations.`,
+      description: `${APIFY_WRITE_WARNING}Register your Apify API token so the ads_library_* tools can scrape the public Meta Ad Library. The token is validated against the Apify API and then stored encrypted (AES-256-GCM) and scoped to your account. Get a token at console.apify.com/settings/integrations. Most users register it on the server's /auth/connections page instead of calling this tool.`,
       inputSchema: {
         apify_token: z
           .string()
@@ -300,7 +300,7 @@ export function registerAdsLibraryTools(server: McpServer): void {
 
       const summary =
         source === "none"
-          ? "No Apify token available. Register one with ads_library_register_apify_token."
+          ? "No Apify token available. Register one on the /auth/connections page, or with ads_library_register_apify_token."
           : `Apify token source: ${source}` +
             (status.apifyUsername ? `\nApify account: ${status.apifyUsername}` : "") +
             (status.updatedAt ? `\nLast updated: ${new Date(status.updatedAt * 1000).toISOString()}` : "") +

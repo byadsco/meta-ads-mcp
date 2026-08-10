@@ -7,6 +7,65 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Added
+
+- **Apify tokens are now managed from the web UI**, not only by invoking
+  `ads_library_register_apify_token`. Asking an assistant to register a
+  credential was the only path, which is a poor fit for something users expect
+  to find next to their Meta tokens.
+  - A new **`GET /auth/connections`** page, authenticated and available at any
+    time, lists the stored Meta tokens (with the ability to switch the active
+    one) and the Apify connection, and allows registering, replacing or
+    disconnecting the Apify token. This is the page that solves rotation — the
+    consent screen only renders inside an OAuth flow, so it could never be
+    reached again after the initial approval.
+  - An **Apify section on the consent page** for first-time connection, plus a
+    link to the connections page. It deliberately offers no disconnect button:
+    dropping a credential mid-OAuth is not what the user came for.
+  - Apify stays optional. A test asserts the Approve button's disabled state
+    depends only on the Meta token count across all four
+    `tokens × apify` combinations.
+- Extracted the duplicated, unexported `escapeHtml` into `src/utils/html.ts`
+  (it existed byte-identically in `src/transport/http.ts` and
+  `src/transport/auth-routes.ts`) and the consent page's inline CSS into
+  `src/transport/html-pages.ts`, now shared by both surfaces.
+
+### Security
+
+- `POST /auth/register-apify-token` validates the token against Apify's
+  `/v2/users/me` **before** persisting it, and never echoes it: the error page
+  shows a fixed string while the upstream message goes to the logs, and only
+  `hashToken()` / `hashPii()` are logged. `renderConnectionsPage` is tested to
+  never contain the stored token.
+- Input is rejected for control characters and inner whitespace, not just
+  length. The token is interpolated into an `Authorization: Bearer` header, so
+  an embedded CR/LF is a header-injection attempt and must fail before the
+  outbound call rather than relying on the HTTP client to notice.
+- Token validation uses a dedicated `ApifyApiClient({ timeout: 10_000,
+  maxRetries: 0 })` rather than the shared singleton (30s / 3 retries), so a
+  stalling `api.apify.com` cannot hold a user-facing request for minutes.
+- `/auth/register-apify-token` is rate limited (10 per 15 min) — the first
+  limiter on `/auth/*`, justified because each POST makes an outbound call to a
+  third party, which uncapped turns the endpoint into a credential-validation
+  oracle. It is registered **before** `mountAuthRoutes`, since Express matches
+  in registration order and a limiter added after the route would never run;
+  verified against the booted server (10× 401 then 429).
+- `validateMetaAuthReturn` was hard-wired to `/authorize`, so login could not
+  return to a non-OAuth page. Widened by an exact-match, query-less allowlist
+  containing only `/auth/connections`; `new URL()` normalization means
+  traversal like `/auth/connections/../authorize` still falls through to the
+  OAuth check that rejects it. Covered by nine bypass tests.
+- `safeReturnTo` takes an optional fallback typed as a literal union, so a
+  caller can never route a user to an attacker-supplied destination.
+- `/auth/connections` sends a stricter CSP than the consent page (no external
+  `redirectOrigin`, plus `base-uri 'none'` and `frame-ancestors 'none'`), and
+  both pages now send `Cache-Control: no-store` and `Vary: Cookie` — the
+  consent page previously cached despite rendering token and Business Manager
+  names.
+- `fbUserId` on every new handler comes only from the session cookie, never
+  from the request body. Verified that the web route and the MCP tools resolve
+  the same tenant id, so the UI cannot write a token the tools would not read.
+
 ### Security
 
 - **The global gitleaks allowlist was silently far wider than written.**

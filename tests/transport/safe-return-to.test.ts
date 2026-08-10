@@ -101,4 +101,53 @@ describe("validateMetaAuthReturn", () => {
       ),
     ).resolves.toBe(returnTo);
   });
+
+  describe("the standalone connections path", () => {
+    // /auth/connections must be reachable after login even though it is not an
+    // OAuth request. The allowlist is exact-match and query-less on purpose.
+    const getClient = makeGetClient({ "claude-client": claudeClient });
+
+    it("accepts the exact connections path", async () => {
+      await expect(
+        validateMetaAuthReturn("/auth/connections", getClient),
+      ).resolves.toBe("/auth/connections");
+    });
+
+    it.each([
+      ["a query string", "/auth/connections?x=1"],
+      ["a fragment-ish suffix", "/auth/connectionsX"],
+      ["a deeper path", "/auth/connections/extra"],
+      ["a protocol-relative lookalike", "//auth/connections"],
+      ["an absolute URL", "https://evil.example/auth/connections"],
+      ["traversal back to /authorize", "/auth/connections/../authorize"],
+      ["traversal to another auth route", "/auth/connections/../auth/logout"],
+      ["a trailing slash", "/auth/connections/"],
+      ["an encoded separator", "/auth/connections%3Fx=1"],
+    ])("rejects %s", async (_label, input) => {
+      await expect(validateMetaAuthReturn(input, getClient)).resolves.toBeNull();
+    });
+  });
+});
+
+describe("safeReturnTo fallback", () => {
+  it("defaults to /authorize so existing call sites are unchanged", () => {
+    expect(safeReturnTo(undefined)).toBe("/authorize");
+    expect(safeReturnTo("https://evil.example/x")).toBe("/authorize");
+  });
+
+  it("honors an explicit connections fallback", () => {
+    expect(safeReturnTo(undefined, "/auth/connections")).toBe("/auth/connections");
+    expect(safeReturnTo("//evil", "/auth/connections")).toBe("/auth/connections");
+    expect(safeReturnTo("not-a-path", "/auth/connections")).toBe("/auth/connections");
+  });
+
+  it("still prefers a valid input over the fallback", () => {
+    expect(safeReturnTo("/auth/connections", "/authorize")).toBe("/auth/connections");
+  });
+
+  it("applies the fallback to a param-less /authorize query", () => {
+    expect(safeReturnTo("/authorize?client_id=only", "/auth/connections")).toBe(
+      "/auth/connections",
+    );
+  });
 });
