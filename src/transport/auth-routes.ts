@@ -47,23 +47,38 @@ const apifyValidationClient = new ApifyApiClient({ timeout: 10_000, maxRetries: 
  * on a custom domain a sibling subdomain could still forge one, and swapping a
  * tenant's Apify token for the attacker's would silently redirect their scrapes.
  *
- * Fetch Metadata is the primary check because it needs no configuration. The
- * Origin fallback compares against the origin the browser actually contacted
- * (not SERVER_URL) so a misconfigured env cannot lock legitimate users out.
- * A request carrying neither header is not a browser form post, so it is
- * allowed through to the session check rather than blocked here.
+ * Fetch Metadata is the primary signal because it needs no configuration. The
+ * Origin fallback is compared against the origin the browser actually contacted
+ * rather than SERVER_URL, so a misconfigured env cannot lock legitimate users
+ * out.
+ *
+ * Allowing a request that carries neither header is deliberate and not a CSRF
+ * hole: a browser form POST always sends `Origin` (the Fetch spec includes it
+ * for POST even in no-cors mode) and every current browser also sends
+ * `Sec-Fetch-Site`. A request with neither is therefore not a browser form
+ * post, so it has no ambient session cookie to abuse — and it still has to pass
+ * the session check that follows.
  */
-function isSameOriginPost(req: express.Request): boolean {
-  const site = req.get("sec-fetch-site");
-  if (site) return site === "same-origin";
-
-  const origin = req.get("origin");
-  if (!origin) return true;
+export function isSameOriginRequest(headers: {
+  secFetchSite?: string | null;
+  origin?: string | null;
+  selfOrigin: string;
+}): boolean {
+  if (headers.secFetchSite) return headers.secFetchSite === "same-origin";
+  if (!headers.origin) return true;
   try {
-    return new URL(origin).origin === `${req.protocol}://${req.get("host")}`;
+    return new URL(headers.origin).origin === headers.selfOrigin;
   } catch {
     return false;
   }
+}
+
+function isSameOriginPost(req: express.Request): boolean {
+  return isSameOriginRequest({
+    secFetchSite: req.get("sec-fetch-site"),
+    origin: req.get("origin"),
+    selfOrigin: `${req.protocol}://${req.get("host")}`,
+  });
 }
 
 export type ApifyTokenInputResult =

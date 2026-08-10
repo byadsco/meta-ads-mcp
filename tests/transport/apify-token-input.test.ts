@@ -1,5 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { validateApifyTokenInput } from "../../src/transport/auth-routes.js";
+import {
+  isSameOriginRequest,
+  validateApifyTokenInput,
+} from "../../src/transport/auth-routes.js";
 
 // Kept under the 20-char suffix that .gitleaks.toml's apify-api-token rule
 // matches, and carrying the repo's `fixture` marker.
@@ -89,5 +92,41 @@ describe("validateApifyTokenInput", () => {
     for (const input of [undefined, null, 42, {}, []]) {
       expect(validateApifyTokenInput(input as never).ok).toBe(false);
     }
+  });
+});
+
+describe("isSameOriginRequest", () => {
+  const selfOrigin = "https://mcp.byads.co";
+
+  it.each([
+    ["same-origin", "same-origin", true],
+    ["same-site (sibling subdomain — SameSite would allow this)", "same-site", false],
+    ["cross-site", "cross-site", false],
+    ["none (no initiating origin)", "none", false],
+  ])("Sec-Fetch-Site %s → %s", (_label, secFetchSite, expected) => {
+    expect(isSameOriginRequest({ secFetchSite, selfOrigin })).toBe(expected);
+  });
+
+  it("Sec-Fetch-Site wins over a spoofable Origin", () => {
+    expect(
+      isSameOriginRequest({ secFetchSite: "cross-site", origin: selfOrigin, selfOrigin }),
+    ).toBe(false);
+  });
+
+  it.each([
+    ["matching origin", "https://mcp.byads.co", true],
+    ["sibling subdomain", "https://evil.byads.co", false],
+    ["foreign origin", "https://evil.example", false],
+    ["scheme downgrade", "http://mcp.byads.co", false],
+    ["sandboxed null origin", "null", false],
+    ["unparseable", "not-a-url", false],
+  ])("Origin fallback: %s → %s", (_label, origin, expected) => {
+    expect(isSameOriginRequest({ origin, selfOrigin })).toBe(expected);
+  });
+
+  it("allows a request carrying neither header", () => {
+    // Not a browser form post, so no ambient cookie to abuse; the session
+    // check still gates it.
+    expect(isSameOriginRequest({ selfOrigin })).toBe(true);
   });
 });
