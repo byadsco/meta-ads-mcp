@@ -9,16 +9,26 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Security
 
-- **The global gitleaks allowlist was silently far wider than written.** From
-  roughly gitleaks 8.30 on, the allowlist `regexes` are joined into a single
-  alternation, so an inline `(?i)` leaks into every entry that follows it. In
-  practice that turned `test[-_]?(token|secret|key)` case-insensitive, which
-  exempted any credential containing an uppercase `TEST` — a real-looking
-  `apify_api_TESTtoken…` value passed a local scan while CI (which runs the
-  older 8.24.3) correctly flagged it. The two spellings of `placeholder` in the
-  list were the tell that case-sensitivity had always been the intent.
-  Every entry now declares `(?i)` or `(?-i)` explicitly, so the list means the
-  same thing on every gitleaks version regardless of ordering.
+- **The global gitleaks allowlist was silently far wider than written.**
+  gitleaks joins allowlist patterns into a single alternation (an optimization
+  promoted in 8.28.0), so an inline `(?i)` leaks into every pattern that follows
+  it. In practice that turned `test[-_]?(token|secret|key)` case-insensitive,
+  which exempted any credential containing an uppercase `TEST` — a real-looking
+  `apify_api_TESTtoken…` value passed a local scan while CI (then on 8.24.3)
+  correctly flagged it. The two spellings of `placeholder` in the list were the
+  tell that case-sensitivity had always been the intent.
+  This affects **`paths` as well as `regexes`**: a probe confirmed that a
+  leading `(?i)` entry made a following case-sensitive path pattern exclude
+  `SECRETS.NOTES` too, so a file that should have been scanned was skipped
+  outright. Every pattern in both lists now declares `(?i)` or `(?-i)`
+  explicitly, so they mean the same thing on every gitleaks version regardless
+  of ordering.
+- The local guard scripts now **fail closed** around their own preconditions.
+  Previously a missing gitleaks binary was a `[SKIP]`, and a missing, empty or
+  non-semver `.gitleaks-version` silently disabled the version check — a green
+  run that reads as evidence the scan happened. All five states (no pin, empty
+  pin, non-semver pin, unreadable `gitleaks version`, binary absent) are now
+  blocking failures.
 - Pinned the scanner version in [.gitleaks-version](.gitleaks-version), read by
   both [ci.yml](.github/workflows/ci.yml) and the local guard scripts, which
   now fail on a mismatch instead of letting a green local run imply a green CI.

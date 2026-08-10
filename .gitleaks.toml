@@ -135,24 +135,30 @@ commits = [
   "245fa2cf1aa2aa43f80044ca206888e61e73eaf0",
   "79c5edcc82f8c5fa79b75d4bf16e6c14c785a0ad",
 ]
+# Same explicit-flag rule as `regexes` below — `paths` is joined the same way.
+# Verified: with a leading (?i) entry, a following case-sensitive pattern goes
+# case-insensitive and starts excluding files it was never meant to (a probe
+# named SECRETS.NOTES stopped being scanned). Every entry states its flag.
 paths = [
-  '''(^|/)\.env\.example$''',
-  '''(^|/)\.env(\..*)?$''',
-  '''(^|/)\.gitleaks\.toml$''',
-  '''(^|/)\.gitleaks-baseline\.json$''',
-  '''(^|/)package-lock\.json$''',
-  '''(^|/)pnpm-lock\.yaml$''',
-  '''(^|/)yarn\.lock$''',
+  '''(?-i)(^|/)\.env\.example$''',
+  '''(?-i)(^|/)\.env(\..*)?$''',
+  '''(?-i)(^|/)\.gitleaks\.toml$''',
+  '''(?-i)(^|/)\.gitleaks-baseline\.json$''',
+  '''(?-i)(^|/)package-lock\.json$''',
+  '''(?-i)(^|/)pnpm-lock\.yaml$''',
+  '''(?-i)(^|/)yarn\.lock$''',
 ]
 # EVERY entry below MUST start with an explicit (?i) or (?-i).
 #
-# gitleaks >= ~8.30 joins these into a single alternation, so a bare inline
-# (?i) leaks into every regex that follows it and silently widens the
-# allowlist. That is not theoretical: it made `test[-_]?(token|secret|key)`
+# gitleaks joins allowlist patterns into a single alternation (an optimization
+# promoted in 8.28.0), so a bare inline (?i) leaks into every pattern that
+# follows it and silently widens the allowlist. It applies to `paths` as well
+# as `regexes`.
+#
+# That is not theoretical: it made `test[-_]?(token|secret|key)`
 # case-insensitive, which allowlisted a real-looking `apify_api_TESTtoken…`
-# value that gitleaks 8.24.3 (what CI runs) correctly flagged. The two
-# spellings of `placeholder` below are the tell that case-sensitivity was
-# always the intent here.
+# value that gitleaks 8.24.3 correctly flagged. The two spellings of
+# `placeholder` below are the tell that case-sensitivity was always the intent.
 #
 # Stating the flag on each entry makes the list mean the same thing on every
 # gitleaks version, regardless of ordering.

@@ -73,15 +73,28 @@ fi
 # 3. gitleaks (staged-only). Pure Go binary — no npm fallback.
 echo "── gitleaks ─────────────────────────────────────────────────"
 if command -v gitleaks >/dev/null 2>&1; then
-  # See run-checks.sh: gitleaks releases disagree about allowlist semantics,
-  # so a version mismatch means a clean scan here does not predict CI.
-  if [ -f .gitleaks-version ]; then
+  # See run-checks.sh: gitleaks joins allowlist patterns into one alternation
+  # (8.28.0+), so an inline (?i) leaks across entries and a mismatched binary
+  # can report "clean" on content CI rejects. Every branch fails CLOSED — a
+  # guard that silently skips its own version check produces a green run that
+  # reads as evidence.
+  want=""
+  if [ ! -f .gitleaks-version ]; then
+    mark_fail "gitleaks version pin missing (.gitleaks-version) — cannot confirm this scanner matches CI"
+  else
     want="$(tr -d '[:space:]' < .gitleaks-version)"
-    have="$(gitleaks version 2>/dev/null | tr -d '[:space:]')"
-    if [ -n "$want" ] && [ "$have" != "$want" ]; then
-      mark_fail "gitleaks version mismatch — CI pins $want, this machine has ${have:-unknown}"
-      echo "        Install the pinned version, or bump .gitleaks-version if the pin is stale."
+    if ! printf '%s' "$want" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+      mark_fail ".gitleaks-version must contain a bare semver (got: '${want:-<empty>}')"
+      want=""
     fi
+  fi
+
+  have="$(gitleaks version 2>/dev/null | tr -d '[:space:]')"
+  if ! printf '%s' "$have" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+    mark_fail "could not read a version from 'gitleaks version' (got: '${have:-<nothing>}')"
+  elif [ -n "$want" ] && [ "$have" != "$want" ]; then
+    mark_fail "gitleaks version mismatch — CI pins $want, this machine has $have"
+    echo "        Install the pinned version, or bump .gitleaks-version if the pin is stale."
   fi
 
   GITLEAKS_ARGS=(git --staged --redact --no-banner)
@@ -96,7 +109,10 @@ if command -v gitleaks >/dev/null 2>&1; then
         sed 's/^/        /' "$LOG" | tail -n 10 ;;
   esac
 else
-  mark_skip "gitleaks not installed (install with: brew install gitleaks)"
+  # Fail closed: this is the repo's secret scanner. "Not installed" must not
+  # read as "nothing to report" on a public repo whose fork PRs rely on this
+  # guard running locally.
+  mark_fail "gitleaks not installed — the secret scan did not run (install: brew install gitleaks@$(tr -d '[:space:]' < .gitleaks-version 2>/dev/null || echo latest))"
 fi
 
 # 4. Typecheck (only if there's a tsconfig.json and a script for it)
