@@ -17,8 +17,8 @@
     "id": "1773206210262490",
     "title": "Special Ad Categories explained",
     "url": "https://www.facebook.com/business/help/1773206210262490",
-    "summary": "Ads about credit, employment, housing, social issues / elections / politics must declare a Special Ad Category. This restricts targeting (no age, gender, ZIP, lookalikes from custom audiences with sensitive data). Required by law in many regions.",
-    "tags": ["special_ad_category", "compliance", "credit", "employment", "housing", "politics"]
+    "summary": "Ads about credit and other financial products and services, employment, housing, online gambling and gaming, or social issues / elections / politics must declare a Special Ad Category. This restricts targeting (no age, gender, ZIP, lookalikes from custom audiences with sensitive data). Required by law in many regions.",
+    "tags": ["special_ad_category", "compliance", "credit", "financial_products_services", "employment", "housing", "gambling", "politics"]
   },
   {
     "id": "1612422259487523",
@@ -66,7 +66,7 @@
     "id": "1438588669953374",
     "title": "Advantage+ Audience automation",
     "url": "https://www.facebook.com/business/help/1438588669953374",
-    "summary": "Advantage+ Audience uses ML to find users likely to convert beyond your specified targeting. Set targeting_automation.advantage_audience=1. Often outperforms detailed targeting; mandatory in many objectives.",
+    "summary": "Advantage+ Audience uses ML to find users likely to convert beyond your specified targeting. Set targeting_automation.advantage_audience=1 to opt in or 0 to opt out. New ad sets with non-default, non-relaxed age, gender, custom audience or detailed targeting must set it explicitly (Marketing API v23.0+; v26.0+ also for Housing, Employment and Financial Products and Services campaigns). Often outperforms detailed targeting.",
     "tags": ["advantage_plus", "audience_automation", "ml", "targeting"]
   },
   {

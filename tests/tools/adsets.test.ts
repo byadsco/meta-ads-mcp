@@ -525,6 +525,114 @@ describe("registerAdSetTools", () => {
       expect(sentTargeting.is_whatsapp_destination_ad).toBeUndefined();
     });
 
+    // Ad sets created before the Graph API bump can carry placements Meta has
+    // since removed (video_feeds in v24.0, explore and Messenger story in v26.0)
+    // and no Advantage+ audience flag, which v23.0+ requires explicitly for
+    // non-default targeting. Copying them verbatim makes the create call fail.
+    const cloneOnce = async (targeting: Record<string, unknown>, dryRun = false) => {
+      const server = createMockMcpServer();
+      registerAdSetTools(server as never);
+
+      vi.stubGlobal("fetch", vi.fn()
+        .mockResolvedValueOnce(mockFetchResponse(sourceAdSet({ targeting })))
+        .mockResolvedValueOnce(mockFetchResponse(oneAd()))
+        .mockResolvedValueOnce(mockFetchResponse({ id: "20001" }))
+        .mockResolvedValueOnce(mockFetchResponse({ copied_ad_id: "30001" }))
+        .mockResolvedValueOnce(mockFetchResponse({ success: true })));
+
+      const result = await server._registeredTools[2].handler({
+        account_id: "act_123",
+        source_ad_set_id: "2099",
+        target_ad_set: { name: "Target", geo_override: { countries: ["CO"] }, status: "PAUSED" },
+        creative_overrides: [],
+        dry_run: dryRun,
+        idempotency_key: dryRun ? undefined : "k-compat-1",
+      }) as { content: Array<{ type: string; text: string }> };
+
+      const calls = vi.mocked(fetch).mock.calls;
+      const adSetPost = calls.find((call) =>
+        call[1]?.method === "POST" && new URL(call[0] as string).pathname.endsWith("/act_123/adsets"));
+      const sentTargeting = adSetPost
+        ? JSON.parse(new URLSearchParams(adSetPost[1]?.body as string).get("targeting") ?? "{}") as Record<string, unknown>
+        : undefined;
+      const payload = JSON.parse(result.content[1].text) as { warnings: string[] };
+      return { sentTargeting, warnings: payload.warnings, methods: calls.map((call) => call[1]?.method ?? "GET") };
+    };
+
+    it("create: drops placements Meta removed and keeps every other copied placement", async () => {
+      const { sentTargeting, warnings } = await cloneOnce({
+        geo_locations: { countries: ["CL"] },
+        publisher_platforms: ["facebook", "instagram", "messenger"],
+        facebook_positions: ["feed", "video_feeds"],
+        instagram_positions: ["stream", "explore", "explore_home"],
+        messenger_positions: ["story"],
+        targeting_automation: { advantage_audience: 1, individual_setting: { age: 1 } },
+      });
+
+      expect(sentTargeting?.publisher_platforms).toEqual(["facebook", "instagram"]);
+      expect(sentTargeting?.facebook_positions).toEqual(["feed"]);
+      expect(sentTargeting?.instagram_positions).toEqual(["stream", "explore_home"]);
+      expect(sentTargeting).not.toHaveProperty("messenger_positions");
+      expect(sentTargeting?.targeting_automation).toEqual({ advantage_audience: 1, individual_setting: { age: 1 } });
+      expect(warnings).toHaveLength(3);
+      expect(warnings).toEqual(expect.arrayContaining([
+        expect.stringContaining("video_feeds"),
+        expect.stringContaining("explore"),
+        expect.stringContaining("messenger_positions"),
+      ]));
+    });
+
+    it("create: opts out of Advantage+ audience explicitly when the source ad set has no setting", async () => {
+      const { sentTargeting, warnings } = await cloneOnce({
+        geo_locations: { countries: ["CL"] },
+        age_min: 25,
+        age_max: 45,
+        genders: [1],
+      });
+
+      expect(sentTargeting?.targeting_automation).toEqual({ advantage_audience: 0 });
+      expect(sentTargeting?.age_min).toBe(25);
+      expect(warnings).toEqual([expect.stringContaining("advantage_audience")]);
+    });
+
+    it("dry-run reports the adjustments it will make to the copied targeting", async () => {
+      const { warnings, methods } = await cloneOnce({
+        geo_locations: { countries: ["CL"] },
+        instagram_positions: ["stream", "explore"],
+        targeting_automation: { advantage_audience: 0 },
+      }, true);
+
+      expect(methods).toEqual(["GET", "GET"]);
+      expect(warnings).toEqual([expect.stringContaining("explore")]);
+    });
+
+    it("refuses to clone, before creating anything, when every placement of the source was removed", async () => {
+      const server = createMockMcpServer();
+      registerAdSetTools(server as never);
+
+      vi.stubGlobal("fetch", vi.fn()
+        .mockResolvedValueOnce(mockFetchResponse(sourceAdSet({
+          targeting: {
+            geo_locations: { countries: ["CL"] },
+            publisher_platforms: ["messenger"],
+            messenger_positions: ["story"],
+          },
+        })))
+        .mockResolvedValueOnce(mockFetchResponse(oneAd())));
+
+      await expect(server._registeredTools[2].handler({
+        account_id: "act_123",
+        source_ad_set_id: "2099",
+        target_ad_set: { name: "Target", geo_override: { countries: ["CO"] }, status: "PAUSED" },
+        creative_overrides: [],
+        dry_run: false,
+        idempotency_key: "k-compat-empty",
+      })).rejects.toThrow(/no placements left/i);
+
+      const methods = vi.mocked(fetch).mock.calls.map((call) => call[1]?.method ?? "GET");
+      expect(methods).toEqual(["GET", "GET"]);
+    });
+
     it("user-provided daily_budget wins over source lifetime_budget", async () => {
       const server = createMockMcpServer();
       registerAdSetTools(server as never);

@@ -1,6 +1,6 @@
 import { logger } from "../utils/logger.js";
+import { resolveMetaApiVersion } from "../meta/api-version.js";
 
-const META_API_VERSION = process.env.META_API_VERSION ?? "v22.0";
 const META_GRAPH = "https://graph.facebook.com";
 const META_OAUTH_DIALOG = "https://www.facebook.com";
 
@@ -35,7 +35,7 @@ export function loadMetaOAuthConfig(serverUrl: URL): MetaOAuthConfig | null {
     appId,
     appSecret,
     redirectUri,
-    apiVersion: META_API_VERSION,
+    apiVersion: resolveMetaApiVersion(),
   };
 }
 
@@ -130,7 +130,7 @@ export interface MetaProfile {
 
 export async function fetchProfile(
   accessToken: string,
-  apiVersion: string = META_API_VERSION,
+  apiVersion: string = resolveMetaApiVersion(),
 ): Promise<MetaProfile> {
   const url = new URL(`/${apiVersion}/me`, META_GRAPH);
   url.searchParams.set(
@@ -169,7 +169,7 @@ export async function fetchProfile(
 
 export async function validateToken(
   accessToken: string,
-  apiVersion: string = META_API_VERSION,
+  apiVersion: string = resolveMetaApiVersion(),
 ): Promise<{ valid: boolean; profile?: MetaProfile; error?: string }> {
   try {
     const profile = await fetchProfile(accessToken, apiVersion);
@@ -188,7 +188,7 @@ export interface MetaBusiness {
 
 export async function fetchPrimaryBusiness(
   accessToken: string,
-  apiVersion: string = META_API_VERSION,
+  apiVersion: string = resolveMetaApiVersion(),
 ): Promise<MetaBusiness | null> {
   const url = new URL(`/${apiVersion}/me/businesses`, META_GRAPH);
   url.searchParams.set("fields", "id,name");

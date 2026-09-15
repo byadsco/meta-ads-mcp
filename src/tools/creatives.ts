@@ -38,7 +38,7 @@ export const ctaEnum = z.enum([
   "LIKE_PAGE", "FOLLOW_PAGE", "EVENT_RSVP", "DONATE_NOW",
   // Local
   "GET_DIRECTIONS",
-  // AI features (v25.0)
+  // AI features (v25.0+)
   "SHOP_WITH_AI", "TRY_ON_WITH_AI",
 ]);
 

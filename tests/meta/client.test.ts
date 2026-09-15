@@ -10,7 +10,7 @@ describe("MetaApiClient", () => {
     setupTestToken();
     tokenManager.resetForTests();
     client = new MetaApiClient({
-      apiVersion: "v22.0",
+      apiVersion: "v26.0",
       baseUrl: "https://graph.facebook.com",
       timeout: 5000,
       maxRetries: 0,
@@ -21,13 +21,30 @@ describe("MetaApiClient", () => {
     cleanupTestToken();
     tokenManager.resetForTests();
     vi.restoreAllMocks();
+    vi.unstubAllEnvs();
   });
 
   describe("constructor", () => {
-    it("uses default config when none provided", () => {
-      const defaultClient = new MetaApiClient();
-      // Just verify it constructs without error
-      expect(defaultClient).toBeDefined();
+    it("sends requests to Graph API v26.0 when no version is configured", async () => {
+      vi.stubEnv("META_API_VERSION", undefined);
+      const defaultClient = new MetaApiClient({ maxRetries: 0 });
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockFetchResponse({ data: [] })));
+
+      await defaultClient.get("/me/adaccounts");
+
+      const url = new URL(vi.mocked(fetch).mock.calls[0][0] as string);
+      expect(url.pathname).toBe("/v26.0/me/adaccounts");
+    });
+
+    it("sends requests to the version in META_API_VERSION when it is set", async () => {
+      vi.stubEnv("META_API_VERSION", "v25.0");
+      const envClient = new MetaApiClient({ maxRetries: 0 });
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockFetchResponse({ data: [] })));
+
+      await envClient.get("/me/adaccounts");
+
+      const url = new URL(vi.mocked(fetch).mock.calls[0][0] as string);
+      expect(url.pathname).toBe("/v25.0/me/adaccounts");
     });
 
     it("respects custom API version", async () => {
@@ -56,7 +73,7 @@ describe("MetaApiClient", () => {
 
       expect(result).toEqual({ id: "123", name: "Test" });
       const url = new URL(vi.mocked(fetch).mock.calls[0][0] as string);
-      expect(url.pathname).toBe("/v22.0/123");
+      expect(url.pathname).toBe("/v26.0/123");
       expect(url.searchParams.get("fields")).toBe("id,name");
       expect(url.searchParams.get("access_token")).toBe("test-access-token");
     });
