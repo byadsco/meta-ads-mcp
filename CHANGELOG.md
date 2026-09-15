@@ -7,6 +7,8 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [3.6.0] — 2026-09-15
+
 ### Added
 
 - **Apify tokens are now managed from the web UI**, not only by invoking
@@ -56,8 +58,32 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   validated before path interpolation, and every error message is scrubbed both
   of `apify_api_*` substrings and of the exact token value in play.
 
+### Fixed
+
+- **`ads_library_scrape` no longer breaks Gemini clients.** Its `period`
+  parameter was published as `enum ["", "last24h", ...]`, and Gemini's
+  `function_declarations` reject any empty enum member, so every request
+  failed for a Gemini client with this server attached. The schema now
+  publishes only the four real values with the field optional, and the Apify
+  actor's `""` no-filter sentinel is applied when the actor input is built.
+  An explicit `""` from an existing client is still accepted. A new test
+  connects a real MCP client and asserts no published tool enum is empty or
+  contains `""` or `null` (#125).
+
 ### Security
 
+- **`npm audit` clean again — 0 vulnerabilities.** Advisories published after
+  v3.5.0 had reappeared (5 moderate, 2 high). The ones reaching the production
+  runtime are `hono` 4.13.8 via the MCP SDK (path traversal in `toSSG()`,
+  unbounded nesting in `parseBody()`, query parsing past the URL fragment),
+  `fast-uri` 3.1.8 via ajv (SSRF and host confusion in URI normalization) and
+  `qs` 6.16.0 via express (array-limit bypass, DoS). Dev-only: `vitest`
+  4.1.11, `nanoid` 3.3.19 and `@humanfs/node` 0.16.8. Lockfile only, no
+  direct dependency range changed, no major bumps (#136).
+  Note for maintainers: `npm audit fix` crashes on npm 10.9.x with
+  `Cannot read properties of null (reading 'edgesOut')` (npm/cli#9787) while
+  resolving vitest 4.1.11's circular optional peers. Use npm 11 or later to
+  regenerate the lockfile; `npm ci` on npm 10 is unaffected.
 - `POST /auth/register-apify-token` validates the token against Apify's
   `/v2/users/me` **before** persisting it, and never echoes it: the error page
   shows a fixed string while the upstream message goes to the logs, and only
