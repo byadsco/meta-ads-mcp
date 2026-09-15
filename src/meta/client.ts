@@ -10,8 +10,10 @@ import {
 } from "./errors.js";
 import type { MetaApiResponse } from "./types/common.js";
 import { collectAllPages } from "./paginator.js";
+import { DEFAULT_API_VERSION } from "./version.js";
 
-const DEFAULT_API_VERSION = "v25.0";
+export { DEFAULT_API_VERSION } from "./version.js";
+
 const DEFAULT_BASE_URL = "https://graph.facebook.com";
 const DEFAULT_TIMEOUT = 30000;
 const MAX_RETRIES = 3;

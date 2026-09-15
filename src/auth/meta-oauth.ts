@@ -1,6 +1,7 @@
 import { logger } from "../utils/logger.js";
+import { DEFAULT_API_VERSION } from "../meta/version.js";
 
-const META_API_VERSION = process.env.META_API_VERSION ?? "v22.0";
+const META_API_VERSION = process.env.META_API_VERSION ?? DEFAULT_API_VERSION;
 const META_GRAPH = "https://graph.facebook.com";
 const META_OAUTH_DIALOG = "https://www.facebook.com";
 

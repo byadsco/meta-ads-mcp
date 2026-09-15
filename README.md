@@ -348,7 +348,7 @@ Notes:
 
 - To switch to a `lifetime_budget`, pass `lifetime_budget` together with `end_time` (ISO 8601). Meta rejects a `lifetime_budget` on an ad set with no `end_time`.
 - Changing `bid_amount`, `bid_strategy`, or replacing `targeting` can re-trigger Meta's learning phase.
-- Under the hood the tool issues `POST /v25.0/<adset_id>` against the Meta Graph API, routed through the shared client (rate-limit, write-pacer, circuit-breaker, error classifier). See [src/tools/adsets.ts](src/tools/adsets.ts) for the full schema.
+- Under the hood the tool issues `POST /v26.0/<adset_id>` against the Meta Graph API, routed through the shared client (rate-limit, write-pacer, circuit-breaker, error classifier). See [src/tools/adsets.ts](src/tools/adsets.ts) for the full schema.
 
 ### Working with custom audiences
 
@@ -607,7 +607,7 @@ services:
       - META_TOKENS=${META_TOKENS:-}
       - MCP_API_KEY=${MCP_API_KEY:-}
       - APIFY_TOKEN=${APIFY_TOKEN:-}
-      - META_API_VERSION=${META_API_VERSION:-v22.0}
+      - META_API_VERSION=${META_API_VERSION:-v26.0}
       - PORT=3000
       - LOG_LEVEL=${LOG_LEVEL:-info}
       - NODE_ENV=production

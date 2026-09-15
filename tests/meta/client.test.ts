@@ -30,6 +30,26 @@ describe("MetaApiClient", () => {
       expect(defaultClient).toBeDefined();
     });
 
+    it("defaults to Marketing API v26.0 when META_API_VERSION is unset", async () => {
+      const prev = process.env.META_API_VERSION;
+      delete process.env.META_API_VERSION;
+      try {
+        const defaultClient = new MetaApiClient({ maxRetries: 0 });
+        const mockResponse = mockFetchResponse({ data: [] });
+        vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockResponse));
+
+        await defaultClient.get("/me/adaccounts");
+        const url = new URL(vi.mocked(fetch).mock.calls[0][0] as string);
+        expect(url.pathname).toBe("/v26.0/me/adaccounts");
+      } finally {
+        if (prev === undefined) {
+          delete process.env.META_API_VERSION;
+        } else {
+          process.env.META_API_VERSION = prev;
+        }
+      }
+    });
+
     it("respects custom API version", async () => {
       const customClient = new MetaApiClient({
         apiVersion: "v21.0",

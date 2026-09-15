@@ -100,10 +100,10 @@ const targetingSchema = z
 
     publisher_platforms: z.array(z.string()).optional().describe("facebook, instagram, threads, messenger, audience_network"),
     facebook_positions: z.array(z.string()).optional().describe("feed, right_hand_column, marketplace, video_feeds, story, search, instream_video, facebook_reels, facebook_reels_overlay, profile_feed, notification"),
-    instagram_positions: z.array(z.string()).optional().describe("stream, story, explore, explore_home, reels, profile_feed, ig_search, profile_reels"),
+    instagram_positions: z.array(z.string()).optional().describe("stream, story, reels, profile_feed, ig_search, profile_reels (explore / explore_home removed in Marketing API v26.0)"),
     threads_positions: z.array(z.string()).optional().describe("threads_stream (requires instagram stream)"),
     audience_network_positions: z.array(z.string()).optional().describe("classic, rewarded_video"),
-    messenger_positions: z.array(z.string()).optional().describe("sponsored_messages, story"),
+    messenger_positions: z.array(z.string()).optional().describe("sponsored_messages, marketing_messages (story removed in Marketing API v26.0)"),
     whatsapp_positions: z.array(z.string()).optional().describe("status (requires instagram story)"),
 
     brand_safety_content_filter_levels: z.array(z.string()).optional().describe("FACEBOOK_RELAXED/STANDARD/STRICT, AN_RELAXED/STANDARD/STRICT, FEED_RELAXED/STANDARD/STRICT"),
@@ -114,8 +114,8 @@ const targetingSchema = z
     exclusions: z.record(z.unknown()).optional(),
 
     targeting_automation: z.object({
-      advantage_audience: z.number().optional().describe("1 to enable Advantage+ audience"),
-    }).passthrough().optional().describe("Advantage+ audience automation settings"),
+      advantage_audience: z.number().optional().describe("1 to enable Advantage+ audience, 0 to disable. Required (0 or 1) when creating Housing/Employment/Credit ad sets with constrained targeting (Marketing API v26.0)."),
+    }).passthrough().optional().describe("Advantage+ audience automation settings. For Housing/Employment/Credit campaigns with constrained targeting, set advantage_audience to 0 or 1 explicitly (v26.0+)."),
   })
   .passthrough()
   .describe("Targeting specification for the ad set");
@@ -284,6 +284,34 @@ const TARGETING_READ_ONLY_FIELDS = [
   "targeting_optimization",
 ] as const;
 
+/** Instagram Explore placements removed in Marketing API v26.0. */
+const DEPRECATED_INSTAGRAM_POSITIONS = new Set(["explore", "explore_home"]);
+/** Messenger Stories placement removed in Marketing API v26.0. */
+const DEPRECATED_MESSENGER_POSITIONS = new Set(["story"]);
+
+function stripDeprecatedPlacements(targeting: TargetingSpec): void {
+  if (targeting.instagram_positions) {
+    const next = targeting.instagram_positions.filter(
+      (p) => !DEPRECATED_INSTAGRAM_POSITIONS.has(p),
+    );
+    if (next.length === 0) {
+      delete targeting.instagram_positions;
+    } else {
+      targeting.instagram_positions = next;
+    }
+  }
+  if (targeting.messenger_positions) {
+    const next = targeting.messenger_positions.filter(
+      (p) => !DEPRECATED_MESSENGER_POSITIONS.has(p),
+    );
+    if (next.length === 0) {
+      delete targeting.messenger_positions;
+    } else {
+      targeting.messenger_positions = next;
+    }
+  }
+}
+
 function applyGeoOverride(targeting: TargetingSpec | undefined, geoOverride: GeoLocation): TargetingSpec {
   const nextTargeting = structuredClone(targeting ?? {}) as TargetingSpec;
   // Replace, do NOT merge. Inheriting cities/regions/zips from the source
@@ -294,6 +322,7 @@ function applyGeoOverride(targeting: TargetingSpec | undefined, geoOverride: Geo
   for (const field of TARGETING_READ_ONLY_FIELDS) {
     delete nextTargeting[field];
   }
+  stripDeprecatedPlacements(nextTargeting);
   return nextTargeting;
 }
 

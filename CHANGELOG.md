@@ -7,6 +7,21 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Changed
+
+- **Marketing API default bumped to v26.0.** `DEFAULT_API_VERSION` (shared by
+  `MetaApiClient` and Meta OAuth) is now `v26.0`. Cloud Run
+  (`deploy.yml`), `docker-compose.yml`, and the README compose example set
+  `META_API_VERSION=v26.0`, ending the prior drift where production pinned
+  `v22.0` while the client default was `v25.0`.
+- **v26 placement cleanup on ad-set clone.** `ads_clone_ad_set_bundle` strips
+  Instagram Explore (`explore` / `explore_home`) and Messenger Stories
+  (`messenger_positions: story`) before POST so clones of pre-v26 ad sets do
+  not fail. Schema descriptions no longer list those placements; Housing /
+  Employment / Credit create paths document that
+  `targeting_automation.advantage_audience` must be set explicitly to `0` or
+  `1` under constrained targeting.
+
 ### Added
 
 - **Apify tokens are now managed from the web UI**, not only by invoking

@@ -525,6 +525,43 @@ describe("registerAdSetTools", () => {
       expect(sentTargeting.is_whatsapp_destination_ad).toBeUndefined();
     });
 
+    it("create: strips Instagram Explore and Messenger story placements (v26.0)", async () => {
+      const server = createMockMcpServer();
+      registerAdSetTools(server as never);
+
+      vi.stubGlobal("fetch", vi.fn()
+        .mockResolvedValueOnce(mockFetchResponse(sourceAdSet({
+          targeting: {
+            geo_locations: { countries: ["CL"] },
+            instagram_positions: ["stream", "explore", "explore_home", "reels"],
+            messenger_positions: ["story"],
+            publisher_platforms: ["instagram", "messenger"],
+          },
+          promoted_object: { pixel_id: "px_1" },
+        })))
+        .mockResolvedValueOnce(mockFetchResponse(oneAd()))
+        .mockResolvedValueOnce(mockFetchResponse({ id: "20001" }))
+        .mockResolvedValueOnce(mockFetchResponse({ copied_ad_id: "30001" }))
+        .mockResolvedValueOnce(mockFetchResponse({ success: true })));
+
+      const handler = server._registeredTools[2].handler;
+      await handler({
+        account_id: "act_123",
+        source_ad_set_id: "2099",
+        target_ad_set: { name: "Target", geo_override: { countries: ["CO"] }, status: "PAUSED" },
+        creative_overrides: [],
+        dry_run: false,
+        idempotency_key: "k-v26-placements-1",
+      });
+
+      const adsetPost = vi.mocked(fetch).mock.calls[2];
+      const sentTargeting = JSON.parse(
+        new URLSearchParams(adsetPost[1]?.body as string).get("targeting") ?? "{}",
+      ) as Record<string, unknown>;
+      expect(sentTargeting.instagram_positions).toEqual(["stream", "reels"]);
+      expect(sentTargeting.messenger_positions).toBeUndefined();
+    });
+
     it("user-provided daily_budget wins over source lifetime_budget", async () => {
       const server = createMockMcpServer();
       registerAdSetTools(server as never);

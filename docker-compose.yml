@@ -19,7 +19,7 @@ services:
       - META_ACCESS_TOKEN=${META_ACCESS_TOKEN:-}
       - META_TOKENS=${META_TOKENS:-}
       - MCP_API_KEY=${MCP_API_KEY:-}
-      - META_API_VERSION=${META_API_VERSION:-v22.0}
+      - META_API_VERSION=${META_API_VERSION:-v26.0}
       - PORT=3000
       - LOG_LEVEL=${LOG_LEVEL:-info}
       - NODE_ENV=production
