@@ -67,9 +67,9 @@ describe("MetaApiClient", () => {
     });
   });
 
-  // Meta keeps a deprecated Marketing API version working for endpoints that
-  // did not change and says so only in this header; the endpoints that did
-  // change start failing. The warning is the early signal to bump the version.
+  // Once a Marketing API version is retired, Meta keeps serving the endpoints
+  // that did not change, says so in this header, and rejects the ones that
+  // did. The warning therefore confirms the version pin is already overdue.
   describe("deprecated version warnings", () => {
     const autoUpgraded = () => mockFetchResponse({ data: [] }, {
       headers: {
