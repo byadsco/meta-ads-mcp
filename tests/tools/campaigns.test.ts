@@ -148,6 +148,27 @@ describe("registerCampaignTools", () => {
       expect(params.has("is_adset_budget_sharing_enabled")).toBe(false);
     });
 
+    it.each([
+      ["daily_budget", 5000],
+      ["lifetime_budget", 900000],
+    ])("refuses ad set budget sharing on a campaign with a %s, without calling Meta", async (field, amount) => {
+      const server = createMockMcpServer();
+      registerCampaignTools(server as never);
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockFetchResponse({ id: "1000125" })));
+
+      await expect(server._registeredTools[2].handler({
+        account_id: "123",
+        name: "CBO Campaign",
+        objective: "OUTCOME_SALES",
+        status: "PAUSED",
+        special_ad_categories: ["NONE"],
+        buying_type: "AUCTION",
+        is_adset_budget_sharing_enabled: true,
+        [field]: amount,
+      })).rejects.toThrow(/is_adset_budget_sharing_enabled/);
+      expect(fetch).not.toHaveBeenCalled();
+    });
+
     it("accepts every special ad category Meta currently documents", () => {
       const server = createMockMcpServer();
       registerCampaignTools(server as never);

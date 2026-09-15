@@ -36,7 +36,7 @@ const specialAdCategoryEnum = z.enum([
 ]);
 
 const ADSET_BUDGET_SHARING_EXPLAINER =
-  "Ad set budget sharing lets Meta move up to 20% of each ad set's daily budget to other ad sets in the same campaign when that is likely to perform better. It only applies when the budget lives on the ad sets (no campaign daily_budget or lifetime_budget) and only to daily ad set budgets. Meta recommends true.";
+  "Ad set budget sharing lets Meta move up to 20% of each ad set's daily budget to other ad sets in the same campaign when that is likely to perform better. It only works when the budget lives on the ad sets (Meta rejects it next to a campaign daily_budget or lifetime_budget, error 4834002), only with daily ad set budgets, and every ad set in the campaign must use the same bid strategy (Meta rejects enabling it without one, error 4834005). Meta recommends true.";
 
 export function registerCampaignTools(server: McpServer): void {
   // ─── Get Campaigns ───────────────────────────────────────────
@@ -188,6 +188,9 @@ export function registerCampaignTools(server: McpServer): void {
       if (daily_budget !== undefined) body.daily_budget = String(daily_budget);
       if (lifetime_budget !== undefined) body.lifetime_budget = String(lifetime_budget);
       const hasCampaignBudget = daily_budget !== undefined || lifetime_budget !== undefined;
+      if (is_adset_budget_sharing_enabled === true && hasCampaignBudget) {
+        throw new Error("is_adset_budget_sharing_enabled cannot be true on a campaign with its own daily_budget or lifetime_budget: Meta only shares budget between ad set budgets (error 4834002). Remove the campaign budget, or leave ad set budget sharing off.");
+      }
       if (is_adset_budget_sharing_enabled !== undefined) {
         body.is_adset_budget_sharing_enabled = is_adset_budget_sharing_enabled;
       } else if (!hasCampaignBudget) {
@@ -229,7 +232,7 @@ export function registerCampaignTools(server: McpServer): void {
         is_adset_budget_sharing_enabled: z
           .boolean()
           .optional()
-          .describe(`${ADSET_BUDGET_SHARING_EXPLAINER} It can be switched on or off mid-flight. Omit to keep the current setting.`),
+          .describe(`${ADSET_BUDGET_SHARING_EXPLAINER} On an existing campaign Meta only supports turning it off; turning it on for a running campaign is rejected (error 3858418). Omit to keep the current setting.`),
         bid_strategy: bidStrategyEnum.optional(),
       },
       annotations: { ...UPDATE },

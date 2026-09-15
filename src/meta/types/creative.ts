@@ -38,6 +38,7 @@ export interface AdCreative {
   source_instagram_media_id?: string;
   effective_instagram_media_id?: string;
   degrees_of_freedom_spec?: Record<string, unknown>;
+  destination_spec?: Record<string, unknown>;
   adlabels?: Array<{ id?: string; name?: string }>;
 }
 

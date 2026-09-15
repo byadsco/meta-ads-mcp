@@ -404,7 +404,7 @@ export function registerAdSetTools(server: McpServer): void {
   server.registerTool(
     "ads_clone_ad_set_bundle",
     {
-      description: `${WRITE_WARNING}Clone an ad set bundle in one operation: reads a source ad set, clones its targeting/budget/pixel setup into a new ad set, and recreates every ad by duplicating it with Meta's native ad-copy endpoint (POST /{ad_id}/copies). Native copy gives 100% creative-type coverage — link, image, video, carousel, collection, catalog/Advantage+ catalog, dynamic (asset_feed_spec), and boosted posts all clone losslessly, with the destination ad set's pixel applied automatically. Designed for workflows like duplicating a GEO-specific ad set to another country with a different pixel while keeping every new resource PAUSED by default. creative_overrides change copy per source ad: on standard (object_story_spec) creatives the override is applied by swapping a modified creative onto the copied ad; on dynamic or otherwise non-patchable creatives the override cannot be applied and is reported in warnings while the ad remains in created_ads. If a single ad fails to copy it is reported in skipped and the rest proceed. Supports dry_run planning and idempotency_key-based retry safety. The copied targeting is adapted to the current Marketing API before the ad set is created: placements Meta has removed (Facebook video_feeds, Instagram explore, Messenger story) are dropped, and a missing Advantage+ audience setting becomes an explicit opt-out (advantage_audience 0). Every adjustment is listed in warnings, including on dry runs.`,
+      description: `${WRITE_WARNING}Clone an ad set bundle in one operation: reads a source ad set, clones its targeting/budget/pixel setup into a new ad set, and recreates every ad by duplicating it with Meta's native ad-copy endpoint (POST /{ad_id}/copies). Native copy gives 100% creative-type coverage — link, image, video, carousel, collection, catalog/Advantage+ catalog, dynamic (asset_feed_spec), and boosted posts all clone losslessly, with the destination ad set's pixel applied automatically. Designed for workflows like duplicating a GEO-specific ad set to another country with a different pixel while keeping every new resource PAUSED by default. creative_overrides change copy per source ad: on standard (object_story_spec) creatives the override is applied by swapping a modified creative onto the copied ad; on dynamic or otherwise non-patchable creatives the override cannot be applied and is reported in warnings while the ad remains in created_ads. If a single ad fails to copy it is reported in skipped and the rest proceed. Supports dry_run planning and idempotency_key-based retry safety. The copied targeting is adapted to the Marketing API version in use before the ad set is created: placements Meta has removed (Facebook video_feeds, Instagram explore, Messenger story) are dropped, and a missing Advantage+ audience setting becomes an explicit opt-out (advantage_audience 0). The clone is refused, before anything is created, when dropping a placement would widen delivery or leave no placements. Every adjustment is listed in warnings, including on dry runs. A creative swapped in by creative_overrides keeps the source creative's destination setting (destination_spec).`,
       inputSchema: {
         account_id: z.string().describe("Ad account ID"),
         source_ad_set_id: z.string().describe("Source ad set ID to clone"),
@@ -496,6 +496,7 @@ export function registerAdSetTools(server: McpServer): void {
 
       const { targeting: clonedTargeting, warnings } = adaptCopiedTargetingForCreate(
         applyGeoOverride(sourceAdSet.targeting, target_ad_set.geo_override),
+        metaApiClient.apiVersion,
       );
       const targetStatus = target_ad_set.status ?? "PAUSED";
       // Force PAUSED unless the caller explicitly asked for ACTIVE — never
@@ -521,7 +522,7 @@ export function registerAdSetTools(server: McpServer): void {
         let sourceCreative: AdCreative | undefined;
         if (override && sourceCreativeId) {
           sourceCreative = await metaApiClient.get<AdCreative>(`/${sourceCreativeId}`, {
-            fields: buildFieldsParam(undefined, [...CREATIVE_DEFAULT_FIELDS]),
+            fields: buildFieldsParam(undefined, [...CREATIVE_DEFAULT_FIELDS, "destination_spec"]),
           });
         }
         adPlans.push({
@@ -728,9 +729,18 @@ export function registerAdSetTools(server: McpServer): void {
           try {
             const patched = buildPatchedObjectStorySpec(plan.sourceCreative, plan.override);
             if (!patched) throw new Error("source creative has no patchable object_story_spec.");
+            const creativeBody: Record<string, string> = {
+              name: plan.override.name ?? plannedName,
+              object_story_spec: JSON.stringify(patched),
+            };
+            // Without it, Marketing API v26.0+ defaults a shop advertiser's new
+            // creative to Website and Shop.
+            if (plan.sourceCreative.destination_spec) {
+              creativeBody.destination_spec = JSON.stringify(plan.sourceCreative.destination_spec);
+            }
             const newCreative = await metaApiClient.postForm<{ id: string }>(
               `/${accountPath}/adcreatives`,
-              { name: plan.override.name ?? plannedName, object_story_spec: JSON.stringify(patched) },
+              creativeBody,
             );
             createdResources.creativeIds.push(newCreative.id);
             if (cacheKey) await store.update(cacheKey, { createdResources });

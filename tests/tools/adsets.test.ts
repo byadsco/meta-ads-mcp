@@ -328,6 +328,7 @@ describe("registerAdSetTools", () => {
               call_to_action: { type: "LEARN_MORE" },
             },
           },
+          destination_spec: { destination_type: "WEBSITE_AND_SHOP_OPT_OUT" },
         }))
         .mockResolvedValueOnce(mockFetchResponse({ id: "20001" }))           // POST ad set
         .mockResolvedValueOnce(mockFetchResponse({ copied_ad_id: "30001" })) // POST /3001/copies
@@ -357,6 +358,14 @@ describe("registerAdSetTools", () => {
       expect(oss.link_data?.description).toBe("New desc");
       expect(oss.link_data?.image_hash).toBe("h1");
       expect((oss.link_data?.call_to_action as Record<string, unknown>)?.type).toBe("SHOP_NOW");
+
+      // Marketing API v26.0 defaults new creatives of shop advertisers to Website
+      // and Shop, so the patched creative has to carry the source's setting.
+      const creativeRead = calls.find((c) => new URL(c[0] as string).pathname.endsWith("/4001"))!;
+      expect(new URL(creativeRead[0] as string).searchParams.get("fields")?.split(",")).toContain("destination_spec");
+      expect(JSON.parse(
+        new URLSearchParams(creativeCall[1]?.body as string).get("destination_spec") ?? "{}",
+      )).toEqual({ destination_type: "WEBSITE_AND_SHOP_OPT_OUT" });
 
       // Swap onto the copied ad (the POST to /30001 after the creative was made).
       const creativeIdx = calls.indexOf(creativeCall);

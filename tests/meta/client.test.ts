@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { MetaApiClient } from "../../src/meta/client.js";
 import { setupTestToken, cleanupTestToken, mockFetchResponse } from "../setup.js";
 import { tokenManager } from "../../src/auth/token-manager.js";
+import { logger } from "../../src/utils/logger.js";
 
 describe("MetaApiClient", () => {
   let client: MetaApiClient;
@@ -36,6 +37,10 @@ describe("MetaApiClient", () => {
       expect(url.pathname).toBe("/v26.0/me/adaccounts");
     });
 
+    it("refuses a configured API version that is not a plain version", () => {
+      expect(() => new MetaApiClient({ apiVersion: "v26.0/../v22.0" })).toThrow(/v26\.0/);
+    });
+
     it("sends requests to the version in META_API_VERSION when it is set", async () => {
       vi.stubEnv("META_API_VERSION", "v25.0");
       const envClient = new MetaApiClient({ maxRetries: 0 });
@@ -59,6 +64,58 @@ describe("MetaApiClient", () => {
       await customClient.get("/me/adaccounts");
       const fetchCall = vi.mocked(fetch).mock.calls[0];
       expect(fetchCall[0]).toContain("v21.0");
+    });
+  });
+
+  // Meta keeps a deprecated Marketing API version working for endpoints that
+  // did not change and says so only in this header; the endpoints that did
+  // change start failing. The warning is the early signal to bump the version.
+  describe("deprecated version warnings", () => {
+    const autoUpgraded = () => mockFetchResponse({ data: [] }, {
+      headers: {
+        "X-Ad-Api-Version-Warning": "The call has been auto-upgraded to v27.0 as v26.0 has been deprecated",
+      },
+    });
+
+    it("logs a warning when Meta auto-upgrades a call made on a deprecated version", async () => {
+      const warn = vi.spyOn(logger, "warn");
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(autoUpgraded()));
+
+      await client.get("/act_123/insights");
+
+      expect(warn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: "meta_api_version_auto_upgraded",
+          apiVersion: "v26.0",
+          path: "/act_123/insights",
+        }),
+        expect.stringContaining("auto-upgraded to v27.0"),
+      );
+    });
+
+    it("does not repeat the warning on every call", async () => {
+      const warn = vi.spyOn(logger, "warn");
+      vi.stubGlobal("fetch", vi.fn().mockImplementation(async () => autoUpgraded()));
+
+      await client.get("/act_123/insights");
+      await client.get("/act_123/campaigns");
+
+      const versionWarnings = warn.mock.calls.filter(
+        ([payload]) => (payload as { event?: string }).event === "meta_api_version_auto_upgraded",
+      );
+      expect(versionWarnings).toHaveLength(1);
+    });
+
+    it("stays quiet when Meta served the requested version", async () => {
+      const warn = vi.spyOn(logger, "warn");
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockFetchResponse({ data: [] })));
+
+      await client.get("/act_123/insights");
+
+      const versionWarnings = warn.mock.calls.filter(
+        ([payload]) => (payload as { event?: string }).event === "meta_api_version_auto_upgraded",
+      );
+      expect(versionWarnings).toHaveLength(0);
     });
   });
 
