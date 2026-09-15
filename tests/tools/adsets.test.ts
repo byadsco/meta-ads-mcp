@@ -328,6 +328,8 @@ describe("registerAdSetTools", () => {
               call_to_action: { type: "LEARN_MORE" },
             },
           },
+          destination_spec: { destination_type: "WEBSITE_AND_SHOP_OPT_OUT" },
+          wamo_whatsapp_identity_spec: { wamo_whatsapp_identity_id: "7001", whatsapp_phone_number: "+15550000000" },
         }))
         .mockResolvedValueOnce(mockFetchResponse({ id: "20001" }))           // POST ad set
         .mockResolvedValueOnce(mockFetchResponse({ copied_ad_id: "30001" })) // POST /3001/copies
@@ -357,6 +359,20 @@ describe("registerAdSetTools", () => {
       expect(oss.link_data?.description).toBe("New desc");
       expect(oss.link_data?.image_hash).toBe("h1");
       expect((oss.link_data?.call_to_action as Record<string, unknown>)?.type).toBe("SHOP_NOW");
+
+      // Marketing API v26.0 defaults new creatives of shop advertisers to Website
+      // and Shop, so the patched creative has to carry the source's setting.
+      const creativeRead = calls.find((c) => new URL(c[0] as string).pathname.endsWith("/4001"))!;
+      const creativeReadFields = new URL(creativeRead[0] as string).searchParams.get("fields")?.split(",");
+      expect(creativeReadFields).toContain("destination_spec");
+      expect(creativeReadFields).toContain("wamo_whatsapp_identity_spec");
+      const creativeBody = new URLSearchParams(creativeCall[1]?.body as string);
+      expect(JSON.parse(creativeBody.get("destination_spec") ?? "{}")).toEqual({ destination_type: "WEBSITE_AND_SHOP_OPT_OUT" });
+      // v26.0 stopped defaulting the WhatsApp identity for third-party callers.
+      expect(JSON.parse(creativeBody.get("wamo_whatsapp_identity_spec") ?? "{}")).toEqual({
+        wamo_whatsapp_identity_id: "7001",
+        whatsapp_phone_number: "+15550000000",
+      });
 
       // Swap onto the copied ad (the POST to /30001 after the creative was made).
       const creativeIdx = calls.indexOf(creativeCall);
@@ -523,6 +539,138 @@ describe("registerAdSetTools", () => {
       expect(sentTargeting.targeting_relaxation_types).toBeUndefined();
       expect(sentTargeting.targeting_optimization).toBeUndefined();
       expect(sentTargeting.is_whatsapp_destination_ad).toBeUndefined();
+    });
+
+    // Ad sets created before the Graph API bump can carry placements Meta has
+    // since removed (video_feeds in v24.0, explore and Messenger story in v26.0)
+    // and no Advantage+ audience flag, which v23.0+ requires explicitly for
+    // non-default targeting. Copying them verbatim makes the create call fail.
+    const cloneOnce = async (targeting: Record<string, unknown>, dryRun = false) => {
+      const server = createMockMcpServer();
+      registerAdSetTools(server as never);
+
+      vi.stubGlobal("fetch", vi.fn()
+        .mockResolvedValueOnce(mockFetchResponse(sourceAdSet({ targeting })))
+        .mockResolvedValueOnce(mockFetchResponse(oneAd()))
+        .mockResolvedValueOnce(mockFetchResponse({ id: "20001" }))
+        .mockResolvedValueOnce(mockFetchResponse({ copied_ad_id: "30001" }))
+        .mockResolvedValueOnce(mockFetchResponse({ success: true })));
+
+      const result = await server._registeredTools[2].handler({
+        account_id: "act_123",
+        source_ad_set_id: "2099",
+        target_ad_set: { name: "Target", geo_override: { countries: ["CO"] }, status: "PAUSED" },
+        creative_overrides: [],
+        dry_run: dryRun,
+        idempotency_key: dryRun ? undefined : "k-compat-1",
+      }) as { content: Array<{ type: string; text: string }> };
+
+      const calls = vi.mocked(fetch).mock.calls;
+      const adSetPost = calls.find((call) =>
+        call[1]?.method === "POST" && new URL(call[0] as string).pathname.endsWith("/act_123/adsets"));
+      const sentTargeting = adSetPost
+        ? JSON.parse(new URLSearchParams(adSetPost[1]?.body as string).get("targeting") ?? "{}") as Record<string, unknown>
+        : undefined;
+      const payload = JSON.parse(result.content[1].text) as { warnings: string[] };
+      return { sentTargeting, warnings: payload.warnings, methods: calls.map((call) => call[1]?.method ?? "GET") };
+    };
+
+    it("create: drops placements Meta removed and keeps every other copied placement", async () => {
+      const { sentTargeting, warnings } = await cloneOnce({
+        geo_locations: { countries: ["CL"] },
+        publisher_platforms: ["facebook", "instagram", "messenger"],
+        facebook_positions: ["feed", "video_feeds"],
+        instagram_positions: ["stream", "explore", "explore_home"],
+        messenger_positions: ["story"],
+        targeting_automation: { advantage_audience: 1, individual_setting: { age: 1 } },
+      });
+
+      expect(sentTargeting?.publisher_platforms).toEqual(["facebook", "instagram"]);
+      expect(sentTargeting?.facebook_positions).toEqual(["feed"]);
+      expect(sentTargeting?.instagram_positions).toEqual(["stream", "explore_home"]);
+      expect(sentTargeting).not.toHaveProperty("messenger_positions");
+      expect(sentTargeting?.targeting_automation).toEqual({ advantage_audience: 1, individual_setting: { age: 1 } });
+      expect(warnings).toHaveLength(3);
+      expect(warnings).toEqual(expect.arrayContaining([
+        expect.stringContaining("video_feeds"),
+        expect.stringContaining("explore"),
+        expect.stringContaining("messenger_positions"),
+      ]));
+    });
+
+    it("create: opts out of Advantage+ audience explicitly when the source ad set has no setting", async () => {
+      const { sentTargeting, warnings } = await cloneOnce({
+        geo_locations: { countries: ["CL"] },
+        age_min: 25,
+        age_max: 45,
+        genders: [1],
+      });
+
+      expect(sentTargeting?.targeting_automation).toEqual({ advantage_audience: 0 });
+      expect(sentTargeting?.age_min).toBe(25);
+      expect(warnings).toEqual([expect.stringContaining("advantage_audience")]);
+    });
+
+    it("dry-run reports the adjustments it will make to the copied targeting", async () => {
+      const { warnings, methods } = await cloneOnce({
+        geo_locations: { countries: ["CL"] },
+        instagram_positions: ["stream", "explore"],
+        targeting_automation: { advantage_audience: 0 },
+      }, true);
+
+      expect(methods).toEqual(["GET", "GET"]);
+      expect(warnings).toEqual([expect.stringContaining("explore")]);
+    });
+
+    it("refuses to clone, before creating anything, when every placement of the source was removed", async () => {
+      const server = createMockMcpServer();
+      registerAdSetTools(server as never);
+
+      vi.stubGlobal("fetch", vi.fn()
+        .mockResolvedValueOnce(mockFetchResponse(sourceAdSet({
+          targeting: {
+            geo_locations: { countries: ["CL"] },
+            publisher_platforms: ["messenger"],
+            messenger_positions: ["story"],
+          },
+        })))
+        .mockResolvedValueOnce(mockFetchResponse(oneAd())));
+
+      await expect(server._registeredTools[2].handler({
+        account_id: "act_123",
+        source_ad_set_id: "2099",
+        target_ad_set: { name: "Target", geo_override: { countries: ["CO"] }, status: "PAUSED" },
+        creative_overrides: [],
+        dry_run: false,
+        idempotency_key: "k-compat-empty",
+      })).rejects.toThrow(/no placements left/i);
+
+      const methods = vi.mocked(fetch).mock.calls.map((call) => call[1]?.method ?? "GET");
+      expect(methods).toEqual(["GET", "GET"]);
+    });
+
+    it("keeps the placements that the client's API version still supports (META_API_VERSION override)", async () => {
+      const original = metaApiClient.apiVersion;
+      (metaApiClient as { apiVersion: string }).apiVersion = "v25.0";
+      try {
+        const { sentTargeting, warnings } = await cloneOnce({
+          geo_locations: { countries: ["CL"] },
+          publisher_platforms: ["facebook", "instagram", "messenger"],
+          facebook_positions: ["feed", "video_feeds"],
+          instagram_positions: ["stream", "explore"],
+          messenger_positions: ["story"],
+          targeting_automation: { advantage_audience: 1 },
+        });
+
+        const adSetPost = vi.mocked(fetch).mock.calls.find((call) => call[1]?.method === "POST")!;
+        expect(new URL(adSetPost[0] as string).pathname).toBe("/v25.0/act_123/adsets");
+        expect(sentTargeting?.facebook_positions).toEqual(["feed"]);
+        expect(sentTargeting?.instagram_positions).toEqual(["stream", "explore"]);
+        expect(sentTargeting?.messenger_positions).toEqual(["story"]);
+        expect(warnings).toEqual([expect.stringContaining("video_feeds")]);
+      } finally {
+        (metaApiClient as { apiVersion: string }).apiVersion = original;
+      }
     });
 
     it("user-provided daily_budget wins over source lifetime_budget", async () => {

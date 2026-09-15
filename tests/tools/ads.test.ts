@@ -142,7 +142,7 @@ describe("registerAdTools", () => {
       const creativeFields = new URL(vi.mocked(fetch).mock.calls[1][0] as string)
         .searchParams.get("fields");
       expect(creativeFields).toBe(
-        "id,name,object_story_spec,asset_feed_spec,effective_object_story_id,url_tags,instagram_user_id,source_instagram_media_id,effective_instagram_media_id,link_url,degrees_of_freedom_spec,call_to_action_type,adlabels",
+        "id,name,object_story_spec,asset_feed_spec,effective_object_story_id,url_tags,instagram_user_id,source_instagram_media_id,effective_instagram_media_id,link_url,degrees_of_freedom_spec,destination_spec,wamo_whatsapp_identity_spec,call_to_action_type,adlabels",
       );
       expect(creativeFields).not.toContain("effective_link_url");
 
@@ -440,6 +440,80 @@ describe("registerAdTools", () => {
 
       expect(bodyOf(2).get("link_url")).toBe("https://byads.co/landing");
       expect(JSON.parse(bodyOf(2).get("degrees_of_freedom_spec") ?? "{}")).toEqual(dof);
+    });
+
+    // Since Marketing API v26.0 a new creative for an advertiser with a shop
+    // defaults to Website and Shop, so a replacement that omits the setting
+    // could send a web-only ad's traffic to the shop.
+    it.each(["specCreative", "reusedPost"])("keeps the destination setting of the replaced creative (%s)", async (shape) => {
+      const server = createMockMcpServer();
+      registerAdTools(server as never);
+      const destination = { destination_type: "WEBSITE_AND_SHOP_OPT_OUT" };
+      vi.stubGlobal("fetch", vi.fn()
+        .mockResolvedValueOnce(mockFetchResponse(adResponse()))
+        .mockResolvedValueOnce(mockFetchResponse(specCreative({
+          destination_spec: destination,
+          ...(shape === "reusedPost" ? { effective_object_story_id: "6001_777" } : {}),
+        })))
+        .mockResolvedValueOnce(mockFetchResponse({ id: "4100" }))
+        .mockResolvedValueOnce(mockFetchResponse({ success: true })));
+
+      const handler = server._registeredTools[UPDATE_URL_TAGS].handler;
+      await handler({ ad_ids: ["3001"], url_tags: "utm_source=meta", dry_run: false });
+
+      expect(JSON.parse(bodyOf(2).get("destination_spec") ?? "{}")).toEqual(destination);
+    });
+
+    it("does not invent a destination setting the replaced creative did not have", async () => {
+      const server = createMockMcpServer();
+      registerAdTools(server as never);
+      vi.stubGlobal("fetch", vi.fn()
+        .mockResolvedValueOnce(mockFetchResponse(adResponse()))
+        .mockResolvedValueOnce(mockFetchResponse(specCreative()))
+        .mockResolvedValueOnce(mockFetchResponse({ id: "4100" }))
+        .mockResolvedValueOnce(mockFetchResponse({ success: true })));
+
+      const handler = server._registeredTools[UPDATE_URL_TAGS].handler;
+      await handler({ ad_ids: ["3001"], url_tags: "utm_source=meta", dry_run: false });
+
+      expect(bodyOf(2).has("destination_spec")).toBe(false);
+    });
+
+    // Since Marketing API v26.0 Meta no longer defaults the WhatsApp identity
+    // for third-party callers, so a replacement without it would drop the
+    // creative out of WhatsApp Status delivery.
+    it.each(["specCreative", "reusedPost"])("keeps the WhatsApp Status identity of the replaced creative (%s)", async (shape) => {
+      const server = createMockMcpServer();
+      registerAdTools(server as never);
+      const identity = { wamo_whatsapp_identity_id: "7001", whatsapp_phone_number: "+15550000000" };
+      vi.stubGlobal("fetch", vi.fn()
+        .mockResolvedValueOnce(mockFetchResponse(adResponse()))
+        .mockResolvedValueOnce(mockFetchResponse(specCreative({
+          wamo_whatsapp_identity_spec: identity,
+          ...(shape === "reusedPost" ? { effective_object_story_id: "6001_777" } : {}),
+        })))
+        .mockResolvedValueOnce(mockFetchResponse({ id: "4100" }))
+        .mockResolvedValueOnce(mockFetchResponse({ success: true })));
+
+      const handler = server._registeredTools[UPDATE_URL_TAGS].handler;
+      await handler({ ad_ids: ["3001"], url_tags: "utm_source=meta", dry_run: false });
+
+      expect(JSON.parse(bodyOf(2).get("wamo_whatsapp_identity_spec") ?? "{}")).toEqual(identity);
+    });
+
+    it("does not invent a WhatsApp Status identity the replaced creative did not have", async () => {
+      const server = createMockMcpServer();
+      registerAdTools(server as never);
+      vi.stubGlobal("fetch", vi.fn()
+        .mockResolvedValueOnce(mockFetchResponse(adResponse()))
+        .mockResolvedValueOnce(mockFetchResponse(specCreative()))
+        .mockResolvedValueOnce(mockFetchResponse({ id: "4100" }))
+        .mockResolvedValueOnce(mockFetchResponse({ success: true })));
+
+      const handler = server._registeredTools[UPDATE_URL_TAGS].handler;
+      await handler({ ad_ids: ["3001"], url_tags: "utm_source=meta", dry_run: false });
+
+      expect(bodyOf(2).has("wamo_whatsapp_identity_spec")).toBe(false);
     });
 
     it("skips ads whose url_tags already match", async () => {

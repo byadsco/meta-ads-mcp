@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { MetaApiClient } from "../../src/meta/client.js";
 import { setupTestToken, cleanupTestToken, mockFetchResponse } from "../setup.js";
 import { tokenManager } from "../../src/auth/token-manager.js";
+import { logger } from "../../src/utils/logger.js";
 
 describe("MetaApiClient", () => {
   let client: MetaApiClient;
@@ -10,7 +11,7 @@ describe("MetaApiClient", () => {
     setupTestToken();
     tokenManager.resetForTests();
     client = new MetaApiClient({
-      apiVersion: "v22.0",
+      apiVersion: "v26.0",
       baseUrl: "https://graph.facebook.com",
       timeout: 5000,
       maxRetries: 0,
@@ -21,13 +22,34 @@ describe("MetaApiClient", () => {
     cleanupTestToken();
     tokenManager.resetForTests();
     vi.restoreAllMocks();
+    vi.unstubAllEnvs();
   });
 
   describe("constructor", () => {
-    it("uses default config when none provided", () => {
-      const defaultClient = new MetaApiClient();
-      // Just verify it constructs without error
-      expect(defaultClient).toBeDefined();
+    it("sends requests to Graph API v26.0 when no version is configured", async () => {
+      vi.stubEnv("META_API_VERSION", undefined);
+      const defaultClient = new MetaApiClient({ maxRetries: 0 });
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockFetchResponse({ data: [] })));
+
+      await defaultClient.get("/me/adaccounts");
+
+      const url = new URL(vi.mocked(fetch).mock.calls[0][0] as string);
+      expect(url.pathname).toBe("/v26.0/me/adaccounts");
+    });
+
+    it("refuses a configured API version that is not a plain version", () => {
+      expect(() => new MetaApiClient({ apiVersion: "v26.0/../v22.0" })).toThrow(/v26\.0/);
+    });
+
+    it("sends requests to the version in META_API_VERSION when it is set", async () => {
+      vi.stubEnv("META_API_VERSION", "v25.0");
+      const envClient = new MetaApiClient({ maxRetries: 0 });
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockFetchResponse({ data: [] })));
+
+      await envClient.get("/me/adaccounts");
+
+      const url = new URL(vi.mocked(fetch).mock.calls[0][0] as string);
+      expect(url.pathname).toBe("/v25.0/me/adaccounts");
     });
 
     it("respects custom API version", async () => {
@@ -45,6 +67,59 @@ describe("MetaApiClient", () => {
     });
   });
 
+  // Once a Marketing API version is retired, Meta keeps serving the endpoints
+  // that did not change, says so in this header, and rejects the ones that
+  // did. The warning therefore confirms the version pin is already overdue.
+  describe("deprecated version warnings", () => {
+    const autoUpgraded = () => mockFetchResponse({ data: [] }, {
+      headers: {
+        "X-Ad-Api-Version-Warning": "The call has been auto-upgraded to v27.0 as v26.0 has been deprecated",
+      },
+    });
+
+    it("logs the configured version and Meta's notice, without the tenant's request path", async () => {
+      const warn = vi.spyOn(logger, "warn");
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(autoUpgraded()));
+
+      await client.get("/act_123456789012345/insights");
+
+      const versionWarning = warn.mock.calls.find(
+        ([payload]) => (payload as { event?: string }).event === "meta_api_version_auto_upgraded",
+      );
+      expect(versionWarning?.[0]).toEqual({
+        event: "meta_api_version_auto_upgraded",
+        apiVersion: "v26.0",
+      });
+      expect(versionWarning?.[1]).toContain("auto-upgraded to v27.0");
+      expect(versionWarning?.[1]).not.toContain("123456789012345");
+    });
+
+    it("does not repeat the warning on every call", async () => {
+      const warn = vi.spyOn(logger, "warn");
+      vi.stubGlobal("fetch", vi.fn().mockImplementation(async () => autoUpgraded()));
+
+      await client.get("/act_123/insights");
+      await client.get("/act_123/campaigns");
+
+      const versionWarnings = warn.mock.calls.filter(
+        ([payload]) => (payload as { event?: string }).event === "meta_api_version_auto_upgraded",
+      );
+      expect(versionWarnings).toHaveLength(1);
+    });
+
+    it("stays quiet when Meta served the requested version", async () => {
+      const warn = vi.spyOn(logger, "warn");
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockFetchResponse({ data: [] })));
+
+      await client.get("/act_123/insights");
+
+      const versionWarnings = warn.mock.calls.filter(
+        ([payload]) => (payload as { event?: string }).event === "meta_api_version_auto_upgraded",
+      );
+      expect(versionWarnings).toHaveLength(0);
+    });
+  });
+
   describe("get", () => {
     it("makes GET request with correct URL", async () => {
       const mockResponse = mockFetchResponse({ id: "123", name: "Test" });
@@ -56,7 +131,7 @@ describe("MetaApiClient", () => {
 
       expect(result).toEqual({ id: "123", name: "Test" });
       const url = new URL(vi.mocked(fetch).mock.calls[0][0] as string);
-      expect(url.pathname).toBe("/v22.0/123");
+      expect(url.pathname).toBe("/v26.0/123");
       expect(url.searchParams.get("fields")).toBe("id,name");
       expect(url.searchParams.get("access_token")).toBe("test-access-token");
     });

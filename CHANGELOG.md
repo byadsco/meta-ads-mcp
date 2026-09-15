@@ -7,6 +7,112 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Changed
+
+- **Every Meta call now targets Graph API / Marketing API v26.0.** The version
+  was set in six places that had drifted apart: `MetaApiClient` defaulted to
+  v25.0, the OAuth flow to v22.0, and the deploy workflow, `docker-compose.yml`,
+  the README and `.env.example` all pinned `META_API_VERSION=v22.0`. The env var
+  wins over the code default, so **the Cloud Run service was configured to
+  request v22.0** while a local `npm run dev` without the variable used v25.0.
+  - The Marketing API follows its own, shorter schedule: only v24.0 (until
+    October 6, 2026), v25.0 and v26.0 are still available. Meta answers a call
+    on a retired version by upgrading it when the endpoint has not changed
+    since, and by rejecting it when it has. Endpoints changed in v23.0 and
+    v24.0 include reading and creating campaigns, creating and updating ad
+    sets, creating creatives, delivery estimates, targeting search and custom
+    audiences.
+  - The version now lives only in `src/meta/api-version.ts`, and both the
+    client and the OAuth flow read it. `META_API_VERSION` still overrides it.
+    A blank value falls back to the default, and a value that is not of the
+    form `v26.0` stops the server at startup instead of being spliced into
+    request URLs.
+  - The pins stay explicit and move to v26.0. The deploy action merges env
+    vars into the Cloud Run service, so dropping the pin would have silently
+    kept v22.0. `tests/meta/api-version.test.ts` fails if any pin drifts from
+    the code default again.
+- **`ads_create_campaign` sends `is_adset_budget_sharing_enabled` for
+  ad-set-budget campaigns.** Since v24.0 Meta rejects a campaign without a
+  campaign budget unless the flag is explicit (error 4834011). The tool sends
+  `false` unless the caller passes `true`, which keeps each ad set spending
+  its own budget, and says in its response which setting was applied.
+  Campaigns with their own `daily_budget` or `lifetime_budget` are unchanged,
+  and asking for budget sharing on one is refused before calling Meta, which
+  would reject it (error 4834002).
+- **`ads_clone_ad_set_bundle` adapts the copied targeting to the API version
+  in use.** Ad sets created on older versions can carry placements Meta has
+  removed and no Advantage+ audience flag, so copying them verbatim fails.
+  - Facebook `video_feeds` (removed in v24.0), Instagram `explore` (v26.0) and
+    Messenger `story` (v26.0) are dropped from the copy when the client calls
+    a version that no longer has them. When one was the only position of a
+    selected platform, the positions field and the platform are removed as
+    Meta recommends. The clone is refused before anything is created when the
+    source does not set `publisher_platforms`, since dropping the field would
+    open every position of that platform, or when no placement is left.
+  - A missing `targeting_automation.advantage_audience` becomes an explicit
+    `0` on v23.0 and later, where Meta requires the flag for new ad sets with
+    non-default targeting. The source's effective setting cannot be inferred
+    once the relaxation fields are stripped, so the copy takes the choice that
+    never spends beyond the copied targeting.
+  - Each adjustment is reported in `warnings`, on dry runs as well.
+- **Rebuilt creatives keep their destination setting and WhatsApp identity.**
+  Since v26.0 a new creative without `destination_spec` defaults to Website
+  and Shop for advertisers with a shop, and a creative meant for WhatsApp
+  Status gets no WhatsApp identity unless the caller sends
+  `wamo_whatsapp_identity_spec`. `ads_update_ad_url_tags` and the creative
+  swap in `ads_clone_ad_set_bundle` now read both fields from the source
+  creative and send them with the replacement when Meta reports them, so an
+  explicit Website and Shop opt-out or a WhatsApp Status identity survives a
+  UTM or copy change. When Meta reports no setting, the replacement sends none
+  and follows Meta's default for eligible creatives.
+- **Ad set tool schemas describe the v24.0–v26.0 placement and audience rules.**
+  `video_feeds`, `explore` and Messenger `story` are no longer offered, and
+  `targeting_automation.advantage_audience` explains when Meta requires an
+  explicit value, including the v26.0 extension to Housing, Employment and
+  Financial Products and Services campaigns.
+
+### Added
+
+- `is_adset_budget_sharing_enabled` on `ads_update_campaign`. Meta documents
+  turning budget sharing off on an existing campaign; turning it on for a
+  running campaign is rejected (error 3858418).
+- `FINANCIAL_PRODUCTS_SERVICES` and `ONLINE_GAMBLING_AND_GAMING` in
+  `ads_create_campaign`'s `special_ad_categories`, matching Meta's current
+  campaign reference.
+- **A warning log when Meta auto-upgrades a call** (`X-Ad-Api-Version-Warning`),
+  at most once an hour, as `meta_api_version_auto_upgraded`. Meta only sends
+  the header once the requested version has been retired, so it is a reactive
+  signal that the pin is overdue: by then, endpoints changed since that version
+  already fail, and the auto-upgrade itself can be disabled in the app's
+  Marketing API settings. The retirement dates in Meta's changelog index are
+  the way to stay ahead of it. The log line carries the configured version and
+  Meta's header text only.
+
+### Upgrade notes
+
+Moving from v22.0 to v26.0 also brings Meta-side behaviour changes that need
+no code here but change delivery:
+
+- **v23.0**: new ad sets with default or relaxed targeting opt in to Advantage+
+  audience unless `advantage_audience` is set to `0`.
+- **v24.0**: daily budget flexibility rises from 25% to 75%, so a single day
+  can spend up to 75% over the daily budget while the weekly total stays
+  capped at seven times the daily budget. With ad set budget sharing on, both
+  caps grow by the shared amount: an ad set can spend up to
+  (daily budget + 20%) × 1.75 in a day and (daily budget + 20%) × 7 in a week.
+- **v26.0**: eligible new creatives default to
+  `destination_spec.destination_type = WEBSITE_AND_SHOP` when the advertiser
+  has a shop. `ads_create_ad_creative` and `ads_bulk_create_video_ads` do not
+  expose the `WEBSITE_AND_SHOP_OPT_OUT` opt-out yet.
+- **v26.0**: a creative meant for WhatsApp Status needs an explicit
+  `wamo_whatsapp_identity_spec`, which the creation tools do not expose yet.
+  Until they do, create those creatives in Ads Manager or with a direct Graph
+  call; the rebuild tools carry the identity over once it exists.
+- Marketing API versions ship about every four months, and Meta only
+  guarantees a replaced version for 90 days, so `DEFAULT_META_API_VERSION`
+  needs regular bumps, planned from the retirement dates Meta publishes. The
+  new warning log only confirms that a bump is already overdue.
+
 ## [3.6.0] — 2026-09-15
 
 ### Added

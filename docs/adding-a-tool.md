@@ -29,7 +29,7 @@ metaApiClient.{get|post|postForm|delete|...}  ◄── shared singleton
    ├── circuit-breaker  (assertClosed before any call)
    ├── write-pacer      (acquire token for POST/DELETE on account paths)
    ├── rate-limiter     (waitIfNeeded based on last X-App-Usage / X-BUC-Usage)
-   ├── fetch (Graph API v25.0)
+   ├── fetch (Graph API v26.0)
    ├── header parser    (updateFromHeaders → updates rate-limiter + pacer tier)
    ├── error classifier (classifyMetaError → McpError + retry/throttle policy)
    └── retry w/ exp. backoff + jitter (only on transient + 5xx)
@@ -127,7 +127,7 @@ What each part does:
 - **`annotations: { ...CREATE }`** — spread of the standard ToolAnnotations for create operations. Clients render confirmation prompts based on these.
 - **`${WRITE_WARNING}` prefix** — for write tools only. Clients that don't read annotations still see the warning.
 - **`validateMetaId(campaign_id, "campaign")`** — defence-in-depth on top of `z.string()`. The helper enforces `^(act_\d+|\d+|\d+_\d+)$` and throws otherwise, so a malformed id can't add path segments / query strings to the URL. Every tool that interpolates a non-account id (campaign / ad set / ad / creative / page / business…) into a Graph path must call this at the start of the handler.
-- **`metaApiClient.postForm(...)`** — issues `POST /v25.0/<id>/budget_schedules` with `application/x-www-form-urlencoded` body. Behind the scenes the client looks up the per-request access token, checks the circuit-breaker, throttles writes, retries transient failures, and converts any Meta error into a typed `McpError`.
+- **`metaApiClient.postForm(...)`** — issues `POST /v26.0/<id>/budget_schedules` with `application/x-www-form-urlencoded` body. Behind the scenes the client looks up the per-request access token, checks the circuit-breaker, throttles writes, retries transient failures, and converts any Meta error into a typed `McpError`.
 - **Return shape** — every handler must return `{ content: [{ type: "text", text: "..." }, ...] }`. Adding a second `text` block with the raw JSON (`JSON.stringify(obj, null, 2)`) is a common pattern for read tools — see [src/tools/campaigns.ts](../src/tools/campaigns.ts).
 
 ## Templates
@@ -212,7 +212,7 @@ server.registerTool(
 
 ### Update / delete on a non-account resource
 
-When the path is `/<resource_id>/...` (campaign, ad set, ad, creative, page, business, etc.) instead of `/act_<account>/...`, validate the id with `validateMetaId` before interpolation. Without it, the `z.string()` schema accepts payloads like `"123/insights"` and `metaApiClient` will dutifully send a `POST` to `/v25.0/123/insights/...`, hitting an unintended endpoint with the caller's token.
+When the path is `/<resource_id>/...` (campaign, ad set, ad, creative, page, business, etc.) instead of `/act_<account>/...`, validate the id with `validateMetaId` before interpolation. Without it, the `z.string()` schema accepts payloads like `"123/insights"` and `metaApiClient` will dutifully send a `POST` to `/v26.0/123/insights/...`, hitting an unintended endpoint with the caller's token.
 
 ```ts
 import { validateMetaId } from "../utils/format.js";

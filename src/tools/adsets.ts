@@ -9,6 +9,7 @@ import { CREATIVE_DEFAULT_FIELDS } from "../meta/types/creative.js";
 import type { Ad, AdCreative, AdSet, GeoLocation, MetaApiResponse, TargetingSpec } from "../meta/types/index.js";
 import { READ, CREATE, UPDATE, DELETE, WRITE_WARNING } from "./_register.js";
 import { getCloneBundleStore, STALE_IN_PROGRESS_MS } from "../store/clone-bundle-store.js";
+import { adaptCopiedTargetingForCreate } from "../meta/targeting-compat.js";
 import { ctaEnum } from "./creatives.js";
 
 const statusEnum = z.enum(["ACTIVE", "PAUSED", "DELETED", "ARCHIVED"]);
@@ -99,11 +100,11 @@ const targetingSchema = z
     wireless_carrier: z.array(z.string()).optional().describe("Carrier targeting (use 'Wifi' for wifi-only users)"),
 
     publisher_platforms: z.array(z.string()).optional().describe("facebook, instagram, threads, messenger, audience_network"),
-    facebook_positions: z.array(z.string()).optional().describe("feed, right_hand_column, marketplace, video_feeds, story, search, instream_video, facebook_reels, facebook_reels_overlay, profile_feed, notification"),
-    instagram_positions: z.array(z.string()).optional().describe("stream, story, explore, explore_home, reels, profile_feed, ig_search, profile_reels"),
+    facebook_positions: z.array(z.string()).optional().describe("feed, right_hand_column, marketplace, story, search, instream_video, facebook_reels, facebook_reels_overlay, profile_feed, notification. Do not use video_feeds: Meta removed it in Marketing API v24.0 and rejects it (use facebook_reels instead)."),
+    instagram_positions: z.array(z.string()).optional().describe("stream, story, explore_home, reels, profile_feed, ig_search, profile_reels. Do not use explore: Meta removed the Instagram Explore Feed placement in Marketing API v26.0 and rejects it."),
     threads_positions: z.array(z.string()).optional().describe("threads_stream (requires instagram stream)"),
     audience_network_positions: z.array(z.string()).optional().describe("classic, rewarded_video"),
-    messenger_positions: z.array(z.string()).optional().describe("sponsored_messages, story"),
+    messenger_positions: z.array(z.string()).optional().describe("sponsored_messages. Do not use story: Meta removed Messenger Stories in Marketing API v26.0 and silently drops it."),
     whatsapp_positions: z.array(z.string()).optional().describe("status (requires instagram story)"),
 
     brand_safety_content_filter_levels: z.array(z.string()).optional().describe("FACEBOOK_RELAXED/STANDARD/STRICT, AN_RELAXED/STANDARD/STRICT, FEED_RELAXED/STANDARD/STRICT"),
@@ -114,7 +115,7 @@ const targetingSchema = z
     exclusions: z.record(z.unknown()).optional(),
 
     targeting_automation: z.object({
-      advantage_audience: z.number().optional().describe("1 to enable Advantage+ audience"),
+      advantage_audience: z.number().optional().describe("1 to enable Advantage+ audience, 0 to opt out. Meta requires an explicit 1 or 0 when creating an ad set whose age, gender, custom audiences or detailed targeting are not default and not relaxed (Marketing API v23.0+, and v26.0+ for Housing, Employment and Financial Products and Services campaigns). Default or relaxed setups default to 1."),
     }).passthrough().optional().describe("Advantage+ audience automation settings"),
   })
   .passthrough()
@@ -403,7 +404,7 @@ export function registerAdSetTools(server: McpServer): void {
   server.registerTool(
     "ads_clone_ad_set_bundle",
     {
-      description: `${WRITE_WARNING}Clone an ad set bundle in one operation: reads a source ad set, clones its targeting/budget/pixel setup into a new ad set, and recreates every ad by duplicating it with Meta's native ad-copy endpoint (POST /{ad_id}/copies). Native copy gives 100% creative-type coverage — link, image, video, carousel, collection, catalog/Advantage+ catalog, dynamic (asset_feed_spec), and boosted posts all clone losslessly, with the destination ad set's pixel applied automatically. Designed for workflows like duplicating a GEO-specific ad set to another country with a different pixel while keeping every new resource PAUSED by default. creative_overrides change copy per source ad: on standard (object_story_spec) creatives the override is applied by swapping a modified creative onto the copied ad; on dynamic or otherwise non-patchable creatives the override cannot be applied and is reported in warnings while the ad remains in created_ads. If a single ad fails to copy it is reported in skipped and the rest proceed. Supports dry_run planning and idempotency_key-based retry safety.`,
+      description: `${WRITE_WARNING}Clone an ad set bundle in one operation: reads a source ad set, clones its targeting/budget/pixel setup into a new ad set, and recreates every ad by duplicating it with Meta's native ad-copy endpoint (POST /{ad_id}/copies). Native copy gives 100% creative-type coverage — link, image, video, carousel, collection, catalog/Advantage+ catalog, dynamic (asset_feed_spec), and boosted posts all clone losslessly, with the destination ad set's pixel applied automatically. Designed for workflows like duplicating a GEO-specific ad set to another country with a different pixel while keeping every new resource PAUSED by default. creative_overrides change copy per source ad: on standard (object_story_spec) creatives the override is applied by swapping a modified creative onto the copied ad; on dynamic or otherwise non-patchable creatives the override cannot be applied and is reported in warnings while the ad remains in created_ads. If a single ad fails to copy it is reported in skipped and the rest proceed. Supports dry_run planning and idempotency_key-based retry safety. The copied targeting is adapted to the Marketing API version in use before the ad set is created: placements Meta has removed (Facebook video_feeds, Instagram explore, Messenger story) are dropped, and a missing Advantage+ audience setting becomes an explicit opt-out (advantage_audience 0). The clone is refused, before anything is created, when dropping a placement would widen delivery or leave no placements. Every adjustment is listed in warnings, including on dry runs. A creative swapped in by creative_overrides keeps the source creative's destination setting (destination_spec) and WhatsApp Status identity (wamo_whatsapp_identity_spec) when Meta reports them; when it reports none, the new creative sends none and follows Meta's defaults.`,
       inputSchema: {
         account_id: z.string().describe("Ad account ID"),
         source_ad_set_id: z.string().describe("Source ad set ID to clone"),
@@ -491,10 +492,12 @@ export function registerAdSetTools(server: McpServer): void {
         500,
       );
 
-      const warnings: string[] = [];
       const skipped: CloneAdSetBundleSkip[] = [];
 
-      const clonedTargeting = applyGeoOverride(sourceAdSet.targeting, target_ad_set.geo_override);
+      const { targeting: clonedTargeting, warnings } = adaptCopiedTargetingForCreate(
+        applyGeoOverride(sourceAdSet.targeting, target_ad_set.geo_override),
+        metaApiClient.apiVersion,
+      );
       const targetStatus = target_ad_set.status ?? "PAUSED";
       // Force PAUSED unless the caller explicitly asked for ACTIVE — never
       // INHERITED_FROM_SOURCE, which could silently activate a copy of an active ad.
@@ -519,7 +522,7 @@ export function registerAdSetTools(server: McpServer): void {
         let sourceCreative: AdCreative | undefined;
         if (override && sourceCreativeId) {
           sourceCreative = await metaApiClient.get<AdCreative>(`/${sourceCreativeId}`, {
-            fields: buildFieldsParam(undefined, [...CREATIVE_DEFAULT_FIELDS]),
+            fields: buildFieldsParam(undefined, [...CREATIVE_DEFAULT_FIELDS, "destination_spec", "wamo_whatsapp_identity_spec"]),
           });
         }
         adPlans.push({
@@ -726,9 +729,22 @@ export function registerAdSetTools(server: McpServer): void {
           try {
             const patched = buildPatchedObjectStorySpec(plan.sourceCreative, plan.override);
             if (!patched) throw new Error("source creative has no patchable object_story_spec.");
+            const creativeBody: Record<string, string> = {
+              name: plan.override.name ?? plannedName,
+              object_story_spec: JSON.stringify(patched),
+            };
+            // Without it, Marketing API v26.0+ defaults a shop advertiser's new
+            // creative to Website and Shop.
+            if (plan.sourceCreative.destination_spec) {
+              creativeBody.destination_spec = JSON.stringify(plan.sourceCreative.destination_spec);
+            }
+            // v26.0+ no longer defaults the WhatsApp identity for third-party callers.
+            if (plan.sourceCreative.wamo_whatsapp_identity_spec) {
+              creativeBody.wamo_whatsapp_identity_spec = JSON.stringify(plan.sourceCreative.wamo_whatsapp_identity_spec);
+            }
             const newCreative = await metaApiClient.postForm<{ id: string }>(
               `/${accountPath}/adcreatives`,
-              { name: plan.override.name ?? plannedName, object_story_spec: JSON.stringify(patched) },
+              creativeBody,
             );
             createdResources.creativeIds.push(newCreative.id);
             if (cacheKey) await store.update(cacheKey, { createdResources });
@@ -797,7 +813,7 @@ export function registerAdSetTools(server: McpServer): void {
   server.registerTool(
     "ads_create_ad_set",
     {
-      description: `${WRITE_WARNING}Create a new ad set within a campaign. Requires targeting specification, optimization goal, and destination_type (required for ODAX campaigns). Budget belongs at exactly one level: when the parent campaign has either daily_budget or lifetime_budget (campaign budget / CBO), omit both ad-set budget fields. Only pass daily_budget or lifetime_budget here for ad-set budget / ABO campaigns. Common destination_type values: WEBSITE (traffic/sales to website), APP (app installs), MESSENGER/WHATSAPP/INSTAGRAM_DIRECT (messaging), ON_AD (lead forms, instant experiences). Ad sets are created in PAUSED status by default.`,
+      description: `${WRITE_WARNING}Create a new ad set within a campaign. Requires targeting specification, optimization goal, and destination_type (required for ODAX campaigns). Budget belongs at exactly one level: when the parent campaign has either daily_budget or lifetime_budget (campaign budget / CBO), omit both ad-set budget fields. Only pass daily_budget or lifetime_budget here for ad-set budget / ABO campaigns. Common destination_type values: WEBSITE (traffic/sales to website), APP (app installs), MESSENGER/WHATSAPP/INSTAGRAM_DIRECT (messaging), ON_AD (lead forms, instant experiences). Ad sets are created in PAUSED status by default. When age, gender, custom audiences or detailed targeting are not default and not relaxed, set targeting.targeting_automation.advantage_audience to 1 or 0 explicitly or Meta rejects the ad set.`,
       inputSchema: {
         account_id: z.string().describe("Ad account ID"),
         campaign_id: z.string().describe("Parent campaign ID"),

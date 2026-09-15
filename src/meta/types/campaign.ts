@@ -25,7 +25,9 @@ export type SpecialAdCategory =
   | "EMPLOYMENT"
   | "HOUSING"
   | "CREDIT"
-  | "ISSUES_ELECTIONS_POLITICS";
+  | "FINANCIAL_PRODUCTS_SERVICES"
+  | "ISSUES_ELECTIONS_POLITICS"
+  | "ONLINE_GAMBLING_AND_GAMING";
 
 export interface Campaign {
   id: string;

@@ -1,6 +1,51 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { fetchPrimaryBusiness } from "../../src/auth/meta-oauth.js";
+import {
+  buildAuthorizeUrl,
+  fetchPrimaryBusiness,
+  loadMetaOAuthConfig,
+} from "../../src/auth/meta-oauth.js";
 import { mockFetchResponse } from "../setup.js";
+
+describe("Meta OAuth Graph API version", () => {
+  const serverUrl = new URL("https://mcp.example.com");
+
+  beforeEach(() => {
+    vi.stubEnv("META_APP_ID", "1234567890");
+    vi.stubEnv("META_APP_SECRET", "dummy-secret");
+    vi.spyOn(globalThis, "fetch");
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
+  });
+
+  it("runs the login dialog and Graph calls on v26.0 by default", async () => {
+    vi.stubEnv("META_API_VERSION", undefined);
+    vi.mocked(globalThis.fetch).mockResolvedValueOnce(mockFetchResponse({ data: [] }));
+
+    const config = loadMetaOAuthConfig(serverUrl);
+    const dialogUrl = new URL(buildAuthorizeUrl(config!, "state-1"));
+    await fetchPrimaryBusiness("token-x");
+
+    expect(dialogUrl.pathname).toBe("/v26.0/dialog/oauth");
+    const graphUrl = new URL(vi.mocked(globalThis.fetch).mock.calls[0][0] as string);
+    expect(graphUrl.pathname).toBe("/v26.0/me/businesses");
+  });
+
+  it("follows META_API_VERSION for the login dialog and Graph calls", async () => {
+    vi.stubEnv("META_API_VERSION", "v25.0");
+    vi.mocked(globalThis.fetch).mockResolvedValueOnce(mockFetchResponse({ data: [] }));
+
+    const config = loadMetaOAuthConfig(serverUrl);
+    const dialogUrl = new URL(buildAuthorizeUrl(config!, "state-1"));
+    await fetchPrimaryBusiness("token-x");
+
+    expect(dialogUrl.pathname).toBe("/v25.0/dialog/oauth");
+    const graphUrl = new URL(vi.mocked(globalThis.fetch).mock.calls[0][0] as string);
+    expect(graphUrl.pathname).toBe("/v25.0/me/businesses");
+  });
+});
 
 describe("fetchPrimaryBusiness", () => {
   beforeEach(() => {

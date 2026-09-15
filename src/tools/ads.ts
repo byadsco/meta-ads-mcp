@@ -10,7 +10,7 @@ import { READ, CREATE, UPDATE, DELETE, WRITE_WARNING } from "./_register.js";
 const statusEnum = z.enum(["ACTIVE", "PAUSED", "DELETED", "ARCHIVED"]);
 
 const CREATIVE_REBUILD_FIELDS =
-  "id,name,object_story_spec,asset_feed_spec,effective_object_story_id,url_tags,instagram_user_id,source_instagram_media_id,effective_instagram_media_id,link_url,degrees_of_freedom_spec,call_to_action_type,adlabels";
+  "id,name,object_story_spec,asset_feed_spec,effective_object_story_id,url_tags,instagram_user_id,source_instagram_media_id,effective_instagram_media_id,link_url,degrees_of_freedom_spec,destination_spec,wamo_whatsapp_identity_spec,call_to_action_type,adlabels";
 
 type RebuildStrategy = "reuse_post" | "clone_spec" | "reuse_instagram_media";
 
@@ -130,6 +130,17 @@ function buildReplacementCreativeBody(
   if (creative.link_url) body.link_url = creative.link_url;
   if (creative.degrees_of_freedom_spec) {
     body.degrees_of_freedom_spec = JSON.stringify(creative.degrees_of_freedom_spec);
+  }
+  // Since Marketing API v26.0 a creative created without destination_spec
+  // defaults to Website and Shop for advertisers with a shop.
+  if (creative.destination_spec) {
+    body.destination_spec = JSON.stringify(creative.destination_spec);
+  }
+  // Since Marketing API v26.0 Meta no longer defaults the WhatsApp identity
+  // for third-party callers, so a replacement without it leaves WhatsApp
+  // Status delivery.
+  if (creative.wamo_whatsapp_identity_spec) {
+    body.wamo_whatsapp_identity_spec = JSON.stringify(creative.wamo_whatsapp_identity_spec);
   }
   // Agencies key reporting and automations off ad labels; a replacement without
   // them drops out of those views silently.
@@ -319,7 +330,7 @@ export function registerAdTools(server: McpServer): void {
   server.registerTool(
     "ads_update_ad_url_tags",
     {
-      description: `${WRITE_WARNING}Change the UTM parameters (url_tags) of one or more live ads. Meta creatives are immutable, so each ad's creative is cloned with the new url_tags and the ad is repointed at the clone. The clone re-references the source wholesale — the existing Facebook post, the creative spec, or the Instagram post — so media, copy, destination link and CTA are preserved, along with the post's likes and comments. Side effect: every updated ad re-enters Meta review. Ads whose url_tags already match are skipped, so re-running converges — though an ad whose write failed mid-flight gets its own replacement creative on retry, leaving the earlier one unused (the response reports its id). Do not run two batches over the same ads concurrently. Dynamic creatives (asset_feed_spec) are reported as skipped. Use dry_run to preview.`,
+      description: `${WRITE_WARNING}Change the UTM parameters (url_tags) of one or more live ads. Meta creatives are immutable, so each ad's creative is cloned with the new url_tags and the ad is repointed at the clone. The clone re-references the source wholesale — the existing Facebook post, the creative spec, or the Instagram post — so media, copy, destination link and CTA are preserved, along with the post's likes and comments. The creative's destination setting (destination_spec, e.g. a Website and Shop opt-out) and WhatsApp Status identity (wamo_whatsapp_identity_spec) are carried over when the creative reports them, because since Marketing API v26.0 a new creative without them defaults to Website and Shop for advertisers with a shop and gets no WhatsApp identity. Side effect: every updated ad re-enters Meta review. Ads whose url_tags already match are skipped, so re-running converges — though an ad whose write failed mid-flight gets its own replacement creative on retry, leaving the earlier one unused (the response reports its id). Do not run two batches over the same ads concurrently. Dynamic creatives (asset_feed_spec) are reported as skipped. Use dry_run to preview.`,
       inputSchema: {
         ad_ids: z
           .array(z.string())

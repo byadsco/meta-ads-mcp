@@ -10,13 +10,14 @@ import {
 } from "./errors.js";
 import type { MetaApiResponse } from "./types/common.js";
 import { collectAllPages } from "./paginator.js";
+import { assertMetaApiVersion, resolveMetaApiVersion } from "./api-version.js";
 
-const DEFAULT_API_VERSION = "v25.0";
 const DEFAULT_BASE_URL = "https://graph.facebook.com";
 const DEFAULT_TIMEOUT = 30000;
 const MAX_RETRIES = 3;
 const RETRY_BASE_DELAY = 1000;
 const USAGE_LOG_INTERVAL_MS = 60_000;
+const VERSION_WARNING_LOG_INTERVAL_MS = 60 * 60_000;
 
 export interface MetaApiClientConfig {
   apiVersion?: string;
@@ -47,7 +48,7 @@ interface RequestScope {
  *    self-throttling decisions.
  */
 export class MetaApiClient {
-  private readonly apiVersion: string;
+  readonly apiVersion: string;
   private readonly baseUrl: string;
   private readonly timeout: number;
   private readonly maxRetries: number;
@@ -55,10 +56,10 @@ export class MetaApiClient {
   private readonly circuitBreaker = new CircuitBreaker();
   private readonly writePacer = new WritePacer();
   private lastUsageLogAt = 0;
+  private lastVersionWarningAt = 0;
 
   constructor(config?: MetaApiClientConfig) {
-    this.apiVersion =
-      config?.apiVersion ?? process.env.META_API_VERSION ?? DEFAULT_API_VERSION;
+    this.apiVersion = assertMetaApiVersion(config?.apiVersion ?? resolveMetaApiVersion());
     this.baseUrl = config?.baseUrl ?? DEFAULT_BASE_URL;
     this.timeout = config?.timeout ?? DEFAULT_TIMEOUT;
     this.maxRetries = config?.maxRetries ?? MAX_RETRIES;
@@ -148,6 +149,7 @@ export class MetaApiClient {
     this.circuitBreaker.reset();
     this.writePacer.reset();
     this.lastUsageLogAt = 0;
+    this.lastVersionWarningAt = 0;
   }
 
   // ─── Internal ────────────────────────────────────────────────
@@ -245,6 +247,7 @@ export class MetaApiClient {
         this.rateLimiter.updateFromHeaders(response.headers, context);
         this.maybeUpdatePacerTierFromHeaders(response.headers, tokenHash, accountId);
         this.maybeLogUsage();
+        this.maybeLogVersionWarning(response.headers);
 
         const body = (await response.json()) as unknown;
 
@@ -388,6 +391,22 @@ export class MetaApiClient {
     } else {
       logger.error(payload, error.message);
     }
+  }
+
+  // Meta answers calls on a retired Marketing API version by upgrading the
+  // endpoints that did not change and rejecting the ones that did. The header
+  // only arrives once the version is gone, so it means the pin is already
+  // overdue rather than about to be.
+  private maybeLogVersionWarning(headers: Headers): void {
+    const warning = headers.get("x-ad-api-version-warning");
+    if (!warning) return;
+    const now = Date.now();
+    if (now - this.lastVersionWarningAt < VERSION_WARNING_LOG_INTERVAL_MS) return;
+    this.lastVersionWarningAt = now;
+    logger.warn(
+      { event: "meta_api_version_auto_upgraded", apiVersion: this.apiVersion },
+      `Meta auto-upgraded a call because ${this.apiVersion} is deprecated: bump DEFAULT_META_API_VERSION in src/meta/api-version.ts. Meta said: ${warning}`,
+    );
   }
 
   private maybeLogUsage(): void {

@@ -331,7 +331,7 @@ jobs:
             --max-instances=10
             --port=3000
           env_vars: |
-            META_API_VERSION=v22.0
+            META_API_VERSION=v26.0
             LOG_LEVEL=info
             NODE_ENV=production
             META_APP_ID=${{ secrets.META_APP_ID }}

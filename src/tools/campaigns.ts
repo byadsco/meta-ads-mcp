@@ -30,8 +30,13 @@ const specialAdCategoryEnum = z.enum([
   "EMPLOYMENT",
   "HOUSING",
   "CREDIT",
+  "FINANCIAL_PRODUCTS_SERVICES",
   "ISSUES_ELECTIONS_POLITICS",
+  "ONLINE_GAMBLING_AND_GAMING",
 ]);
+
+const ADSET_BUDGET_SHARING_EXPLAINER =
+  "Ad set budget sharing lets Meta move up to 20% of each ad set's daily budget to other ad sets in the same campaign when that is likely to perform better. It only works when the budget lives on the ad sets (Meta rejects it next to a campaign daily_budget or lifetime_budget, error 4834002), only with daily ad set budgets, and every ad set in the campaign must use the same bid strategy (Meta rejects enabling it without one, error 4834005). Meta recommends true.";
 
 export function registerCampaignTools(server: McpServer): void {
   // ─── Get Campaigns ───────────────────────────────────────────
@@ -129,7 +134,7 @@ export function registerCampaignTools(server: McpServer): void {
   server.registerTool(
     "ads_create_campaign",
     {
-      description: `${WRITE_WARNING}Create a new Meta advertising campaign. Uses outcome-based (ODAX) objectives. Campaigns are created in PAUSED status by default.`,
+      description: `${WRITE_WARNING}Create a new Meta advertising campaign. Uses outcome-based (ODAX) objectives. Campaigns are created in PAUSED status by default. Budget belongs at exactly one level: pass daily_budget or lifetime_budget here for a campaign budget, or omit both and set budgets on each ad set. For ad-set budgets Meta requires an explicit is_adset_budget_sharing_enabled; this tool sends false unless you pass true.`,
       inputSchema: {
         account_id: z.string().describe("Ad account ID"),
         name: z.string().min(1).max(400).describe("Campaign name"),
@@ -140,15 +145,19 @@ export function registerCampaignTools(server: McpServer): void {
         special_ad_categories: z
           .array(specialAdCategoryEnum)
           .default(["NONE"])
-          .describe("Special ad categories (NONE, EMPLOYMENT, HOUSING, CREDIT, ISSUES_ELECTIONS_POLITICS)"),
+          .describe("Special ad categories (NONE, EMPLOYMENT, HOUSING, CREDIT, FINANCIAL_PRODUCTS_SERVICES, ISSUES_ELECTIONS_POLITICS, ONLINE_GAMBLING_AND_GAMING)"),
         daily_budget: z
           .number()
           .optional()
-          .describe("Daily budget in cents (e.g., 5000 = $50.00)"),
+          .describe("Campaign daily budget in cents (e.g., 5000 = $50.00). Omit to set budgets on the ad sets instead."),
         lifetime_budget: z
           .number()
           .optional()
-          .describe("Lifetime budget in cents"),
+          .describe("Campaign lifetime budget in cents. Omit to set budgets on the ad sets instead."),
+        is_adset_budget_sharing_enabled: z
+          .boolean()
+          .optional()
+          .describe(`${ADSET_BUDGET_SHARING_EXPLAINER} Marketing API v24.0+ requires this whenever the campaign has no budget of its own; when omitted in that case the tool sends false.`),
         bid_strategy: bidStrategyEnum.optional(),
         buying_type: z.enum(["AUCTION", "RESERVED"]).default("AUCTION"),
       },
@@ -162,6 +171,7 @@ export function registerCampaignTools(server: McpServer): void {
       special_ad_categories,
       daily_budget,
       lifetime_budget,
+      is_adset_budget_sharing_enabled,
       bid_strategy,
       buying_type,
     }) => {
@@ -177,6 +187,15 @@ export function registerCampaignTools(server: McpServer): void {
 
       if (daily_budget !== undefined) body.daily_budget = String(daily_budget);
       if (lifetime_budget !== undefined) body.lifetime_budget = String(lifetime_budget);
+      const hasCampaignBudget = daily_budget !== undefined || lifetime_budget !== undefined;
+      if (is_adset_budget_sharing_enabled === true && hasCampaignBudget) {
+        throw new Error("is_adset_budget_sharing_enabled cannot be true on a campaign with its own daily_budget or lifetime_budget: Meta only shares budget between ad set budgets (error 4834002). Remove the campaign budget, or leave ad set budget sharing off.");
+      }
+      if (is_adset_budget_sharing_enabled !== undefined) {
+        body.is_adset_budget_sharing_enabled = is_adset_budget_sharing_enabled;
+      } else if (!hasCampaignBudget) {
+        body.is_adset_budget_sharing_enabled = false;
+      }
       if (bid_strategy) body.bid_strategy = bid_strategy;
 
       const result = await metaApiClient.postForm<{ id: string }>(
@@ -184,11 +203,15 @@ export function registerCampaignTools(server: McpServer): void {
         body as Record<string, string | number | boolean>,
       );
 
+      const budgetSharingLine = body.is_adset_budget_sharing_enabled === undefined
+        ? ""
+        : `\nAd set budget sharing: ${body.is_adset_budget_sharing_enabled ? "on" : "off"}`;
+
       return {
         content: [
           {
             type: "text",
-            text: `Campaign created successfully!\nID: ${result.id}\nName: ${name}\nObjective: ${objective}\nStatus: ${status}`,
+            text: `Campaign created successfully!\nID: ${result.id}\nName: ${name}\nObjective: ${objective}\nStatus: ${status}${budgetSharingLine}`,
           },
         ],
       };
@@ -199,24 +222,31 @@ export function registerCampaignTools(server: McpServer): void {
   server.registerTool(
     "ads_update_campaign",
     {
-      description: `${WRITE_WARNING}Update an existing campaign's name, status, budget, or bid strategy.`,
+      description: `${WRITE_WARNING}Update an existing campaign's name, status, budget, bid strategy, or ad set budget sharing.`,
       inputSchema: {
         campaign_id: z.string().describe("Campaign ID to update"),
         name: z.string().optional(),
         status: statusEnum.optional(),
         daily_budget: z.number().optional().describe("Daily budget in cents"),
         lifetime_budget: z.number().optional().describe("Lifetime budget in cents"),
+        is_adset_budget_sharing_enabled: z
+          .boolean()
+          .optional()
+          .describe(`${ADSET_BUDGET_SHARING_EXPLAINER} On an existing campaign Meta only supports turning it off; turning it on for a running campaign is rejected (error 3858418). Omit to keep the current setting.`),
         bid_strategy: bidStrategyEnum.optional(),
       },
       annotations: { ...UPDATE },
     },
-    async ({ campaign_id, name, status, daily_budget, lifetime_budget, bid_strategy }) => {
+    async ({ campaign_id, name, status, daily_budget, lifetime_budget, is_adset_budget_sharing_enabled, bid_strategy }) => {
       const id = validateMetaId(campaign_id, "campaign");
       const body: Record<string, string | number | boolean> = {};
       if (name !== undefined) body.name = name;
       if (status !== undefined) body.status = status;
       if (daily_budget !== undefined) body.daily_budget = String(daily_budget);
       if (lifetime_budget !== undefined) body.lifetime_budget = String(lifetime_budget);
+      if (is_adset_budget_sharing_enabled !== undefined) {
+        body.is_adset_budget_sharing_enabled = is_adset_budget_sharing_enabled;
+      }
       if (bid_strategy !== undefined) body.bid_strategy = bid_strategy;
 
       await metaApiClient.postForm<{ success: boolean }>(
