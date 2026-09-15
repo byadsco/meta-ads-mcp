@@ -329,6 +329,7 @@ describe("registerAdSetTools", () => {
             },
           },
           destination_spec: { destination_type: "WEBSITE_AND_SHOP_OPT_OUT" },
+          wamo_whatsapp_identity_spec: { wamo_whatsapp_identity_id: "7001", whatsapp_phone_number: "+15550000000" },
         }))
         .mockResolvedValueOnce(mockFetchResponse({ id: "20001" }))           // POST ad set
         .mockResolvedValueOnce(mockFetchResponse({ copied_ad_id: "30001" })) // POST /3001/copies
@@ -362,10 +363,16 @@ describe("registerAdSetTools", () => {
       // Marketing API v26.0 defaults new creatives of shop advertisers to Website
       // and Shop, so the patched creative has to carry the source's setting.
       const creativeRead = calls.find((c) => new URL(c[0] as string).pathname.endsWith("/4001"))!;
-      expect(new URL(creativeRead[0] as string).searchParams.get("fields")?.split(",")).toContain("destination_spec");
-      expect(JSON.parse(
-        new URLSearchParams(creativeCall[1]?.body as string).get("destination_spec") ?? "{}",
-      )).toEqual({ destination_type: "WEBSITE_AND_SHOP_OPT_OUT" });
+      const creativeReadFields = new URL(creativeRead[0] as string).searchParams.get("fields")?.split(",");
+      expect(creativeReadFields).toContain("destination_spec");
+      expect(creativeReadFields).toContain("wamo_whatsapp_identity_spec");
+      const creativeBody = new URLSearchParams(creativeCall[1]?.body as string);
+      expect(JSON.parse(creativeBody.get("destination_spec") ?? "{}")).toEqual({ destination_type: "WEBSITE_AND_SHOP_OPT_OUT" });
+      // v26.0 stopped defaulting the WhatsApp identity for third-party callers.
+      expect(JSON.parse(creativeBody.get("wamo_whatsapp_identity_spec") ?? "{}")).toEqual({
+        wamo_whatsapp_identity_id: "7001",
+        whatsapp_phone_number: "+15550000000",
+      });
 
       // Swap onto the copied ad (the POST to /30001 after the creative was made).
       const creativeIdx = calls.indexOf(creativeCall);
@@ -640,6 +647,30 @@ describe("registerAdSetTools", () => {
 
       const methods = vi.mocked(fetch).mock.calls.map((call) => call[1]?.method ?? "GET");
       expect(methods).toEqual(["GET", "GET"]);
+    });
+
+    it("keeps the placements that the client's API version still supports (META_API_VERSION override)", async () => {
+      const original = metaApiClient.apiVersion;
+      (metaApiClient as { apiVersion: string }).apiVersion = "v25.0";
+      try {
+        const { sentTargeting, warnings } = await cloneOnce({
+          geo_locations: { countries: ["CL"] },
+          publisher_platforms: ["facebook", "instagram", "messenger"],
+          facebook_positions: ["feed", "video_feeds"],
+          instagram_positions: ["stream", "explore"],
+          messenger_positions: ["story"],
+          targeting_automation: { advantage_audience: 1 },
+        });
+
+        const adSetPost = vi.mocked(fetch).mock.calls.find((call) => call[1]?.method === "POST")!;
+        expect(new URL(adSetPost[0] as string).pathname).toBe("/v25.0/act_123/adsets");
+        expect(sentTargeting?.facebook_positions).toEqual(["feed"]);
+        expect(sentTargeting?.instagram_positions).toEqual(["stream", "explore"]);
+        expect(sentTargeting?.messenger_positions).toEqual(["story"]);
+        expect(warnings).toEqual([expect.stringContaining("video_feeds")]);
+      } finally {
+        (metaApiClient as { apiVersion: string }).apiVersion = original;
+      }
     });
 
     it("user-provided daily_budget wins over source lifetime_budget", async () => {

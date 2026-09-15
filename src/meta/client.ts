@@ -247,7 +247,7 @@ export class MetaApiClient {
         this.rateLimiter.updateFromHeaders(response.headers, context);
         this.maybeUpdatePacerTierFromHeaders(response.headers, tokenHash, accountId);
         this.maybeLogUsage();
-        this.maybeLogVersionWarning(response.headers, path);
+        this.maybeLogVersionWarning(response.headers);
 
         const body = (await response.json()) as unknown;
 
@@ -393,17 +393,18 @@ export class MetaApiClient {
     }
   }
 
-  // Meta answers calls on a deprecated Marketing API version by upgrading the
-  // endpoints that did not change and rejecting the ones that did, so this
-  // header is the only warning before tools start failing.
-  private maybeLogVersionWarning(headers: Headers, path: string): void {
+  // Meta answers calls on a retired Marketing API version by upgrading the
+  // endpoints that did not change and rejecting the ones that did. The header
+  // only arrives once the version is gone, so it means the pin is already
+  // overdue rather than about to be.
+  private maybeLogVersionWarning(headers: Headers): void {
     const warning = headers.get("x-ad-api-version-warning");
     if (!warning) return;
     const now = Date.now();
     if (now - this.lastVersionWarningAt < VERSION_WARNING_LOG_INTERVAL_MS) return;
     this.lastVersionWarningAt = now;
     logger.warn(
-      { event: "meta_api_version_auto_upgraded", apiVersion: this.apiVersion, path },
+      { event: "meta_api_version_auto_upgraded", apiVersion: this.apiVersion },
       `Meta auto-upgraded a call because ${this.apiVersion} is deprecated: bump DEFAULT_META_API_VERSION in src/meta/api-version.ts. Meta said: ${warning}`,
     );
   }

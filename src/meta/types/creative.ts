@@ -39,6 +39,7 @@ export interface AdCreative {
   effective_instagram_media_id?: string;
   degrees_of_freedom_spec?: Record<string, unknown>;
   destination_spec?: Record<string, unknown>;
+  wamo_whatsapp_identity_spec?: Record<string, unknown>;
   adlabels?: Array<{ id?: string; name?: string }>;
 }
 

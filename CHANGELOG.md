@@ -13,8 +13,8 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   was set in six places that had drifted apart: `MetaApiClient` defaulted to
   v25.0, the OAuth flow to v22.0, and the deploy workflow, `docker-compose.yml`,
   the README and `.env.example` all pinned `META_API_VERSION=v22.0`. The env var
-  wins over the code default, so **production requested v22.0 on every call**
-  while local development ran v25.0.
+  wins over the code default, so **the Cloud Run service was configured to
+  request v22.0** while a local `npm run dev` without the variable used v25.0.
   - The Marketing API follows its own, shorter schedule: only v24.0 (until
     October 6, 2026), v25.0 and v26.0 are still available. Meta answers a call
     on a retired version by upgrading it when the endpoint has not changed
@@ -55,12 +55,16 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
     once the relaxation fields are stripped, so the copy takes the choice that
     never spends beyond the copied targeting.
   - Each adjustment is reported in `warnings`, on dry runs as well.
-- **Rebuilt creatives keep their destination setting.** Since v26.0 a new
-  creative without `destination_spec` defaults to Website and Shop for
-  advertisers with a shop. `ads_update_ad_url_tags` and the creative swap in
-  `ads_clone_ad_set_bundle` now read the source creative's `destination_spec`
-  and send it with the replacement, so changing UTMs or copy cannot move a
-  web-only ad to the shop.
+- **Rebuilt creatives keep their destination setting and WhatsApp identity.**
+  Since v26.0 a new creative without `destination_spec` defaults to Website
+  and Shop for advertisers with a shop, and a creative meant for WhatsApp
+  Status gets no WhatsApp identity unless the caller sends
+  `wamo_whatsapp_identity_spec`. `ads_update_ad_url_tags` and the creative
+  swap in `ads_clone_ad_set_bundle` now read both fields from the source
+  creative and send them with the replacement when Meta reports them, so an
+  explicit Website and Shop opt-out or a WhatsApp Status identity survives a
+  UTM or copy change. When Meta reports no setting, the replacement sends none
+  and follows Meta's default for eligible creatives.
 - **Ad set tool schemas describe the v24.0–v26.0 placement and audience rules.**
   `video_feeds`, `explore` and Messenger `story` are no longer offered, and
   `targeting_automation.advantage_audience` explains when Meta requires an
@@ -75,10 +79,14 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - `FINANCIAL_PRODUCTS_SERVICES` and `ONLINE_GAMBLING_AND_GAMING` in
   `ads_create_campaign`'s `special_ad_categories`, matching Meta's current
   campaign reference.
-- **A warning log when Meta auto-upgrades a call** made on a deprecated
-  Marketing API version (`X-Ad-Api-Version-Warning`), at most once an hour, as
-  `meta_api_version_auto_upgraded`. It is the only notice before the endpoints
-  that changed start failing.
+- **A warning log when Meta auto-upgrades a call** (`X-Ad-Api-Version-Warning`),
+  at most once an hour, as `meta_api_version_auto_upgraded`. Meta only sends
+  the header once the requested version has been retired, so it is a reactive
+  signal that the pin is overdue: by then, endpoints changed since that version
+  already fail, and the auto-upgrade itself can be disabled in the app's
+  Marketing API settings. The retirement dates in Meta's changelog index are
+  the way to stay ahead of it. The log line carries the configured version and
+  Meta's header text only.
 
 ### Upgrade notes
 
@@ -89,14 +97,21 @@ no code here but change delivery:
   audience unless `advantage_audience` is set to `0`.
 - **v24.0**: daily budget flexibility rises from 25% to 75%, so a single day
   can spend up to 75% over the daily budget while the weekly total stays
-  capped at seven times the daily budget.
+  capped at seven times the daily budget. With ad set budget sharing on, both
+  caps grow by the shared amount: an ad set can spend up to
+  (daily budget + 20%) × 1.75 in a day and (daily budget + 20%) × 7 in a week.
 - **v26.0**: eligible new creatives default to
   `destination_spec.destination_type = WEBSITE_AND_SHOP` when the advertiser
   has a shop. `ads_create_ad_creative` and `ads_bulk_create_video_ads` do not
   expose the `WEBSITE_AND_SHOP_OPT_OUT` opt-out yet.
+- **v26.0**: a creative meant for WhatsApp Status needs an explicit
+  `wamo_whatsapp_identity_spec`, which the creation tools do not expose yet.
+  Until they do, create those creatives in Ads Manager or with a direct Graph
+  call; the rebuild tools carry the identity over once it exists.
 - Marketing API versions ship about every four months, and Meta only
   guarantees a replaced version for 90 days, so `DEFAULT_META_API_VERSION`
-  needs regular bumps. The new warning log is the signal that one is overdue.
+  needs regular bumps, planned from the retirement dates Meta publishes. The
+  new warning log only confirms that a bump is already overdue.
 
 ## [3.6.0] — 2026-09-15
 

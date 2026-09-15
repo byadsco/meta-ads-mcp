@@ -77,20 +77,21 @@ describe("MetaApiClient", () => {
       },
     });
 
-    it("logs a warning when Meta auto-upgrades a call made on a deprecated version", async () => {
+    it("logs the configured version and Meta's notice, without the tenant's request path", async () => {
       const warn = vi.spyOn(logger, "warn");
       vi.stubGlobal("fetch", vi.fn().mockResolvedValue(autoUpgraded()));
 
-      await client.get("/act_123/insights");
+      await client.get("/act_123456789012345/insights");
 
-      expect(warn).toHaveBeenCalledWith(
-        expect.objectContaining({
-          event: "meta_api_version_auto_upgraded",
-          apiVersion: "v26.0",
-          path: "/act_123/insights",
-        }),
-        expect.stringContaining("auto-upgraded to v27.0"),
+      const versionWarning = warn.mock.calls.find(
+        ([payload]) => (payload as { event?: string }).event === "meta_api_version_auto_upgraded",
       );
+      expect(versionWarning?.[0]).toEqual({
+        event: "meta_api_version_auto_upgraded",
+        apiVersion: "v26.0",
+      });
+      expect(versionWarning?.[1]).toContain("auto-upgraded to v27.0");
+      expect(versionWarning?.[1]).not.toContain("123456789012345");
     });
 
     it("does not repeat the warning on every call", async () => {
