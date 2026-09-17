@@ -348,7 +348,7 @@ describe("round-6 hardening", () => {
     expect(sources).toHaveLength(1);
     expect(sources[0].error).toBeUndefined();
     expect(libraryVideoAt(raw, 0)?.error).toBeUndefined();
-    expect(ad.truncated.some((t) => /url omitted/.test(t))).toBe(true);
+    expect(ad.truncated).toContain("videos[raw 0] dropped (renditions too long)");
   });
 
   it("keeps card indexes consistent between the normalized sources and libraryVideoAt beyond the caps", () => {
@@ -423,5 +423,100 @@ describe("mediaSummary", () => {
     expect(mediaSummary(CAROUSEL)).toMatchObject({ display_format: "CAROUSEL", video_count: 0, has_video: false });
     expect(mediaSummary(DCO).video_count).toBeGreaterThan(0);
     expect(mediaSummary(ERROR_ITEM)).toMatchObject({ display_format: null, image_count: 0, video_count: 0, has_video: false });
+  });
+});
+
+describe("round-7 hardening", () => {
+  it("never feeds an oversized url to the expiry parser when summarizing", () => {
+    const huge = "https://video.xx.fbcdn.net/v.mp4?oe=69617495&" + "a=0&".repeat(300_000);
+    const onlyHuge = { ad_archive_id: "1234567890", snapshot: { videos: [{ video_sd_url: huge }] } } as AdLibraryRawItem;
+    const started = Date.now();
+    const summary = mediaSummary(onlyHuge);
+    expect(Date.now() - started).toBeLessThan(200);
+    expect(summary.video_count).toBe(1);
+    expect(summary.expires_at).toBeUndefined();
+
+    const withValid = {
+      ad_archive_id: "1234567890",
+      snapshot: { videos: [{ video_sd_url: huge }, { video_sd_url: "https://video.xx.fbcdn.net/ok.mp4?oe=69617495" }] },
+    } as AdLibraryRawItem;
+    expect(mediaSummary(withValid).expires_at).toBe(new Date(0x69617495 * 1000).toISOString());
+  });
+
+  it("bounds cta_type and impressions_text at normalization instead of at render time", () => {
+    const raw = {
+      ad_archive_id: "1234567890",
+      impressions_with_index: { impressions_text: "i".repeat(2_000_000) },
+      snapshot: { cta_type: "c".repeat(2_000_000) },
+    } as AdLibraryRawItem;
+    const ad = normalizeLibraryAd(raw, 0);
+    expect(ad.copy.cta_type!.length).toBeLessThan(4100);
+    expect(ad.impressions_text!.length).toBeLessThan(4100);
+    expect(ad.truncated).toEqual(expect.arrayContaining(["copy.cta_type", "impressions_text"]));
+  });
+
+  it("keeps every announced selector addressable when an earlier video is dropped by the url policy", () => {
+    const long = "https://video.xx.fbcdn.net/" + "h".repeat(5000);
+    const raw = {
+      ad_archive_id: "1234567890",
+      snapshot: {
+        videos: [{ video_hd_url: long }, { video_sd_url: "https://video.xx.fbcdn.net/top.mp4" }],
+        cards: [
+          { original_image_url: "https://scontent.xx.fbcdn.net/c0.jpg" },
+          { video_sd_url: "https://video.xx.fbcdn.net/a.mp4" },
+          { video_sd_url: "https://video.xx.fbcdn.net/b.mp4" },
+        ],
+      },
+    } as AdLibraryRawItem;
+    const sources = extractLibraryVideoSources(normalizeLibraryAd(raw, 0));
+    expect(sources.map((s) => s.low_res_url)).toEqual([
+      "https://video.xx.fbcdn.net/top.mp4",
+      "https://video.xx.fbcdn.net/a.mp4",
+      "https://video.xx.fbcdn.net/b.mp4",
+    ]);
+    for (const source of sources) {
+      expect(libraryVideoAt(raw, source.card_index as number)?.low_res_url).toBe(source.low_res_url);
+    }
+  });
+
+  it("labels a video dropped by the url policy with its raw index, not an output position", () => {
+    const long = "https://video.xx.fbcdn.net/" + "h".repeat(5000);
+    const raw = {
+      ad_archive_id: "1234567890",
+      snapshot: { videos: [{ video_hd_url: long }, { video_sd_url: "https://video.xx.fbcdn.net/ok.mp4" }] },
+    } as AdLibraryRawItem;
+    const ad = normalizeLibraryAd(raw, 0);
+    expect(ad.videos).toHaveLength(1);
+    expect(ad.videos[0].sd_url).toBe("https://video.xx.fbcdn.net/ok.mp4");
+    expect(ad.truncated.some((t) => t.includes("videos[raw 0]"))).toBe(true);
+    expect(ad.truncated.some((t) => t.startsWith("videos[0]."))).toBe(false);
+  });
+
+  it("records per-item truncation in string lists and stops inspecting past a budget", () => {
+    const raw = {
+      ad_archive_id: "1234567890",
+      publisher_platform: ["x".repeat(65)],
+      snapshot: { page_categories: [...Array.from({ length: 500_000 }, () => null), "FACEBOOK"] },
+    } as AdLibraryRawItem;
+    const started = Date.now();
+    const ad = normalizeLibraryAd(raw, 0);
+    expect(Date.now() - started).toBeLessThan(200);
+    expect(ad.publisher_platforms[0]).toHaveLength(64);
+    expect(ad.truncated.some((t) => t.startsWith("publisher_platforms"))).toBe(true);
+    expect(ad.page.categories).toEqual([]);
+    expect(ad.truncated).toContain("page.categories");
+  });
+
+  it("bounds the omission notes a record with many unusable videos can emit", () => {
+    const long = "https://video.xx.fbcdn.net/" + "h".repeat(5000);
+    const raw = {
+      ad_archive_id: "1234567890",
+      snapshot: { videos: Array.from({ length: 200_000 }, () => ({ video_hd_url: long })) },
+    } as AdLibraryRawItem;
+    const started = Date.now();
+    const ad = normalizeLibraryAd(raw, 0);
+    expect(Date.now() - started).toBeLessThan(2000);
+    expect(ad.videos).toEqual([]);
+    expect(ad.truncated.length).toBeLessThan(30);
   });
 });

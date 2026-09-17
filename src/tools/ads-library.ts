@@ -842,23 +842,26 @@ const LINE_SEPARATORS = new RegExp("[" + String.fromCharCode(0x2028, 0x2029) + "
 
 function line(value: string | null | undefined, max: number): string {
   if (!value) return "";
-  const flat = value.replace(CONTROL_CHARS, " ").replace(LINE_SEPARATORS, " ").replace(/\s+/g, " ").trim();
+  // Sanitize a bounded prefix only: each replace over a multi-megabyte string
+  // would allocate another copy of it just for the slice below to discard.
+  const head = value.length > max * 4 ? value.slice(0, max * 4) : value;
+  const flat = head.replace(CONTROL_CHARS, " ").replace(LINE_SEPARATORS, " ").replace(/\s+/g, " ").trim();
   return flat.length > max ? flat.slice(0, max) + "…" : flat;
 }
 
 function renderLibraryAdCard(ad: LibraryAd, images: LibraryImageMeta[], videos: DeliveredVideo[], videoDelivery: string, warnings: string[]): string {
   const lines: string[] = [];
   const status = ad.is_active === null ? "status unknown" : ad.is_active ? "active" : "inactive";
-  lines.push("Ad Library ad " + ad.ad_archive_id + " — " + line(ad.page.name, 120) + " (" + (ad.display_format ?? "unknown format") + ", " + status + ")");
+  lines.push("Ad Library ad " + ad.ad_archive_id + " — " + line(ad.page.name, 120) + " (" + (ad.display_format ? line(ad.display_format, 40) : "unknown format") + ", " + status + ")");
   lines.push("Running: " + (ad.start_date ?? "?") + " → " + (ad.end_date ?? "?") + " · Platforms: " + (ad.publisher_platforms.join(", ") || "n/a") + (ad.collation_count ? " · Variants collated: " + ad.collation_count : ""));
   lines.push("Library link: " + ad.ad_library_url + (ad.page.profile_uri ? " · Page: " + line(ad.page.profile_uri, 200) : "") + (ad.page.like_count !== null ? " (" + ad.page.like_count + " likes)" : ""));
   const reach: string[] = [];
   if (ad.impressions_text) reach.push("impressions " + line(ad.impressions_text, 40));
   // spend / reach_estimate were bounded at normalization time; serializing them is cheap.
-  if (ad.spend !== null && ad.spend !== undefined) reach.push("spend " + line(JSON.stringify(ad.spend), 80) + (ad.currency ? " " + ad.currency : ""));
+  if (ad.spend !== null && ad.spend !== undefined) reach.push("spend " + line(JSON.stringify(ad.spend), 80) + (ad.currency ? " " + line(ad.currency, 20) : ""));
   if (ad.reach_estimate !== null && ad.reach_estimate !== undefined) reach.push("reach estimate " + line(JSON.stringify(ad.reach_estimate), 80));
   if (reach.length > 0) lines.push("Delivery data: " + reach.join(" · "));
-  if (ad.details) lines.push("Detail blocks scraped: " + Object.keys(ad.details).join(", ") + " (see JSON).");
+  if (ad.details) lines.push("Detail blocks scraped: " + line(Object.keys(ad.details).join(", "), 300) + " (see JSON).");
   if (ad.truncated.length > 0) lines.push("Fields cut to size caps: " + ad.truncated.slice(0, 10).join(", ") + (ad.truncated.length > 10 ? ", …" : "") + ".");
 
   lines.push("");

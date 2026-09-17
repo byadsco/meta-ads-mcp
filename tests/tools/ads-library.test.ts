@@ -906,6 +906,34 @@ describe("ads_library_* tools", () => {
       expect((videos[0].delivered as Record<string, unknown>).resource_uri).toBe("meta-ads://ad-library/1178344137830897/video/0");
     });
 
+    it("bounds the enum-like fields the card renders verbatim (cta_type, display_format, impressions)", async () => {
+      const hostile = JSON.parse(JSON.stringify(FIX_IMAGE)) as Record<string, unknown>;
+      const snap = hostile.snapshot as Record<string, unknown>;
+      snap.cta_type = "c".repeat(2_000_000);
+      snap.display_format = "d".repeat(2_000_000);
+      hostile.currency = "e".repeat(2_000_000);
+      hostile.impressions_with_index = { impressions_text: "i".repeat(2_000_000) };
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(mockFetchResponse([hostile])));
+
+      const started = Date.now();
+      const result = await setup({ deliverVideos: fakeDeliver(), downloadImage: fakeImage() }).byName("ads_library_get_ad_details")({
+        dataset_id: "ds123abcde", ad_archive_id: "841513952022622", hint_offset: 0,
+        include_images: false, max_images: 8, image_size: "full", video_delivery: "thumbnail", frame_count: 6, include_raw: false,
+      });
+      // Sanitizing 8 MB of enum-like text must not become the bulk of the call.
+      expect(Date.now() - started).toBeLessThan(2_500);
+      const card = result.content[0].text;
+      expect(card.length).toBeLessThanOrEqual(20_000);
+      expect(card).not.toContain("c".repeat(200));
+      expect(card).not.toContain("d".repeat(200));
+      expect(card).not.toContain("e".repeat(200));
+      expect(card).not.toContain("i".repeat(200));
+      const json = lastJson(result);
+      expect((json.ad as Record<string, unknown>).truncated).toEqual(
+        expect.arrayContaining(["display_format", "copy.cta_type", "impressions_text", "currency"]),
+      );
+    });
+
     it("include_raw returns the untouched actor record alongside the normalized ad", async () => {
       vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(mockFetchResponse([FIX_IMAGE])));
       const result = await setup({ deliverVideos: fakeDeliver(), downloadImage: fakeImage() }).byName("ads_library_get_ad_details")({

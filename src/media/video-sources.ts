@@ -30,7 +30,9 @@ export interface VideoSource {
  * lets an agent know whether a cached URL is still worth fetching.
  */
 export function fbcdnExpiresAt(url: string | undefined): string | undefined {
-  if (!url) return undefined;
+  // URL parsing materializes every query parameter; a signed CDN url is never
+  // anywhere near this long, so an oversized one is not worth decoding.
+  if (!url || url.length > 4096) return undefined;
   try {
     const oe = new URL(url).searchParams.get("oe");
     if (!oe || !/^[0-9a-f]{6,10}$/i.test(oe)) return undefined;
