@@ -107,6 +107,24 @@ function count(value: unknown): string {
 }
 
 /**
+ * Intl accepts any three-letter code, so ZZZ would format as "ZZZ 500.00".
+ * The code is checked against the runtime's own list first.
+ */
+const KNOWN_CURRENCIES = (() => {
+  try {
+    const supported = (Intl as unknown as { supportedValuesOf?: (key: string) => string[] }).supportedValuesOf;
+    return supported ? new Set(supported("currency")) : undefined;
+  } catch {
+    return undefined;
+  }
+})();
+
+function isKnownCurrency(code: string): boolean {
+  if (!/^[A-Z]{3}$/.test(code)) return false;
+  return KNOWN_CURRENCIES ? KNOWN_CURRENCIES.has(code) : true;
+}
+
+/**
  * Meta returns budgets as integers in the account currency's smallest unit,
  * and how many of those make a unit depends on the currency: 50000 is 500.00
  * EUR but 50,000 JPY. Intl knows the decimals; without a currency the raw
@@ -115,7 +133,7 @@ function count(value: unknown): string {
 function budget(value: unknown, currency?: string): string {
   const parsed = num(value);
   if (parsed === undefined) return "n/a";
-  if (!currency || !/^[A-Z]{3}$/.test(currency)) return `${parsed.toLocaleString("en-US")} (minor units)`;
+  if (!currency || !isKnownCurrency(currency)) return `${parsed.toLocaleString("en-US")} (minor units)`;
   try {
     const format = new Intl.NumberFormat("en-US", { style: "currency", currency });
     const digits = format.resolvedOptions().maximumFractionDigits ?? 2;
@@ -324,13 +342,16 @@ function renderDossier(input: {
   return joinBounded(lines);
 }
 
-const URL_KEY = /(^|_)(url|uri|link|permalink)s?($|_)/i;
+const HTTP_URL = /^https?:\/\//i;
 
 /**
  * Meta echoes some URLs with an access_token attached. boundedClone bounds
- * size but keeps strings as they are, so every URL-shaped field in the
- * envelope is sanitized before it reaches the client, keeping the CDN
- * signature the link needs.
+ * size but keeps strings as they are, so every http(s) value in the envelope
+ * is sanitized before it reaches the client. Matched on the value rather than
+ * the key, because the collector reads "picture" and
+ * "child_attachments[].picture", which no url-shaped key pattern catches. A
+ * url with nothing to strip comes back byte for byte, so a CDN signature
+ * survives.
  */
 function sanitizeUrls(value: unknown, depth = 0): unknown {
   if (depth > 8) return value;
@@ -338,7 +359,7 @@ function sanitizeUrls(value: unknown, depth = 0): unknown {
   if (!value || typeof value !== "object") return value;
   const out: Record<string, unknown> = {};
   for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
-    if (typeof child === "string" && URL_KEY.test(key) && /^https?:\/\//i.test(child)) {
+    if (typeof child === "string" && HTTP_URL.test(child)) {
       out[key] = sanitizeMetadataUrl(child) ?? "[url omitted]";
       continue;
     }
@@ -553,7 +574,24 @@ export function registerAdDossierTools(server: McpServer, deps: AdDossierDeps = 
             }
             const thumbnail = (video ? pickVideoThumbnailUrl(video, image_size) : undefined) ?? pickUrl(ref.specThumbnailUrl, fromHash(ref.specThumbnailHash));
             if (thumbnail) images.push({ role: "video_thumbnail", source_url: thumbnail, downloaded: false });
-            if (video?.source) {
+            if (!video?.source) {
+              // Still reported: the ad has a video, and the reason it could not
+              // be delivered is what the reader needs.
+              deliveredVideos.push({
+                key: `meta:video:${ref.videoId}`,
+                label: `Video ${ref.videoId}`,
+                origin: "meta",
+                video_id: ref.videoId,
+                duration_seconds: video?.length,
+                delivered: { mode: "none", block_indexes: [] },
+                thumbnail_url: sanitizeMetadataUrl(thumbnail),
+                error: video
+                  ? "Video source URL not available (still processing, or owned by another page)."
+                  : "The video could not be read from Meta.",
+              });
+              continue;
+            }
+            {
               sources.push({
                 key: `meta:video:${video.id}`,
                 // The label is printed outside the untrusted fence, so it carries

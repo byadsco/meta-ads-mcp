@@ -445,3 +445,57 @@ describe("round-1 review fixes", () => {
     expect(brief).not.toMatch(/daily budget 500\b/);
   });
 });
+
+describe("round-2 review fixes", () => {
+  it("strips credentials from a url under any key, not only url-shaped ones", async () => {
+    const leaky = {
+      ...CREATIVE,
+      object_story_spec: {
+        link_data: {
+          message: "copy",
+          picture: "https://cdn.example.com/a.jpg?access_token=SECRET123",
+          child_attachments: [{ picture: "https://cdn.example.com/b.jpg?access_token=SECRET123" }],
+        },
+      },
+    };
+    vi.stubGlobal("fetch", routeFetch({ ...ROUTES, "/5001": leaky }));
+    const { call } = setup();
+
+    const result = await call({ include_media: false });
+
+    expect(JSON.stringify(result.content)).not.toContain("SECRET123");
+    expect(JSON.stringify(result.content)).toContain("cdn.example.com/a.jpg");
+    expect(JSON.stringify(result.content)).toContain("cdn.example.com/b.jpg");
+  });
+
+  it("leaves a clean signed url byte for byte", async () => {
+    const signed = "https://scontent.xx.fbcdn.net/v/t39.35426-6/photo.jpg?_nc_cat=1&oh=abc~def&oe=69617495";
+    vi.stubGlobal("fetch", routeFetch({ ...ROUTES, "/5001": { ...CREATIVE, image_url: signed } }));
+    const { call } = setup();
+    const result = await call({ include_media: false });
+    expect(JSON.stringify(result.content)).toContain(signed);
+  });
+
+  it("falls back to minor units for a currency code Intl does not know", async () => {
+    const unknown = { data: [{ ...INSIGHTS.data[0], account_currency: "ZZZ" }] };
+    vi.stubGlobal("fetch", routeFetch({ ...ROUTES, "/8001/insights": unknown, "/6001": { ...CAMPAIGN, daily_budget: "50000" } }));
+    const { call } = setup();
+    const brief = (await call({})).content[0].text as string;
+    expect(brief).toMatch(/50,000 \(minor units\)/);
+    expect(brief).not.toMatch(/ZZZ\s?500/);
+  });
+
+  it("reports a video it could not deliver rather than dropping it", async () => {
+    // No source and no resolvable thumbnail: the ad still has a video.
+    vi.stubGlobal("fetch", routeFetch({ ...ROUTES, "/999": { id: "999" } }));
+    const { call } = setup();
+
+    const result = await call({ include_media: true });
+
+    const media = lastJson(result).media as { videos: Array<{ video_id?: string; error?: string; delivered: { mode: string } }> };
+    expect(media.videos).toHaveLength(1);
+    expect(media.videos[0].video_id).toBe("999");
+    expect(media.videos[0].error).toBeTruthy();
+    expect(media.videos[0].delivered.mode).toBe("none");
+  });
+});

@@ -51,7 +51,7 @@ Writes are irreversible in practice. Meta has no undo, and a deleted campaign ta
 
 - **ID kinds are not interchangeable.** An ad id is not an ad set id. The server validates the kind and says which it expected.
 - **Account ids** may be `act_123` or `123`; the server normalizes, but be consistent in what you report back.
-- **Budgets are minor units.** `daily_budget: 5000` is 50.00 in the account currency.
+- **Budgets are minor units, and how many make a unit depends on the currency.** `daily_budget: 5000` is 50.00 EUR but 5,000 JPY, which has no minor unit. Read the account currency before converting, and never assume two decimals.
 - **An empty insights result is not an error.** A new ad, a paused ad or a narrow window simply has no rows.
 - **Rankings are missing below 500 impressions**, and `UNKNOWN` means "not enough data yet", not "bad".
 - **Signed media URLs expire**, typically within days. Re-fetch rather than storing them.

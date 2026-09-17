@@ -21,9 +21,13 @@ const MAX_FILES = 64;
 const MAX_ENTRIES_SCANNED = 256;
 const URI_PREFIX = "meta-ads://skills/";
 
-/** Resolves from src/ in development and from dist/ in the published package. */
+/**
+ * Resolves from src/ in development and from dist/ in the published package.
+ * path.resolve drops the trailing slash on purpose: lstat("/x/") follows a
+ * symlink at /x while lstat("/x") reports the link itself.
+ */
 function skillsRoot(): string {
-  return fileURLToPath(new URL("../../skills/", import.meta.url));
+  return path.resolve(fileURLToPath(new URL("../../skills/", import.meta.url)));
 }
 
 /** Frontmatter is optional; only name and description are read, and only as plain scalars. */
@@ -54,17 +58,21 @@ function readMarkdown(fullPath: string): string | null {
   return readFileSync(fullPath, "utf8");
 }
 
-/** Directories are walked only when they are real directories, never symlinks. */
-function isRealDirectory(fullPath: string): boolean {
+/**
+ * Directories are walked only when they are real directories, never symlinks.
+ * The path is resolved first so a trailing slash cannot make lstat follow one.
+ */
+export function isRealDirectory(fullPath: string): boolean {
   try {
-    return lstatSync(fullPath).isDirectory();
+    return lstatSync(path.resolve(fullPath)).isDirectory();
   } catch {
     return false;
   }
 }
 
-function loadSkills(): SkillDocument[] {
-  const root = skillsRoot();
+/** Exported so the adversarial tests exercise this walk rather than a copy of it. */
+export function loadSkillsFrom(rawRoot: string): SkillDocument[] {
+  const root = path.resolve(rawRoot);
   const documents: SkillDocument[] = [];
   if (!isRealDirectory(root)) {
     logger.warn({ event: "skills_unavailable" }, "No skills directory found; MCP resources will be empty");
@@ -121,6 +129,10 @@ function loadSkills(): SkillDocument[] {
   }
 
   return documents;
+}
+
+function loadSkills(): SkillDocument[] {
+  return loadSkillsFrom(skillsRoot());
 }
 
 let cached: SkillDocument[] | undefined;

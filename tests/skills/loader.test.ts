@@ -2,48 +2,11 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { getSkillDocuments, resetSkillCacheForTests } from "../../src/skills/loader.js";
+import { getSkillDocuments, isRealDirectory, loadSkillsFrom, resetSkillCacheForTests } from "../../src/skills/loader.js";
 
-/**
- * The loader reads a fixed directory next to the compiled code, so these
- * cases exercise the same rules against a temporary tree by reproducing the
- * walk the loader performs. The shipped tree is covered by the protocol suite.
- */
+/** Every case runs the real walk against a temporary tree. */
 function walkLike(root: string): string[] {
-  const { lstatSync, readdirSync, readFileSync } = require("node:fs") as typeof import("node:fs");
-  const isRealDirectory = (p: string): boolean => {
-    try {
-      return lstatSync(p).isDirectory();
-    } catch {
-      return false;
-    }
-  };
-  const found: string[] = [];
-  if (!isRealDirectory(root)) return found;
-  for (const skill of readdirSync(root).sort().slice(0, 256)) {
-    if (!/^[a-z0-9-]{1,64}$/.test(skill)) continue;
-    const skillDir = path.join(root, skill);
-    if (!isRealDirectory(skillDir)) continue;
-    const files = ["SKILL.md"];
-    const referencesDir = path.join(skillDir, "references");
-    if (isRealDirectory(referencesDir)) {
-      for (const reference of readdirSync(referencesDir).sort().slice(0, 256)) {
-        if (/^[a-z0-9._-]{1,64}\.md$/.test(reference)) files.push(`references/${reference}`);
-      }
-    }
-    for (const file of files) {
-      const full = path.join(skillDir, file);
-      try {
-        const stat = lstatSync(full);
-        if (!stat.isFile() || stat.size > 256 * 1024) continue;
-        readFileSync(full, "utf8");
-        found.push(`${skill}/${file}`);
-      } catch {
-        continue;
-      }
-    }
-  }
-  return found;
+  return loadSkillsFrom(root).map((d) => `${d.skill}/${d.file}`);
 }
 
 let tmp: string | undefined;
@@ -127,5 +90,31 @@ describe("getSkillDocuments", () => {
 
     const toolMap = documents.find((d) => d.file === "references/tool-map.md")!;
     expect(toolMap.title).toBe("Tool map");
+  });
+});
+
+describe("skillsRoot containment", () => {
+  it("does not follow a symlinked skills root", () => {
+    // lstat("/x/") follows the link while lstat("/x") does not, so the loader
+    // must resolve the trailing slash away before checking.
+    tmp = mkdtempSync(path.join(os.tmpdir(), "skills-test-"));
+    const outside = path.join(tmp, "outside");
+    mkdirSync(path.join(outside, "planted"), { recursive: true });
+    writeFileSync(path.join(outside, "planted", "SKILL.md"), "# private");
+    const link = path.join(tmp, "skills");
+    symlinkSync(outside, link);
+
+    expect(isRealDirectory(link)).toBe(false);
+    expect(isRealDirectory(`${link}/`)).toBe(false);
+    expect(walkLike(link)).toEqual([]);
+    expect(walkLike(`${link}/`)).toEqual([]);
+  });
+
+  it("accepts a real directory given with a trailing slash", () => {
+    tmp = mkdtempSync(path.join(os.tmpdir(), "skills-test-"));
+    const skill = path.join(tmp, "skills", "real-skill");
+    mkdirSync(skill, { recursive: true });
+    writeFileSync(path.join(skill, "SKILL.md"), "# real");
+    expect(walkLike(`${path.join(tmp, "skills")}/`)).toEqual(["real-skill/SKILL.md"]);
   });
 });
