@@ -64,4 +64,9 @@ describe("healthPayload", () => {
   it("does not expose server name or version", () => {
     expect(healthPayload()).toEqual({ status: "ok" });
   });
+
+  it("reports ffmpeg availability when known, without spawning per request", () => {
+    expect(healthPayload({ ffmpeg: true })).toEqual({ status: "ok", ffmpeg: true });
+    expect(healthPayload({ ffmpeg: false })).toEqual({ status: "ok", ffmpeg: false });
+  });
 });

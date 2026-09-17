@@ -45,9 +45,13 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      - name: Install ffmpeg (video keyframe tests)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+
       - name: Test
         env:
           CI: '1'
+          FFMPEG_REQUIRED: '1'
         run: npm test
 
       - name: Build
@@ -323,10 +327,12 @@ jobs:
           flags: >-
             --allow-unauthenticated
             --service-account=${{ secrets.GCP_RUNTIME_SERVICE_ACCOUNT }}
-            --memory=512Mi
-            --cpu=1
-            --concurrency=80
+            --memory=2Gi
+            --cpu=2
+            --concurrency=40
             --timeout=300
+            --add-volume=name=tmp,type=in-memory,size-limit=768Mi
+            --add-volume-mount=volume=tmp,mount-path=/tmp
             --min-instances=0
             --max-instances=10
             --port=3000
@@ -334,6 +340,8 @@ jobs:
             META_API_VERSION=v26.0
             LOG_LEVEL=info
             NODE_ENV=production
+            NODE_OPTIONS=--max-old-space-size=1536
+            VIDEO_MAX_CONCURRENT_JOBS=2
             META_APP_ID=${{ secrets.META_APP_ID }}
             SERVER_URL=${{ secrets.SERVER_URL }}
             AUTH_ALLOWED_EMAILS=${{ secrets.AUTH_ALLOWED_EMAILS }}

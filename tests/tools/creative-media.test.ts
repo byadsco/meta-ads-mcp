@@ -482,6 +482,94 @@ describe("registerCreativeMediaTools", () => {
   });
 });
 
+describe("ads_get_creative_media video_delivery", () => {
+  beforeEach(() => setupTestToken());
+  afterEach(() => {
+    cleanupTestToken();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  function videoCreativeFetch() {
+    return vi.fn()
+      .mockResolvedValueOnce(mockFetchResponse({
+        id: "40123",
+        name: "Video creative",
+        object_story_spec: { video_data: { video_id: "501" } },
+      }))
+      .mockResolvedValueOnce(mockFetchResponse({
+        id: "501",
+        title: "Spot",
+        length: 15,
+        source: "https://video.xx.fbcdn.net/v.mp4?oe=69617495",
+        picture: "https://scontent.xx.fbcdn.net/small.jpg",
+        thumbnails: { data: [{ uri: "https://scontent.xx.fbcdn.net/t-big.jpg", width: 1080, height: 1080 }] },
+      }));
+  }
+
+  it("keeps the thumbnail behaviour by default and documents the new parameter", () => {
+    const server = createMockMcpServer();
+    registerCreativeMediaTools(server as never, { download: fakeDownload() as never });
+    const tool = server._registeredTools[0];
+    expect(tool.description).toMatch(/video_delivery/);
+  });
+
+  it("video_delivery=frames hands the videos to the delivery pipeline and appends its blocks", async () => {
+    const server = createMockMcpServer();
+    const download = fakeDownload();
+    const deliverVideos = vi.fn(async () => ({
+      blocks: [{ type: "image", data: Buffer.from("sheet").toString("base64"), mimeType: "image/jpeg" }],
+      videos: [{ key: "meta:video:501", label: "Video 501", origin: "meta", video_id: "501", delivered: { mode: "frames", block_indexes: [0], frame_layout: "grid", frame_timestamps: [1, 2] } }],
+      warnings: [],
+      bytes: 5,
+    }));
+    registerCreativeMediaTools(server as never, { download: download as never, deliverVideos: deliverVideos as never });
+    vi.stubGlobal("fetch", videoCreativeFetch());
+
+    const result = await server._registeredTools[0].handler({ creative_id: "40123", video_delivery: "frames" }) as ToolResult;
+
+    expect(deliverVideos).toHaveBeenCalledTimes(1);
+    const [sources, options] = deliverVideos.mock.calls[0] as unknown as [Array<Record<string, unknown>>, Record<string, unknown>];
+    expect(sources[0]).toMatchObject({ video_id: "501", source_url: "https://video.xx.fbcdn.net/v.mp4?oe=69617495" });
+    expect(options.delivery).toBe("frames");
+    // thumbnail image (existing behaviour) + frame sheet from the pipeline
+    expect(result.content.filter((b) => b.type === "image")).toHaveLength(2);
+    const json = resultJson(result);
+    const videos = json.videos as Array<Record<string, unknown>>;
+    expect(videos[0]).toMatchObject({ video_id: "501", delivered: { mode: "frames" } });
+    expect(String(result.content[0].text)).toMatch(/frames/);
+  });
+
+  it("hands the pipeline only the response budget left after the images", async () => {
+    const server = createMockMcpServer();
+    const download = vi.fn(async (url: string) => ({
+      buffer: Buffer.alloc(6 * 1024 * 1024),
+      contentType: "image/jpeg",
+      extension: ".jpg" as const,
+      finalUrl: new URL(url),
+    }));
+    const deliverVideos = vi.fn(async () => ({ blocks: [], videos: [], warnings: [], bytes: 0 }));
+    registerCreativeMediaTools(server as never, { download: download as never, deliverVideos: deliverVideos as never });
+    vi.stubGlobal("fetch", videoCreativeFetch());
+
+    await server._registeredTools[0].handler({ creative_id: "40123", video_delivery: "frames" });
+
+    const limits = deliverVideos.mock.calls[0][4] as { totalBytesBudget: number };
+    // 30 MB shared budget minus the 6 MB thumbnail already attached.
+    expect(limits.totalBytesBudget).toBe(24 * 1024 * 1024);
+  });
+
+  it("does not offer inline delivery on this tool", () => {
+    const server = createMockMcpServer();
+    registerCreativeMediaTools(server as never, { download: fakeDownload() as never });
+    const schema = server._registeredTools[0].schema as Record<string, { _def?: { innerType?: { _def?: { values?: string[] } }; values?: string[] } }>;
+    const def = schema.video_delivery?._def;
+    const values = def?.values ?? def?.innerType?._def?.values ?? [];
+    expect(values).toEqual(expect.arrayContaining(["thumbnail", "frames", "url"]));
+    expect(values).not.toContain("inline");
+  });
+});
+
 describe("collectCreativeMedia", () => {
   it("walks all spec locations and dedupes by hash and url", () => {
     const { images, videos } = collectCreativeMedia({

@@ -7,8 +7,54 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Added
+
+- **Video analysis — `ads_get_video_media` (135 → 136 tools).** Any MCP agent
+  can now analyze an ad video, not just its poster frame. The tool resolves a
+  `video_id`, an `ad_id` or a `creative_id` (every video in the creative,
+  capped by `max_videos`), downloads the file from Meta's CDN behind the
+  existing SSRF guard plus a host allowlist, validates it with `ffprobe`
+  before any decode, and delivers it in the mode the calling model can
+  consume: `frames` (real keyframes as image blocks — a contact sheet by
+  default, individual frames or an `audio/aac` track on request), `inline`
+  (the MP4 embedded as an MCP `resource` blob for video-capable clients such
+  as Gemini, transcoded to a compact rendition that fits `max_inline_bytes`),
+  `url` (signed CDN links as `resource_link` blocks with their expiry) or
+  `thumbnail`. Progress notifications are sent when the client supplies a
+  `progressToken`; JSON metadata carries duration, dimensions, fps, audio
+  presence, block indexes and the CDN expiry decoded from the `oe` parameter.
+- **`ads_get_creative_media` gains `video_delivery`** (`thumbnail` by default,
+  unchanged; `frames` appends keyframes; `url` appends signed links), and
+  `ads_get_video_details` / `ads_get_ad_videos` now request `permalink_url`.
+- **`/health` reports `ffmpeg: true|false`**, probed once at startup.
+- `is_adset_budget_sharing_enabled` on `ads_update_campaign`. Meta documents
+  turning budget sharing off on an existing campaign; turning it on for a
+  running campaign is rejected (error 3858418).
+- `FINANCIAL_PRODUCTS_SERVICES` and `ONLINE_GAMBLING_AND_GAMING` in
+  `ads_create_campaign`'s `special_ad_categories`, matching Meta's current
+  campaign reference.
+- **A warning log when Meta auto-upgrades a call** (`X-Ad-Api-Version-Warning`),
+  at most once an hour, as `meta_api_version_auto_upgraded`. Meta only sends
+  the header once the requested version has been retired, so it is a reactive
+  signal that the pin is overdue: by then, endpoints changed since that version
+  already fail, and the auto-upgrade itself can be disabled in the app's
+  Marketing API settings. The retirement dates in Meta's changelog index are
+  the way to stay ahead of it. The log line carries the configured version and
+  Meta's header text only.
+
 ### Changed
 
+- **Runtime image and Cloud Run sizing.** The Docker image is pinned to
+  `node:22-alpine3.24` and installs `ffmpeg`; the deploy runs with 2 GiB /
+  2 vCPU, concurrency 40 and a size-limited in-memory `/tmp` volume. CI and
+  the deploy preflight install `ffmpeg` so the keyframe integration tests run
+  for real (`FFMPEG_REQUIRED=1`).
+- **Tenant resolution shared.** The fail-closed rule that picked the Apify
+  token bucket now lives in `src/auth/tenant.ts` and also scopes the video
+  rate limiter; behaviour for `ads_library_*` is unchanged.
+- **Shared HTTP download plumbing.** DNS pinning, redirect re-validation and
+  header parsing moved from `safe-download.ts` into `src/utils/safe-http.ts`
+  so the image and video downloaders enforce the same policy.
 - **Every Meta call now targets Graph API / Marketing API v26.0.** The version
   was set in six places that had drifted apart: `MetaApiClient` defaulted to
   v25.0, the OAuth flow to v22.0, and the deploy workflow, `docker-compose.yml`,
@@ -71,23 +117,6 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   explicit value, including the v26.0 extension to Housing, Employment and
   Financial Products and Services campaigns.
 
-### Added
-
-- `is_adset_budget_sharing_enabled` on `ads_update_campaign`. Meta documents
-  turning budget sharing off on an existing campaign; turning it on for a
-  running campaign is rejected (error 3858418).
-- `FINANCIAL_PRODUCTS_SERVICES` and `ONLINE_GAMBLING_AND_GAMING` in
-  `ads_create_campaign`'s `special_ad_categories`, matching Meta's current
-  campaign reference.
-- **A warning log when Meta auto-upgrades a call** (`X-Ad-Api-Version-Warning`),
-  at most once an hour, as `meta_api_version_auto_upgraded`. Meta only sends
-  the header once the requested version has been retired, so it is a reactive
-  signal that the pin is overdue: by then, endpoints changed since that version
-  already fail, and the auto-upgrade itself can be disabled in the app's
-  Marketing API settings. The retirement dates in Meta's changelog index are
-  the way to stay ahead of it. The log line carries the configured version and
-  Meta's header text only.
-
 ### Upgrade notes
 
 Moving from v22.0 to v26.0 also brings Meta-side behaviour changes that need
@@ -112,6 +141,27 @@ no code here but change delivery:
   guarantees a replaced version for 90 days, so `DEFAULT_META_API_VERSION`
   needs regular bumps, planned from the retirement dates Meta publishes. The
   new warning log only confirms that a bump is already overdue.
+
+### Security
+
+- Video downloads stream to a per-video scratch directory (never
+  `Buffer.concat`), tear rejected responses down instead of draining them,
+  honour the caller's abort signal from DNS onwards, and never echo scratch
+  paths or credentials in errors or metadata.
+- `ffmpeg` / `ffprobe` run through `execFile` (no shell) with
+  `-protocol_whitelist file`, a container format whitelist, native
+  `max_streams` / `max_pixels` / `max_alloc` caps, a single thread, output
+  size caps (`-fs`) and `SIGKILL` on timeout; every scale filter bounds both
+  output dimensions.
+- Resource limits: at most two video jobs per instance with a bounded queue
+  (aborted callers leave the queue immediately), a per-tenant hourly limit
+  with expired tenants purged, a per-call time budget under the Cloud Run
+  request timeout with partial results, and a 30 MB response byte budget shared
+  between images and video media. The HTTP transport now registers its
+  disconnect cleanup before handling a request so a dropped client aborts
+  in-flight tool handlers.
+- The image downloader also tears down rejected responses and accepts an
+  abort signal, so thumbnail fetches cancel with the job.
 
 ## [3.6.0] — 2026-09-15
 

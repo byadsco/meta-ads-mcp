@@ -17,18 +17,18 @@ function fakeResolve(map: Record<string, string[]>) {
 }
 
 function makeRequest(responses: FakeResponse[]) {
-  const calls: Array<{ url: URL; options: Record<string, unknown> }> = [];
+  const calls: Array<{ url: URL; options: Record<string, unknown>; req: { destroy: ReturnType<typeof vi.fn> } }> = [];
   const request = vi.fn((urlInput: URL, options: Record<string, unknown>, callback: (res: IncomingMessage) => void) => {
     const req = new EventEmitter() as EventEmitter & {
       setTimeout: (ms: number, cb?: () => void) => void;
       end: () => void;
       destroy: (err?: Error) => void;
     };
-    calls.push({ url: urlInput, options });
     req.setTimeout = vi.fn();
     req.destroy = vi.fn((err?: Error) => {
       if (err) queueMicrotask(() => req.emit("error", err));
     });
+    calls.push({ url: urlInput, options, req: req as unknown as { destroy: ReturnType<typeof vi.fn> } });
     req.end = vi.fn(() => {
       queueMicrotask(() => {
         const next = responses.shift();
@@ -187,6 +187,73 @@ describe("downloadSafePublicImage", () => {
     expect(jpgImage.extension).toBe(".jpg");
     expect(pjpegImage.contentType).toBe("image/jpeg");
     expect(pjpegImage.extension).toBe(".jpg");
+  });
+
+  it("aborts an in-flight image download when the signal fires", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const { request } = makeRequest([
+      { headers: { "content-type": "image/jpeg" }, chunks: [Buffer.alloc(4)] },
+    ]);
+
+    await expect(
+      downloadSafePublicImage("https://cdn.example.com/image.jpg", {
+        request,
+        signal: controller.signal,
+        resolve: fakeResolve({ "cdn.example.com": ["203.0.113.10"] }),
+      }),
+    ).rejects.toThrow(/abort/i);
+  });
+
+  it("destroys the request when a response is rejected instead of draining it", async () => {
+    const { request, calls } = makeRequest([
+      { headers: { "content-type": "image/jpeg", "content-length": "11" }, chunks: [Buffer.alloc(11)] },
+    ]);
+
+    await expect(
+      downloadSafePublicImage("https://cdn.example.com/image.jpg", {
+        request, maxBytes: 10, resolve: fakeResolve({ "cdn.example.com": ["203.0.113.10"] }),
+      }),
+    ).rejects.toThrow(/too large/);
+    expect(calls[0].req.destroy).toHaveBeenCalled();
+  });
+
+  it("aborts while DNS resolution is still pending", async () => {
+    const controller = new AbortController();
+    const { request, calls } = makeRequest([]);
+    const neverResolves = () => new Promise<Array<{ address: string }>>(() => undefined);
+
+    const pending = downloadSafePublicImage("https://cdn.example.com/image.jpg", {
+      request, resolve: neverResolves, signal: controller.signal,
+    });
+    await new Promise((r) => setTimeout(r, 5));
+    controller.abort();
+
+    await expect(pending).rejects.toThrow(/abort/i);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("with a pre-aborted signal, a DNS failure that lands later is never left unhandled", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const { request } = makeRequest([]);
+    let failDns!: (err: Error) => void;
+    const lateFailure = () => new Promise<Array<{ address: string }>>((_resolve, reject) => { failDns = reject; });
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", onUnhandled);
+
+    try {
+      await expect(
+        downloadSafePublicImage("https://cdn.example.com/image.jpg", { request, resolve: lateFailure, signal: controller.signal }),
+      ).rejects.toThrow(/abort/i);
+      // DNS was never started, or if it was, its failure must be swallowed.
+      failDns?.(new Error("late DNS failure"));
+      await new Promise((r) => setTimeout(r, 10));
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
   });
 
   it("rejects images whose Content-Length exceeds the limit", async () => {

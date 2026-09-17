@@ -9,6 +9,7 @@ export interface AdVideo {
   created_time?: string;
   updated_time?: string;
   status?: { video_status: string };
+  permalink_url?: string;
 }
 
 export const VIDEO_DEFAULT_FIELDS = [
@@ -34,4 +35,5 @@ export const VIDEO_DETAIL_FIELDS = [
   "created_time",
   "updated_time",
   "status",
+  "permalink_url",
 ] as const;

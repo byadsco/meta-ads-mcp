@@ -8,6 +8,16 @@ import { VIDEO_DETAIL_FIELDS } from "../meta/types/video.js";
 import type { AdCreative, AdImage, AdVideo, MetaApiResponse } from "../meta/types/index.js";
 import { downloadSafePublicImage } from "../utils/safe-download.js";
 import { logger } from "../utils/logger.js";
+import { resolveTenantId } from "../auth/tenant.js";
+import { safeHostname, sanitizeMetadataUrl, textBlock, type ContentBlock } from "../media/content-blocks.js";
+import {
+  deliverVideos as defaultDeliverVideos,
+  DEFAULT_VIDEO_TOTAL_BYTES_BUDGET,
+  VIDEO_EXPIRY_WARNING,
+  type DeliveredVideo,
+  type VideoDeliveryDeps,
+} from "../media/video-delivery.js";
+import type { VideoSource } from "../media/video-sources.js";
 import { asRecord, getString } from "./creatives.js";
 import { READ } from "./_register.js";
 
@@ -15,8 +25,6 @@ const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 const TOTAL_BYTES_BUDGET = 20 * 1024 * 1024;
 const MISSING_ACCOUNT_HINT =
   "Image hash could not be resolved to a URL — pass account_id so the adimages lookup can run.";
-const VIDEO_EXPIRY_WARNING =
-  "Video source URLs are signed, short-lived CDN links — download them promptly. If one has expired, call this tool again to get a fresh URL.";
 
 export type MediaRole =
   | "primary"
@@ -37,10 +45,6 @@ export interface VideoRef {
   specThumbnailUrl?: string;
   specThumbnailHash?: string;
 }
-
-type ToolContentBlock =
-  | { type: "text"; text: string }
-  | { type: "image"; data: string; mimeType: string };
 
 interface ImageAssetMeta {
   block_index?: number;
@@ -63,8 +67,11 @@ interface VideoAssetMeta {
   title?: string;
   length_seconds?: number;
   source_url?: string;
+  thumbnail_url?: string;
+  permalink_url?: string;
   thumbnail_block_index?: number;
   download_hint?: string;
+  delivered?: DeliveredVideo["delivered"];
   error?: string;
 }
 
@@ -197,49 +204,20 @@ async function resolveImageHashes(accountId: string, hashes: string[]): Promise<
   return new Map((response.data ?? []).map((img) => [img.hash, img]));
 }
 
-function safeHostname(url: string | undefined): string | undefined {
-  if (!url) return undefined;
-  try {
-    return new URL(url).hostname;
-  } catch {
-    return undefined;
-  }
-}
-
-// URLs echoed back in tool metadata must never carry credentials, even if a
-// Meta response ever embeds them. Clean URLs are returned byte-identical —
-// re-serializing would re-encode the query and could invalidate CDN
-// signatures. CDN signing params (oh/oe) always stay.
-function sanitizeMetadataUrl(url: string | undefined): string | undefined {
-  if (!url) return undefined;
-  try {
-    const parsed = new URL(url);
-    const hasUserinfo = parsed.username !== "" || parsed.password !== "";
-    const hasTokenParam = parsed.searchParams.has("access_token");
-    const hasTokenFragment = parsed.hash.toLowerCase().includes("access_token");
-    if (!hasUserinfo && !hasTokenParam && !hasTokenFragment) return url;
-    parsed.username = "";
-    parsed.password = "";
-    parsed.searchParams.delete("access_token");
-    if (hasTokenFragment) parsed.hash = "";
-    return parsed.toString();
-  } catch {
-    return undefined;
-  }
-}
-
-export interface CreativeMediaDeps {
+export interface CreativeMediaDeps extends VideoDeliveryDeps {
   download?: typeof downloadSafePublicImage;
+  deliverVideos?: typeof defaultDeliverVideos;
 }
 
 export function registerCreativeMediaTools(server: McpServer, deps: CreativeMediaDeps = {}): void {
   const download = deps.download ?? downloadSafePublicImage;
+  const deliverVideos = deps.deliverVideos ?? defaultDeliverVideos;
 
   server.registerTool(
     "ads_get_creative_media",
     {
       description:
-        "Download the actual creative media for an ad or creative and return the images inline for visual analysis. Images (including carousel cards and video thumbnails) come back as image content blocks a multimodal model can see directly; videos additionally return a short-lived signed source URL in the JSON metadata for external download or analysis (e.g. curl or a video-capable model).",
+        "Download the actual creative media for an ad or creative and return the images inline for visual analysis. Images (including carousel cards and video thumbnails) come back as image content blocks a multimodal model can see directly. Videos: video_delivery=thumbnail (default) returns the poster frame plus a short-lived signed source URL in the JSON metadata; video_delivery=frames additionally extracts real keyframes with ffmpeg as image blocks so any multimodal model can analyze the video; video_delivery=url returns resource_link blocks. For the MP4 itself (video-capable models such as Gemini) use ads_get_video_media with delivery=inline.",
       inputSchema: {
         ad_id: z.string().optional().describe("Ad ID — its creative is resolved automatically"),
         creative_id: z.string().optional().describe("Creative ID (alternative to ad_id)"),
@@ -261,10 +239,15 @@ export function registerCreativeMediaTools(server: McpServer, deps: CreativeMedi
           .boolean()
           .default(true)
           .describe("Also resolve videos: returns each video's thumbnail as an image block plus its signed source URL in the JSON metadata"),
+        video_delivery: z
+          .enum(["thumbnail", "frames", "url"])
+          .default("thumbnail")
+          .describe("thumbnail = poster image only (default); frames = also extract keyframes with ffmpeg (grid contact sheet); url = also return signed CDN links as resource_link blocks"),
+        frame_count: z.number().int().min(1).max(12).default(6).describe("Frames per video when video_delivery=frames"),
       },
       annotations: { ...READ },
     },
-    async ({ ad_id, creative_id, account_id, image_size = "full", max_images = 5, include_videos = true }) => {
+    async ({ ad_id, creative_id, account_id, image_size = "full", max_images = 5, include_videos = true, video_delivery = "thumbnail", frame_count = 6 }, extra) => {
       if (!ad_id && !creative_id) {
         throw new Error("Either ad_id or creative_id is required.");
       }
@@ -380,6 +363,8 @@ export function registerCreativeMediaTools(server: McpServer, deps: CreativeMedi
               title: video.title,
               length_seconds: video.length,
               source_url: video.source,
+              thumbnail_url: thumbnailUrl,
+              permalink_url: video.permalink_url,
               download_hint: video.source
                 ? `Download with: curl -L -o video_${video.id}.mp4 "<source_url>" — or pass the URL directly to a video-capable model (e.g. Gemini).`
                 : undefined,
@@ -408,7 +393,7 @@ export function registerCreativeMediaTools(server: McpServer, deps: CreativeMedi
 
       let totalBytes = 0;
       let blockIndex = 0;
-      const imageBlocks: ToolContentBlock[] = [];
+      const imageBlocks: ContentBlock[] = [];
       for (const asset of imageAssets) {
         if (!asset.source_url) continue;
         if (imageBlocks.length >= max_images) {
@@ -449,6 +434,55 @@ export function registerCreativeMediaTools(server: McpServer, deps: CreativeMedi
         if (thumbAsset?.downloaded) video.thumbnail_block_index = thumbAsset.block_index;
       }
 
+      const videoBlocks: ContentBlock[] = [];
+      const deliverySummary: string[] = [];
+      if (video_delivery !== "thumbnail" && videoAssets.some((v) => v.source_url)) {
+        const sources: VideoSource[] = videoAssets
+          .filter((v) => v.source_url)
+          .map((v) => ({
+            key: `meta:video:${v.video_id}`,
+            label: `Video ${v.video_id}`,
+            origin: "meta",
+            video_id: v.video_id,
+            source_url: v.source_url,
+            // The poster is already attached above; the pipeline must not fetch it twice.
+            thumbnail_url: undefined,
+            duration_seconds: v.length_seconds,
+            permalink_url: v.permalink_url,
+            title: v.title,
+          }));
+        // Images already attached count against the same response budget as the video media.
+        const remainingBudget = Math.max(0, DEFAULT_VIDEO_TOTAL_BYTES_BUDGET - totalBytes);
+        const delivery = await deliverVideos(
+          sources,
+          { delivery: video_delivery, frame_count, frame_layout: "grid" },
+          deps,
+          { tenantId: resolveTenantId({ feature: "video" }), signal: extra?.signal },
+          { totalBytesBudget: remainingBudget },
+        );
+        // Video blocks are appended after the image blocks (and after the summary text at index 0).
+        const offset = imageBlocks.length + 1;
+        videoBlocks.push(...delivery.blocks);
+        for (const delivered of delivery.videos) {
+          const asset = videoAssets.find((v) => v.video_id === delivered.video_id);
+          if (!asset) continue;
+          asset.delivered = {
+            ...delivered.delivered,
+            block_indexes: delivered.delivered.block_indexes.map((i) => i + offset),
+          };
+          if (delivered.error && !asset.error) asset.error = delivered.error;
+          if (delivered.delivered.mode === "frames") {
+            const ts = (delivered.delivered.frame_timestamps ?? []).map((t) => `${t.toFixed(1)}s`).join(", ");
+            deliverySummary.push(`Video ${asset.video_id}: keyframes attached as block(s) ${asset.delivered.block_indexes.join(", ")} (contact sheet, read left-to-right, top-to-bottom; sampled at ${ts}).`);
+          } else if (delivered.delivered.mode === "url") {
+            deliverySummary.push(`Video ${asset.video_id}: signed URL(s) attached as resource_link block(s) ${asset.delivered.block_indexes.join(", ")}.`);
+          } else if (delivered.error) {
+            deliverySummary.push(`Video ${asset.video_id}: ${delivered.error}`);
+          }
+        }
+        warnings.push(...delivery.warnings.filter((w) => w !== VIDEO_EXPIRY_WARNING));
+      }
+
       if (videoAssets.some((v) => v.source_url)) {
         warnings.push(VIDEO_EXPIRY_WARNING);
       }
@@ -471,10 +505,11 @@ export function registerCreativeMediaTools(server: McpServer, deps: CreativeMedi
         for (const video of videoAssets) {
           summaryLines.push(
             video.source_url
-              ? `Video ${video.video_id}${video.length_seconds ? ` (${video.length_seconds}s)` : ""}: not embeddable as an MCP block — download it via the signed source_url in the JSON metadata (curl -L -o video_${video.video_id}.mp4 "<source_url>") or hand that URL to a video-capable model.`
+              ? `Video ${video.video_id}${video.length_seconds ? ` (${video.length_seconds}s)` : ""}: ${video_delivery === "thumbnail" ? "thumbnail attached; " : ""}signed source_url in the JSON metadata (curl -L -o video_${video.video_id}.mp4 "<source_url>"), or call ads_get_video_media (delivery=frames for keyframes, delivery=inline to embed the MP4 for a video-capable model).`
               : `Video ${video.video_id}: ${video.error ?? "no source URL available"}.`,
           );
         }
+        summaryLines.push(...deliverySummary);
       }
       if (warnings.length > 0) {
         summaryLines.push(...warnings.map((w) => `⚠ ${w}`));
@@ -492,16 +527,20 @@ export function registerCreativeMediaTools(server: McpServer, deps: CreativeMedi
         videos: videoAssets.map((video) => ({
           ...video,
           source_url: sanitizeMetadataUrl(video.source_url),
+          thumbnail_url: sanitizeMetadataUrl(video.thumbnail_url),
+          permalink_url: sanitizeMetadataUrl(video.permalink_url),
         })),
+        video_delivery,
         warnings,
       };
 
       return {
         content: [
-          { type: "text", text: summaryLines.join("\n") },
+          textBlock(summaryLines.join("\n")),
           ...imageBlocks,
-          { type: "text", text: JSON.stringify(metadata, null, 2) },
-        ] satisfies ToolContentBlock[],
+          ...videoBlocks,
+          textBlock(JSON.stringify(metadata, null, 2)),
+        ],
       };
     },
   );
