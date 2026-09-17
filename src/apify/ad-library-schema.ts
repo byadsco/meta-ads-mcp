@@ -438,13 +438,16 @@ function collectMedia(snapshot: Record<string, unknown>, truncated: string[]): {
   const rawImages = asArray(snapshot.images);
   let imagesCut = false;
   let imageDropNotes = 0;
-  for (let index = 0; index < rawImages.length && index < MAX_MEDIA_SCANNED; index++) {
+  let inspected = 0;
+  for (let index = 0; index < rawImages.length; index++) {
     const record = rawImages[index];
+    // Entries that are not objects cost nothing, so they do not spend the budget.
     if (!isRecord(record)) continue;
-    if (images.length >= MAX_MEDIA_ITEMS) {
+    if (images.length >= MAX_MEDIA_ITEMS || inspected >= MAX_MEDIA_SCANNED) {
       imagesCut = true;
       break;
     }
+    inspected += 1;
     const notes: string[] = [];
     const built = image(record, "images[" + images.length + "]", notes);
     if (built) {
@@ -458,7 +461,7 @@ function collectMedia(snapshot: Record<string, unknown>, truncated: string[]): {
       imageDropNotes += 1;
     }
   }
-  if (imagesCut || rawImages.length > MAX_MEDIA_SCANNED) truncated.push("images");
+  if (imagesCut) truncated.push("images");
   // Every addressable video gets a selector = its position in the record video
   // order (top-level videos, then video cards), the same walk libraryVideoAt
   // does with the same predicate, so video_index means the same thing on both

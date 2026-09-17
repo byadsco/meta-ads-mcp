@@ -567,3 +567,20 @@ describe("round-8 hardening", () => {
     expect(ad.truncated.some((t) => t.startsWith("images[0]."))).toBe(false);
   });
 });
+
+describe("round-9 hardening", () => {
+  it("does not spend the image budget on entries that are not objects", () => {
+    const raw = {
+      ad_archive_id: "1234567890",
+      snapshot: {
+        images: [...Array.from({ length: 5000 }, () => null), { original_image_url: "https://scontent.xx.fbcdn.net/ok.jpg" }],
+      },
+    } as AdLibraryRawItem;
+    const ad = normalizeLibraryAd(raw, 0);
+    expect(ad.images).toHaveLength(1);
+    expect(ad.images[0].original_url).toBe("https://scontent.xx.fbcdn.net/ok.jpg");
+    expect(ad.media_summary.images_available).toBe(1);
+    expect(ad.truncated).not.toContain("images");
+    expect(libraryImageAssets(ad, "full")).toHaveLength(1);
+  });
+});
