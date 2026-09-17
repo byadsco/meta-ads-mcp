@@ -1,4 +1,5 @@
 import { fbcdnExpiresAt, type VideoSource } from "../media/video-sources.js";
+import { boundedClone } from "../utils/bounded-json.js";
 
 /**
  * One item of the curious_coder/facebook-ads-library-scraper dataset (build
@@ -105,6 +106,11 @@ export interface LibraryAd {
 const DETAIL_KEYS = ["advertiser", "aaa_info", "insights", "violation_types", "finserv_data", "regional_regulation_data"];
 const TEMPLATE_PATTERN = /\{\{\s*[a-z_]+\.[a-z_.]+\s*\}\}/i;
 const UNSAFE_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+// Only the first top-level keys of a record are inspected for detail blocks (real records have ~40).
+const MAX_TOP_LEVEL_KEYS_SCANNED = 64;
+const MAX_DETAIL_BLOCKS = 8;
+const DETAIL_BOUNDS = { maxDepth: 6, maxNodes: 400, maxString: 2000, maxKeys: 100, maxTotalChars: 20_000 };
+const DELIVERY_DATA_BOUNDS = { maxDepth: 4, maxNodes: 100, maxString: 500, maxKeys: 50, maxTotalChars: 4_000 };
 export const MAX_CARDS = 30;
 export const MAX_MEDIA_ITEMS = 20;
 export const MAX_EXTRA_ITEMS = 20;
@@ -331,7 +337,12 @@ function summarize(snapshot: Record<string, unknown>): LibraryMediaSummary {
 }
 
 /** Builds at most max items, stopping as soon as one more valid item would exceed the cap. */
-function takeMedia<T>(raw: unknown[], build: (record: Record<string, unknown>, index: number) => T | null, max: number, label: string, truncated: string[]): T[] {
+/**
+ * Builds at most max items, stopping as soon as one more valid item would
+ * exceed the cap. The builder receives the raw index and the position the
+ * item will take in the compacted output.
+ */
+function takeMedia<T>(raw: unknown[], build: (record: Record<string, unknown>, rawIndex: number, position: number) => T | null, max: number, label: string, truncated: string[]): T[] {
   const out: T[] = [];
   for (let index = 0; index < raw.length; index++) {
     const record = raw[index];
@@ -340,15 +351,17 @@ function takeMedia<T>(raw: unknown[], build: (record: Record<string, unknown>, i
       truncated.push(label);
       break;
     }
-    const built = build(record, index);
+    const built = build(record, index, out.length);
     if (built !== null) out.push(built);
   }
   return out;
 }
 
 function collectMedia(snapshot: Record<string, unknown>, truncated: string[]): { images: LibraryImage[]; videos: LibraryVideo[]; cards: LibraryCard[] } {
-  const images = takeMedia(asArray(snapshot.images), (r, i) => image(r, "images[" + i + "]", truncated), MAX_MEDIA_ITEMS, "images", truncated);
-  const videos = takeMedia(asArray(snapshot.videos), (r, i) => video(r, "videos[" + i + "]", truncated), MAX_MEDIA_ITEMS, "videos", truncated);
+  // Images and videos are labelled by their compacted position (what the
+  // sources see); cards keep their raw index, which they also expose.
+  const images = takeMedia(asArray(snapshot.images), (r, _i, pos) => image(r, "images[" + pos + "]", truncated), MAX_MEDIA_ITEMS, "images", truncated);
+  const videos = takeMedia(asArray(snapshot.videos), (r, _i, pos) => video(r, "videos[" + pos + "]", truncated), MAX_MEDIA_ITEMS, "videos", truncated);
   const cards = takeMedia(asArray(snapshot.cards), (r, i) => card(r, i, truncated), MAX_CARDS, "cards", truncated);
   return { images, videos, cards };
 }
@@ -366,11 +379,13 @@ export function normalizeLibraryAd(raw: AdLibraryRawItem, offset: number | null)
   const impressions = asRecord(raw.impressions_with_index);
   const details: Record<string, unknown> = {};
   for (const key of DETAIL_KEYS) {
-    if (raw[key] !== undefined && raw[key] !== null) details[key] = raw[key];
+    if (raw[key] !== undefined && raw[key] !== null) details[key] = boundedClone(raw[key], DETAIL_BOUNDS);
   }
-  for (const key of Object.keys(raw)) {
-    if (UNSAFE_KEYS.has(key)) continue;
-    if (key.endsWith("_transparency") && raw[key] !== null) details[key] = raw[key];
+  let scanned = 0;
+  for (const key in raw) {
+    if (++scanned > MAX_TOP_LEVEL_KEYS_SCANNED || Object.keys(details).length >= MAX_DETAIL_BLOCKS) break;
+    if (UNSAFE_KEYS.has(key) || !Object.prototype.hasOwnProperty.call(raw, key)) continue;
+    if (key.endsWith("_transparency") && raw[key] !== null && raw[key] !== undefined) details[key] = boundedClone(raw[key], DETAIL_BOUNDS);
   }
   const body = capText(text(snapshot.body, () => truncated.push("copy.body")), "copy.body", truncated);
   const title = capText(str(snapshot.title), "copy.title", truncated);
@@ -411,9 +426,10 @@ export function normalizeLibraryAd(raw: AdLibraryRawItem, offset: number | null)
     extra_texts: capList(asArray(snapshot.extra_texts), MAX_EXTRA_ITEMS, "extra_texts", truncated),
     extra_links: capList(asArray(snapshot.extra_links), MAX_EXTRA_ITEMS, "extra_links", truncated),
     impressions_text: str(impressions.impressions_text),
-    spend: raw.spend ?? null,
+    // Delivery data is opaque and tenant-controlled: bounded here so later stages never touch the raw object.
+    spend: raw.spend === undefined ? null : boundedClone(raw.spend, DELIVERY_DATA_BOUNDS),
     currency: str(raw.currency),
-    reach_estimate: raw.reach_estimate ?? null,
+    reach_estimate: raw.reach_estimate === undefined ? null : boundedClone(raw.reach_estimate, DELIVERY_DATA_BOUNDS),
     collation_count: num(raw.collation_count),
     total_active_time: num(raw.total_active_time),
     contains_digital_created_media: bool(raw.contains_digital_created_media),

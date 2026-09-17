@@ -298,6 +298,28 @@ describe("round-4 hardening", () => {
   });
 });
 
+describe("round-5 hardening", () => {
+  it("bounds the detail blocks copied from a record with thousands of transparency keys", () => {
+    const raw: Record<string, unknown> = { ad_archive_id: "1234567890" };
+    for (let i = 0; i < 5000; i++) raw["x" + i + "_transparency"] = { reach: "r".repeat(1000) };
+    const ad = normalizeLibraryAd(raw as AdLibraryRawItem, 0);
+    expect(Object.keys(ad.details ?? {}).length).toBeLessThanOrEqual(16);
+    expect(JSON.stringify(ad.details ?? {}).length).toBeLessThan(40_000);
+  });
+
+  it("attributes omission notes to the right video after invalid entries were skipped", () => {
+    const long = "https://video.xx.fbcdn.net/" + "h".repeat(5000);
+    const raw = {
+      ad_archive_id: "1234567890",
+      snapshot: { videos: [{}, { video_hd_url: long, video_sd_url: "https://video.xx.fbcdn.net/sd.mp4" }, { video_sd_url: "https://video.xx.fbcdn.net/ok.mp4" }] },
+    } as AdLibraryRawItem;
+    const sources = extractLibraryVideoSources(normalizeLibraryAd(raw, 0));
+    expect(sources).toHaveLength(2);
+    expect(sources[0].error).toMatch(/omitted/);
+    expect(sources[1].error).toBeUndefined();
+  });
+});
+
 describe("extractLibraryVideoSources", () => {
   it("builds delivery sources with sd as low-res and the preview as thumbnail", () => {
     const ad = normalizeLibraryAd(VIDEO, 0);

@@ -98,6 +98,11 @@ describe("apify client", () => {
       expect(globalThis.fetch).toHaveBeenCalledTimes(1);
     });
 
+    it("keeps the indeterminate-acceptance warning when a POST response is too large", async () => {
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, status: 201, headers: new Headers({ "content-length": String(33 * 1024 * 1024) }), text: async () => "{}" }));
+      await expect(new ApifyApiClient({ maxRetries: 3 }).post("/v2/acts/x~y/runs", { count: 1 })).rejects.toThrow(/too large[\s\S]*may still have been accepted/);
+    });
+
     it("still returns undefined for a 204", async () => {
       vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, status: 204, headers: new Headers(), text: async () => "" }));
       await expect(new ApifyApiClient({ maxRetries: 0 }).delete("/v2/actor-runs/abcdefghij")).resolves.toBeUndefined();

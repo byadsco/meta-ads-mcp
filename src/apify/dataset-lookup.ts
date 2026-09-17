@@ -100,9 +100,12 @@ export function createDatasetLookup(config: DatasetLookupConfig = {}): DatasetLo
     }
     return generation;
   };
+  // Retires in-flight work for the key. With nothing in flight there is nothing
+  // to retire, so the identity is simply dropped instead of left behind.
   const invalidate = (key: string) => {
     cache.delete(key);
-    generations.set(key, ++generationCounter);
+    if ((activeScans.get(key) ?? 0) === 0 && (activeLocates.get(key) ?? 0) === 0) generations.delete(key);
+    else generations.set(key, ++generationCounter);
   };
   const MAX_RESTARTS = 5;
   const maybeForget = (key: string) => {

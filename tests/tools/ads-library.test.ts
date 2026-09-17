@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { McpError } from "@modelcontextprotocol/sdk/types.js";
-import { registerAdsLibraryTools } from "../../src/tools/ads-library.js";
+import { boundedClone, registerAdsLibraryTools } from "../../src/tools/ads-library.js";
 import {
   InMemoryApifyTokenRepo,
   configureApifyTokenRepoForTests,
@@ -829,6 +829,38 @@ describe("ads_library_* tools", () => {
       expect(JSON.parse(last)).toBeTruthy();
     });
 
+    it("keeps the envelope intact when the ad alone exhausts the clone budget (30 cards of long copy)", async () => {
+      const hostile = JSON.parse(JSON.stringify(FIX_DCO)) as Record<string, unknown>;
+      (hostile.snapshot as Record<string, unknown>).cards = Array.from({ length: 30 }, (_, i) => ({
+        title: "t".repeat(4000), body: "b".repeat(4000), link_description: "d".repeat(4000), caption: "c".repeat(4000),
+        original_image_url: "https://scontent.xx.fbcdn.net/" + i + ".jpg",
+      }));
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(mockFetchResponse([hostile])));
+
+      const result = await setup({ deliverVideos: fakeDeliver(), downloadImage: fakeImage() }).byName("ads_library_get_ad_details")({
+        dataset_id: "ds123abcde", ad_archive_id: "706579198992184", hint_offset: 3,
+        include_images: true, max_images: 2, image_size: "full", video_delivery: "thumbnail", frame_count: 6, include_raw: false,
+      });
+      const json = JSON.parse(result.content[result.content.length - 1].text) as Record<string, unknown>;
+      expect(Array.isArray(json.images)).toBe(true);
+      expect(Array.isArray(json.warnings)).toBe(true);
+      expect(result.content[result.content.length - 1].text.length).toBeLessThanOrEqual(50_000);
+    });
+
+    it("keeps the envelope intact when spend is a wide object of long strings", async () => {
+      const hostile = JSON.parse(JSON.stringify(FIX_IMAGE)) as Record<string, unknown>;
+      hostile.spend = Object.fromEntries(Array.from({ length: 100 }, (_, i) => ["k" + i, "v".repeat(4000)]));
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(mockFetchResponse([hostile])));
+
+      const result = await setup({ deliverVideos: fakeDeliver(), downloadImage: fakeImage() }).byName("ads_library_get_ad_details")({
+        dataset_id: "ds123abcde", ad_archive_id: "841513952022622", hint_offset: 0,
+        include_images: false, max_images: 8, image_size: "full", video_delivery: "thumbnail", frame_count: 6, include_raw: true,
+      });
+      const json = JSON.parse(result.content[result.content.length - 1].text) as Record<string, unknown>;
+      expect(Array.isArray(json.videos)).toBe(true);
+      expect(json.ad).toBeTruthy();
+    });
+
     it("never publishes an overlong video url in the metadata", async () => {
       const hostile = JSON.parse(JSON.stringify(FIX_VIDEO)) as Record<string, unknown>;
       const snap = hostile.snapshot as Record<string, unknown>;
@@ -853,6 +885,13 @@ describe("ads_library_* tools", () => {
       const json = lastJson(result);
       expect((json.raw as Record<string, unknown>).ad_archive_id).toBe("841513952022622");
       expect(result.content.filter((b) => b.type === "image")).toHaveLength(0);
+    });
+  });
+
+  describe("boundedClone", () => {
+    it("counts every visited value, null included, against the node budget", () => {
+      const out = boundedClone(Array.from({ length: 40_000 }, () => null), 8, 300) as unknown[];
+      expect(out.length).toBeLessThanOrEqual(301);
     });
   });
 

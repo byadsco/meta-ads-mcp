@@ -332,8 +332,6 @@ export class ApifyApiClient {
         if (response.status === 204) return undefined as T;
         return parseJsonBody(await readBoundedBody(response, MAX_RESPONSE_BYTES)) as T;
       } catch (error) {
-        if (error instanceof McpError) throw error;
-
         // Any failure after the request left the client is indeterminate for a
         // non-retryable (billable) call, not just a timeout: Apify may have
         // accepted the run and then dropped the connection or returned a
@@ -341,6 +339,12 @@ export class ApifyApiClient {
         const indeterminate = canRetry
           ? ""
           : " The request may still have been accepted — check ads_library_list_runs before starting another scrape.";
+
+        if (error instanceof McpError) {
+          // A body over the size cap is a transport-level failure too, and the run may have started.
+          if (!canRetry && /too large/.test(error.message)) throw new McpError(error.code, error.message + indeterminate);
+          throw error;
+        }
 
         if (error instanceof Error && error.name === "AbortError") {
           lastError = new McpError(
