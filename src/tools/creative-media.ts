@@ -12,6 +12,7 @@ import { resolveTenantId } from "../auth/tenant.js";
 import { safeHostname, sanitizeMetadataUrl, textBlock, type ContentBlock } from "../media/content-blocks.js";
 import {
   deliverVideos as defaultDeliverVideos,
+  DEFAULT_VIDEO_TOTAL_BYTES_BUDGET,
   VIDEO_EXPIRY_WARNING,
   type DeliveredVideo,
   type VideoDeliveryDeps,
@@ -450,11 +451,14 @@ export function registerCreativeMediaTools(server: McpServer, deps: CreativeMedi
             permalink_url: v.permalink_url,
             title: v.title,
           }));
+        // Images already attached count against the same response budget as the video media.
+        const remainingBudget = Math.max(0, DEFAULT_VIDEO_TOTAL_BYTES_BUDGET - totalBytes);
         const delivery = await deliverVideos(
           sources,
           { delivery: video_delivery, frame_count, frame_layout: "grid" },
           deps,
           { tenantId: resolveTenantId({ feature: "video" }), signal: extra?.signal },
+          { totalBytesBudget: remainingBudget },
         );
         // Video blocks are appended after the image blocks (and after the summary text at index 0).
         const offset = imageBlocks.length + 1;

@@ -223,11 +223,12 @@ export async function deliverVideos(
   };
 
   const fallbackToThumbnail = async (source: VideoSource, meta: DeliveredVideo, job: VideoJobContext | undefined): Promise<void> => {
-    if (job?.signal.aborted) {
+    const signal = job?.signal ?? ctx.signal;
+    if (signal?.aborted) {
       meta.delivered.mode = "skipped_time_budget";
       return;
     }
-    await attachThumbnail(source, meta, job?.signal);
+    await attachThumbnail(source, meta, signal);
     meta.delivered.mode = meta.delivered.block_indexes.length > 0 ? "thumbnail" : "none";
   };
 
@@ -255,7 +256,12 @@ export async function deliverVideos(
     }
 
     if (options.delivery === "thumbnail" || (options.delivery === "frames" && !ffmpegAvailable)) {
-      await attachThumbnail(source, meta, ctx.signal);
+      const signal = job?.signal ?? ctx.signal;
+      if (signal?.aborted) {
+        meta.delivered.mode = "skipped_time_budget";
+        return;
+      }
+      await attachThumbnail(source, meta, signal);
       meta.delivered.mode = "thumbnail";
       return;
     }

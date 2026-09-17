@@ -70,34 +70,45 @@ function requestImage(
       lookup: buildPinnedLookup(resolved),
     };
 
+    // Rejected responses are torn down, never drained, so an oversized image
+    // does not keep transferring after the caller has moved on.
+    const rejectAndClose = (res: IncomingMessage, err: UnsafeUrlError) => {
+      settled = true;
+      res.destroy();
+      req.destroy();
+      reject(err);
+    };
+
     const req = options.request(resolved.url, reqOptions, (res: IncomingMessage) => {
       if (isRedirect(res.statusCode)) {
-        res.resume();
+        let target: URL;
         try {
-          resolve({ redirectUrl: redirectTarget(res, resolved.url) });
+          target = redirectTarget(res, resolved.url);
         } catch (err) {
-          reject(err);
+          rejectAndClose(res, err as UnsafeUrlError);
+          return;
         }
+        settled = true;
+        res.destroy();
+        req.destroy();
+        resolve({ redirectUrl: target });
         return;
       }
 
       if (!res.statusCode || res.statusCode < 200 || res.statusCode >= 300) {
-        res.resume();
-        reject(new UnsafeUrlError(`Failed to download image: HTTP ${res.statusCode ?? "unknown"}`));
+        rejectAndClose(res, new UnsafeUrlError(`Failed to download image: HTTP ${res.statusCode ?? "unknown"}`));
         return;
       }
 
       const contentType = normalizeImageContentType(res.headers);
       if (!contentType || !ALLOWED_IMAGE_TYPES.has(contentType)) {
-        res.resume();
-        reject(new UnsafeUrlError(`Image content-type "${contentType ?? "missing"}" is not allowed`));
+        rejectAndClose(res, new UnsafeUrlError(`Image content-type "${contentType ?? "missing"}" is not allowed`));
         return;
       }
 
       const contentLength = parseContentLength(res.headers);
       if (contentLength !== null && contentLength > options.maxBytes) {
-        res.resume();
-        reject(new UnsafeUrlError(`Image is too large: ${contentLength} bytes exceeds ${options.maxBytes}`));
+        rejectAndClose(res, new UnsafeUrlError(`Image is too large: ${contentLength} bytes exceeds ${options.maxBytes}`));
         return;
       }
 
@@ -108,9 +119,7 @@ function requestImage(
         const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
         total += buffer.length;
         if (total > options.maxBytes) {
-          settled = true;
-          res.destroy();
-          reject(new UnsafeUrlError(`Image is too large: exceeded ${options.maxBytes} bytes`));
+          rejectAndClose(res, new UnsafeUrlError(`Image is too large: exceeded ${options.maxBytes} bytes`));
           return;
         }
         chunks.push(buffer);

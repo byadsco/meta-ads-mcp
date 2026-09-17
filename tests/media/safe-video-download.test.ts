@@ -254,6 +254,21 @@ describe("downloadSafePublicVideo", () => {
     expect(err.message).not.toContain(dir);
   });
 
+  it("aborts while DNS resolution is still pending", async () => {
+    const controller = new AbortController();
+    const { request, calls } = makeRequest([]);
+    const neverResolves = () => new Promise<Array<{ address: string }>>(() => undefined);
+
+    const pending = downloadSafePublicVideo("https://video.xx.fbcdn.net/clip.mp4", {
+      request, resolve: neverResolves, destDir: dir, signal: controller.signal,
+    });
+    await new Promise((r) => setTimeout(r, 5));
+    controller.abort();
+
+    await expect(pending).rejects.toThrow(/abort/i);
+    expect(calls).toHaveLength(0);
+  });
+
   it("wraps errors as UnsafeUrlError", async () => {
     const { request } = makeRequest([{ statusCode: 403, headers: {} }]);
 

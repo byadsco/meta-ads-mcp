@@ -540,6 +540,25 @@ describe("ads_get_creative_media video_delivery", () => {
     expect(String(result.content[0].text)).toMatch(/frames/);
   });
 
+  it("hands the pipeline only the response budget left after the images", async () => {
+    const server = createMockMcpServer();
+    const download = vi.fn(async (url: string) => ({
+      buffer: Buffer.alloc(6 * 1024 * 1024),
+      contentType: "image/jpeg",
+      extension: ".jpg" as const,
+      finalUrl: new URL(url),
+    }));
+    const deliverVideos = vi.fn(async () => ({ blocks: [], videos: [], warnings: [], bytes: 0 }));
+    registerCreativeMediaTools(server as never, { download: download as never, deliverVideos: deliverVideos as never });
+    vi.stubGlobal("fetch", videoCreativeFetch());
+
+    await server._registeredTools[0].handler({ creative_id: "40123", video_delivery: "frames" });
+
+    const limits = deliverVideos.mock.calls[0][4] as { totalBytesBudget: number };
+    // 30 MB shared budget minus the 6 MB thumbnail already attached.
+    expect(limits.totalBytesBudget).toBe(24 * 1024 * 1024);
+  });
+
   it("does not offer inline delivery on this tool", () => {
     const server = createMockMcpServer();
     registerCreativeMediaTools(server as never, { download: fakeDownload() as never });

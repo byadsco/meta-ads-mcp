@@ -124,6 +124,7 @@ describe("createFfmpeg (unit, execFile injected)", () => {
     const before = args.slice(0, args.indexOf(input));
     expect(before).toEqual(expect.arrayContaining(["-format_whitelist", "mov,mp4,m4a,3gp,3g2,mj2,matroska,webm"]));
     expect(before).toEqual(expect.arrayContaining(["-analyzeduration", "5M", "-probesize", "10M"]));
+    expect(before).toEqual(expect.arrayContaining(["-max_streams", "4", "-max_pixels", "8294400", "-max_alloc", "268435456", "-threads", "1"]));
     expect(args.indexOf("-format_whitelist")).toBeLessThan(args.indexOf(input));
   });
 

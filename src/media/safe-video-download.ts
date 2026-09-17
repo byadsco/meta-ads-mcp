@@ -252,6 +252,7 @@ export async function downloadSafePublicVideo(
     {
       maxRedirects,
       resolve: options.resolve,
+      signal: options.signal,
       what: "video",
       validateHop: (url) => assertAllowedVideoHost(url, suffixes),
     },

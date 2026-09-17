@@ -17,18 +17,18 @@ function fakeResolve(map: Record<string, string[]>) {
 }
 
 function makeRequest(responses: FakeResponse[]) {
-  const calls: Array<{ url: URL; options: Record<string, unknown> }> = [];
+  const calls: Array<{ url: URL; options: Record<string, unknown>; req: { destroy: ReturnType<typeof vi.fn> } }> = [];
   const request = vi.fn((urlInput: URL, options: Record<string, unknown>, callback: (res: IncomingMessage) => void) => {
     const req = new EventEmitter() as EventEmitter & {
       setTimeout: (ms: number, cb?: () => void) => void;
       end: () => void;
       destroy: (err?: Error) => void;
     };
-    calls.push({ url: urlInput, options });
     req.setTimeout = vi.fn();
     req.destroy = vi.fn((err?: Error) => {
       if (err) queueMicrotask(() => req.emit("error", err));
     });
+    calls.push({ url: urlInput, options, req: req as unknown as { destroy: ReturnType<typeof vi.fn> } });
     req.end = vi.fn(() => {
       queueMicrotask(() => {
         const next = responses.shift();
@@ -203,6 +203,19 @@ describe("downloadSafePublicImage", () => {
         resolve: fakeResolve({ "cdn.example.com": ["203.0.113.10"] }),
       }),
     ).rejects.toThrow(/abort/i);
+  });
+
+  it("destroys the request when a response is rejected instead of draining it", async () => {
+    const { request, calls } = makeRequest([
+      { headers: { "content-type": "image/jpeg", "content-length": "11" }, chunks: [Buffer.alloc(11)] },
+    ]);
+
+    await expect(
+      downloadSafePublicImage("https://cdn.example.com/image.jpg", {
+        request, maxBytes: 10, resolve: fakeResolve({ "cdn.example.com": ["203.0.113.10"] }),
+      }),
+    ).rejects.toThrow(/too large/);
+    expect(calls[0].req.destroy).toHaveBeenCalled();
   });
 
   it("rejects images whose Content-Length exceeds the limit", async () => {

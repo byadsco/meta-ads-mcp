@@ -325,6 +325,36 @@ describe("deliverVideos", () => {
     expect(received).toBeInstanceOf(AbortSignal);
   });
 
+  it("skips thumbnail fallbacks for url-less sources once the caller aborted", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const thumbnailCalls: string[] = [];
+    const deps = fakeDeps({
+      downloadImage: async (url) => {
+        thumbnailCalls.push(url);
+        return { buffer: Buffer.alloc(1), contentType: "image/jpeg", extension: ".jpg", finalUrl: new URL(url) };
+      },
+    });
+    const noUrl = { ...SOURCE, source_url: undefined, low_res_url: undefined };
+    const result = await deliverVideos([noUrl], { delivery: "frames" }, deps, { tenantId: "t1", signal: controller.signal });
+    expect(thumbnailCalls).toEqual([]);
+    expect(result.videos[0].delivered.mode).toBe("skipped_time_budget");
+  });
+
+  it("uses the job signal for thumbnails when ffmpeg is missing and a job exists", async () => {
+    let received: AbortSignal | undefined;
+    const deps = fakeDeps({
+      ffmpeg: fakeFfmpeg({}, false),
+      downloadImage: async (url, opts) => {
+        received = opts?.signal;
+        return { buffer: Buffer.alloc(1), contentType: "image/jpeg", extension: ".jpg", finalUrl: new URL(url) };
+      },
+    });
+    const ctxSignal = new AbortController().signal;
+    await deliverVideos([SOURCE], { delivery: "frames" }, deps, { tenantId: "t1", signal: ctxSignal });
+    expect(received).toBeInstanceOf(AbortSignal);
+  });
+
   it("enforces the total bytes budget across videos", async () => {
     const deps = fakeDeps({
       ffmpeg: fakeFfmpeg({

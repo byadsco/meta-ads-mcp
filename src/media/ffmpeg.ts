@@ -26,6 +26,7 @@ const ALLOWED_DEMUXERS = new Set(["mov,mp4,m4a,3gp,3g2,mj2", "matroska,webm"]);
 const FORMAT_WHITELIST = [...ALLOWED_DEMUXERS].join(",");
 const MAX_PIXELS = 3840 * 2160;
 const MAX_STREAMS = 4;
+const MAX_ALLOC_BYTES = 268435456;
 const DEFAULT_MAX_SECONDS = 240;
 const PROBE_TIMEOUT_MS = 20_000;
 const FRAME_TIMEOUT_MS = 30_000;
@@ -183,7 +184,8 @@ export function sampleTimestamps(durationSeconds: number, count: number): number
 function inputArgs(demuxer: string): string[] {
   return [
     "-nostdin", "-hide_banner", "-loglevel", "error", "-nostats", "-y", "-xerror",
-    "-max_alloc", "268435456", "-threads", "1", "-filter_threads", "1",
+    "-max_alloc", String(MAX_ALLOC_BYTES), "-threads", "1", "-filter_threads", "1",
+    "-max_streams", String(MAX_STREAMS), "-max_pixels", String(MAX_PIXELS),
     "-protocol_whitelist", "file", "-format_whitelist", FORMAT_WHITELIST,
     "-analyzeduration", "5M", "-probesize", "10M",
     "-f", demuxer,
@@ -258,6 +260,9 @@ export function createFfmpeg(config: FfmpegConfig = {}): Ffmpeg {
         ffprobePath,
         [
           "-v", "error", "-protocol_whitelist", "file", "-format_whitelist", FORMAT_WHITELIST,
+          // Native caps applied while ffprobe discovers streams, before parseProbeOutput ever runs.
+          "-max_streams", String(MAX_STREAMS), "-max_pixels", String(MAX_PIXELS),
+          "-max_alloc", String(MAX_ALLOC_BYTES), "-threads", "1",
           "-analyzeduration", "5M", "-probesize", "10M",
           "-show_entries", "format=format_name,duration,size,nb_streams:stream=codec_type,codec_name,width,height,r_frame_rate",
           "-of", "json", input,
