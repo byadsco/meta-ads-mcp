@@ -1,5 +1,5 @@
 import { McpError, ErrorCode } from "@modelcontextprotocol/sdk/types.js";
-import { apifyApiClient, validateApifyId, type ApifyApiClient } from "./client.js";
+import { apifyApiClient, resolveApifyTenantId, validateApifyId, type ApifyApiClient } from "./client.js";
 import type { AdLibraryRawItem } from "./ad-library-schema.js";
 
 const DEFAULT_PAGE_SIZE = 1000;
@@ -33,6 +33,8 @@ export interface DatasetLookupConfig {
   ttlMs?: number;
   maxDatasets?: number;
   now?: () => number;
+  /** Cache entries are scoped to the tenant that scanned the dataset; defaults to the Apify tenant of the request. */
+  tenantId?: () => string;
 }
 
 export interface FoundDatasetItem {
@@ -68,7 +70,9 @@ export function createDatasetLookup(config: DatasetLookupConfig = {}): DatasetLo
   const ttlMs = config.ttlMs ?? DEFAULT_TTL_MS;
   const maxDatasets = config.maxDatasets ?? DEFAULT_MAX_DATASETS;
   const now = config.now ?? Date.now;
+  const tenantId = config.tenantId ?? resolveApifyTenantId;
   const cache = new Map<string, CacheEntry>();
+  const cacheKey = (datasetId: string) => tenantId() + ":" + datasetId;
 
   const itemsPath = (datasetId: string) => "/v2/datasets/" + datasetId + "/items";
 
@@ -88,18 +92,20 @@ export function createDatasetLookup(config: DatasetLookupConfig = {}): DatasetLo
   };
 
   const getCache = (datasetId: string): CacheEntry | undefined => {
-    const entry = cache.get(datasetId);
+    const key = cacheKey(datasetId);
+    const entry = cache.get(key);
     if (!entry) return undefined;
     if (now() - entry.at > ttlMs) {
-      cache.delete(datasetId);
+      cache.delete(key);
       return undefined;
     }
     return entry;
   };
 
   const putCache = (datasetId: string, entry: CacheEntry): void => {
-    cache.delete(datasetId);
-    cache.set(datasetId, entry);
+    const key = cacheKey(datasetId);
+    cache.delete(key);
+    cache.set(key, entry);
     while (cache.size > maxDatasets) {
       const oldest = cache.keys().next().value;
       if (oldest === undefined) break;
@@ -161,7 +167,7 @@ export function createDatasetLookup(config: DatasetLookupConfig = {}): DatasetLo
       if (item && idOf(item) === adArchiveId) return { item, offset };
 
       // The dataset changed under a cached map (or a stale hint): rescan once.
-      cache.delete(datasetId);
+      cache.delete(cacheKey(datasetId));
       entry = await scan(datasetId, adArchiveId);
       offset = entry.offsets.get(adArchiveId);
       if (offset !== undefined) {

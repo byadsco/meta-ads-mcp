@@ -110,6 +110,26 @@ describe("findDatasetItem", () => {
     expect(calls()).toHaveLength(4);
   });
 
+  it("scopes the cached offset map to the tenant that scanned the dataset", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn()
+        .mockResolvedValueOnce(mockFetchResponse([{ ad_archive_id: "5550000000001" }]))
+        .mockResolvedValueOnce(mockFetchResponse([FULL]))
+        .mockResolvedValueOnce(mockFetchResponse([{ ad_archive_id: "5550000000001" }]))
+        .mockResolvedValueOnce(mockFetchResponse([FULL])),
+    );
+    let tenant = "tenant-a";
+    const lookup = createDatasetLookup({ pageSize: 1000, tenantId: () => tenant });
+
+    await lookup.findDatasetItem("ds123abcde", "5550000000001");
+    tenant = "tenant-b";
+    await lookup.findDatasetItem("ds123abcde", "5550000000001");
+
+    // Tenant B never benefits from tenant A scan: it rescans with its own token.
+    expect(calls()).toHaveLength(4);
+  });
+
   it("rejects malformed ids before any request", async () => {
     vi.stubGlobal("fetch", vi.fn());
     const lookup = createDatasetLookup();
