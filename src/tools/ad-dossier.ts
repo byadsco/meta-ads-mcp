@@ -21,6 +21,7 @@ import {
 import type { VideoSource } from "../media/video-sources.js";
 import { boundedClone } from "../utils/bounded-json.js";
 import { normalizeAccountId, validateMetaId } from "../utils/format.js";
+import { scrubCredentials } from "../utils/scrub-credentials.js";
 import { singleLine } from "../utils/single-line.js";
 import { collectCreativeMedia, pickVideoThumbnailUrl, resolveImageHashes } from "./creative-media.js";
 import { withDerivedEffectiveLinkUrl } from "./creatives.js";
@@ -121,7 +122,9 @@ const KNOWN_CURRENCIES = (() => {
 
 function isKnownCurrency(code: string): boolean {
   if (!/^[A-Z]{3}$/.test(code)) return false;
-  return KNOWN_CURRENCIES ? KNOWN_CURRENCIES.has(code) : true;
+  // Without the runtime list, minor units are reported rather than a
+  // possibly meaningless conversion.
+  return KNOWN_CURRENCIES ? KNOWN_CURRENCIES.has(code) : false;
 }
 
 /**
@@ -353,16 +356,21 @@ const HTTP_URL = /^https?:\/\//i;
  * url with nothing to strip comes back byte for byte, so a CDN signature
  * survives.
  */
+function sanitizeString(value: string): string {
+  if (!HTTP_URL.test(value)) return scrubCredentials(value);
+  const sanitized = sanitizeMetadataUrl(value);
+  // Text that merely begins like a url is prose, not a url: it keeps its
+  // wording and only loses anything credential-shaped inside it.
+  return sanitized ?? scrubCredentials(value);
+}
+
 function sanitizeUrls(value: unknown, depth = 0): unknown {
   if (depth > 8) return value;
+  if (typeof value === "string") return sanitizeString(value);
   if (Array.isArray(value)) return value.map((item) => sanitizeUrls(item, depth + 1));
   if (!value || typeof value !== "object") return value;
   const out: Record<string, unknown> = {};
   for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
-    if (typeof child === "string" && HTTP_URL.test(child)) {
-      out[key] = sanitizeMetadataUrl(child) ?? "[url omitted]";
-      continue;
-    }
     out[key] = sanitizeUrls(child, depth + 1);
   }
   return out;
@@ -565,6 +573,9 @@ export function registerAdDossierTools(server: McpServer, deps: AdDossierDeps = 
           }
 
           const sources: VideoSource[] = [];
+          // Videos that cannot be delivered are reported alongside the ones
+          // that can, so a mixed creative does not hide half its media.
+          const undeliverable: DeliveredVideo[] = [];
           for (const ref of media.videos) {
             let video: AdVideo | null = null;
             try {
@@ -577,7 +588,7 @@ export function registerAdDossierTools(server: McpServer, deps: AdDossierDeps = 
             if (!video?.source) {
               // Still reported: the ad has a video, and the reason it could not
               // be delivered is what the reader needs.
-              deliveredVideos.push({
+              undeliverable.push({
                 key: `meta:video:${ref.videoId}`,
                 label: `Video ${ref.videoId}`,
                 origin: "meta",
@@ -631,10 +642,13 @@ export function registerAdDossierTools(server: McpServer, deps: AdDossierDeps = 
             );
             const offset = blocks.length + 1;
             blocks.push(...delivery.blocks);
-            deliveredVideos = delivery.videos.map((v) => ({ ...v, delivered: { ...v.delivered, block_indexes: v.delivered.block_indexes.map((i) => i + offset) } }));
+            deliveredVideos = [
+              ...undeliverable,
+              ...delivery.videos.map((v) => ({ ...v, delivered: { ...v.delivered, block_indexes: v.delivered.block_indexes.map((i) => i + offset) } })),
+            ];
             warnings.push(...delivery.warnings);
-          } else if (sources.length > 0) {
-            deliveredVideos = sources.map((source) => ({
+          } else {
+            deliveredVideos = [...undeliverable, ...sources.map((source): DeliveredVideo => ({
               key: source.key,
               label: source.label,
               origin: source.origin,
@@ -644,20 +658,28 @@ export function registerAdDossierTools(server: McpServer, deps: AdDossierDeps = 
               delivered: { mode: "thumbnail", block_indexes: [] },
               source_url: sanitizeMetadataUrl(source.source_url),
               permalink_url: sanitizeMetadataUrl(source.permalink_url),
-            }));
+            }))];
           }
           return true;
         });
       }
 
       const targeting = targetingLines(targetingRaw);
+      // Sanitized once, then used for both outputs: the brief used to read the
+      // original objects, so a credential in the ad copy survived in it while
+      // the JSON was clean.
+      const safeAd = sanitizeUrls(ad) as DossierAd;
+      const safeCreative = creative ? (sanitizeUrls(creative) as AdCreative) : null;
+      const safeAdSet = adSet ? (sanitizeUrls(adSet) as Record<string, unknown>) : null;
+      const safeCampaign = campaign ? (sanitizeUrls(campaign) as Record<string, unknown>) : null;
+      const safeInsights = insights ? (sanitizeUrls(insights) as Record<string, unknown>) : null;
       const brief = renderDossier({
-        ad,
-        creative,
-        adSet,
-        campaign,
-        targeting,
-        insights,
+        ad: safeAd,
+        creative: safeCreative,
+        adSet: safeAdSet,
+        campaign: safeCampaign,
+        targeting: targeting.map((line) => scrubCredentials(line)),
+        insights: safeInsights,
         videos: deliveredVideos,
         images,
         datePreset: date_preset,
@@ -666,12 +688,12 @@ export function registerAdDossierTools(server: McpServer, deps: AdDossierDeps = 
       });
 
       const envelope = sanitizeUrls({
-        ad: boundedClone(ad, JSON_BOUNDS) as DossierAd,
-        creative: creative ? (boundedClone(creative, JSON_BOUNDS) as AdCreative) : null,
-        ad_set: adSet ? (boundedClone(adSet, JSON_BOUNDS) as Record<string, unknown>) : null,
-        campaign: campaign ? (boundedClone(campaign, JSON_BOUNDS) as Record<string, unknown>) : null,
-        targeting_sentences: targeting,
-        insights: insights ? (boundedClone(insights, JSON_BOUNDS) as Record<string, unknown>) : null,
+        ad: boundedClone(safeAd, JSON_BOUNDS) as DossierAd,
+        creative: safeCreative ? (boundedClone(safeCreative, JSON_BOUNDS) as AdCreative) : null,
+        ad_set: safeAdSet ? (boundedClone(safeAdSet, JSON_BOUNDS) as Record<string, unknown>) : null,
+        campaign: safeCampaign ? (boundedClone(safeCampaign, JSON_BOUNDS) as Record<string, unknown>) : null,
+        targeting_sentences: targeting.map((line) => scrubCredentials(line)),
+        insights: safeInsights ? (boundedClone(safeInsights, JSON_BOUNDS) as Record<string, unknown>) : null,
         media: { images, videos: deliveredVideos },
         date_preset,
         sections_failed: sectionsFailed,

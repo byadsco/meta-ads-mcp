@@ -117,13 +117,16 @@ function lastJson(result: ToolResult): Record<string, unknown> {
   return JSON.parse(result.content[result.content.length - 1].text as string) as Record<string, unknown>;
 }
 
+// At file level: every describe below must stand on its own, whatever order
+// or subset vitest runs.
+beforeEach(() => setupTestToken());
+afterEach(() => {
+  cleanupTestToken();
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+});
+
 describe("ads_get_ad_dossier", () => {
-  beforeEach(() => setupTestToken());
-  afterEach(() => {
-    cleanupTestToken();
-    vi.restoreAllMocks();
-    vi.unstubAllGlobals();
-  });
 
   it("registers one read-only tool that says what it gathers", () => {
     const { server, tool } = setup();
@@ -497,5 +500,101 @@ describe("round-2 review fixes", () => {
     expect(media.videos[0].video_id).toBe("999");
     expect(media.videos[0].error).toBeTruthy();
     expect(media.videos[0].delivered.mode).toBe("none");
+  });
+});
+
+describe("round-3 review fixes", () => {
+  it("scrubs credentials from the brief as well as the JSON", async () => {
+    const leaky = {
+      ...CREATIVE,
+      object_story_spec: {
+        link_data: {
+          message: "https://example.test/offer?access_token=SECRET123",
+          name: "See https://example.test/x?access_token=SECRET123 today",
+          link: "https://example.test/landing?access_token=SECRET123",
+        },
+      },
+    };
+    vi.stubGlobal("fetch", routeFetch({ ...ROUTES, "/5001": leaky }));
+    const { call } = setup();
+
+    const result = await call({ include_media: false });
+
+    expect(result.content[0].text).not.toContain("SECRET123");
+    expect(JSON.stringify(result.content)).not.toContain("SECRET123");
+    // The words around it survive.
+    expect(result.content[0].text).toMatch(/today/);
+  });
+
+  it("scrubs a credential a media download error quoted back", async () => {
+    vi.stubGlobal("fetch", routeFetch({ ...ROUTES, "/5001": { ...CREATIVE, object_story_spec: { link_data: { message: "copy", picture: "https://cdn.example.com/a.jpg?access_token=SECRET123" } } } }));
+    const fetchImages = vi.fn(async (assets: Array<{ source_url?: string; error?: string }>) => {
+      for (const asset of assets) {
+        if (asset.source_url) asset.error = `URL is malformed: ${asset.source_url}`;
+      }
+      return { blocks: [], bytes: 0 };
+    });
+    const { call } = setup({ fetchImages: fetchImages as never });
+
+    const result = await call({ include_media: true });
+
+    expect(JSON.stringify(result.content)).not.toContain("SECRET123");
+  });
+
+  it("scrubs a percent-encoded credential in a fragment", async () => {
+    const encoded = "https://example.test/landing#access%5Ftoken=SECRET123";
+    vi.stubGlobal("fetch", routeFetch({ ...ROUTES, "/5001": { ...CREATIVE, object_story_spec: { link_data: { message: "copy", link: encoded } } } }));
+    const { call } = setup();
+    const result = await call({ include_media: false });
+    expect(JSON.stringify(result.content)).not.toContain("SECRET123");
+  });
+
+  it("scrubs a credential inside an array of strings", async () => {
+    vi.stubGlobal("fetch", routeFetch({ ...ROUTES, "/5001": { ...CREATIVE, asset_feed_spec: { link_urls: ["https://example.test/a?access_token=SECRET123"] } } }));
+    const { call } = setup();
+    const result = await call({ include_media: false });
+    expect(JSON.stringify(result.content)).not.toContain("SECRET123");
+  });
+
+  it("keeps prose that merely begins like a url", async () => {
+    const prose = "https:// is a protocol, not an address";
+    vi.stubGlobal("fetch", routeFetch({ ...ROUTES, "/5001": { ...CREATIVE, object_story_spec: { link_data: { message: prose } } } }));
+    const { call } = setup();
+    const result = await call({ include_media: false });
+    expect(result.content[0].text).toContain("is a protocol, not an address");
+    expect(JSON.stringify(result.content)).not.toContain("[url omitted]");
+  });
+
+  it("still reports an undeliverable video when another video in the same ad works", async () => {
+    const twoVideos = {
+      ...CREATIVE,
+      object_story_spec: undefined,
+      asset_feed_spec: { videos: [{ video_id: "999" }, { video_id: "1000" }] },
+    };
+    vi.stubGlobal("fetch", routeFetch({ ...ROUTES, "/5001": twoVideos, "/999": { id: "999" }, "/1000": { id: "1000", source: "https://video.xx.fbcdn.net/ok.mp4", length: 12 } }));
+    const deliverVideos = vi.fn(async (sources: Array<{ key: string; label: string; video_id?: string }>) => ({
+      blocks: [],
+      videos: sources.map((s) => ({ key: s.key, label: s.label, origin: "meta", video_id: s.video_id, delivered: { mode: "url", block_indexes: [] } })),
+      warnings: [],
+      bytes: 0,
+    }));
+    const { call } = setup({ deliverVideos: deliverVideos as never });
+
+    const result = await call({ include_media: true, video_delivery: "url" });
+
+    const media = lastJson(result).media as { videos: Array<{ video_id?: string; error?: string; delivered: { mode: string } }> };
+    expect(media.videos.map((v) => v.video_id).sort()).toEqual(["1000", "999"]);
+    const broken = media.videos.find((v) => v.video_id === "999")!;
+    expect(broken.delivered.mode).toBe("none");
+    expect(broken.error).toBeTruthy();
+  });
+
+  it("does the same in thumbnail mode", async () => {
+    const twoVideos = { ...CREATIVE, object_story_spec: undefined, asset_feed_spec: { videos: [{ video_id: "999" }, { video_id: "1000" }] } };
+    vi.stubGlobal("fetch", routeFetch({ ...ROUTES, "/5001": twoVideos, "/999": { id: "999" }, "/1000": { id: "1000", source: "https://video.xx.fbcdn.net/ok.mp4", length: 12 } }));
+    const { call } = setup();
+    const result = await call({ include_media: true, video_delivery: "thumbnail" });
+    const media = lastJson(result).media as { videos: Array<{ video_id?: string }> };
+    expect(media.videos.map((v) => v.video_id).sort()).toEqual(["1000", "999"]);
   });
 });

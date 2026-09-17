@@ -1,5 +1,6 @@
 import { logger } from "../utils/logger.js";
 import { downloadSafePublicImage, type SafeImageDownloadOptions, type SafeImageDownload } from "../utils/safe-download.js";
+import { scrubCredentials } from "../utils/scrub-credentials.js";
 import { imageBlock, safeHostname, type ContentBlock } from "./content-blocks.js";
 
 export const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
@@ -81,7 +82,8 @@ export async function fetchCreativeImageBlocks(
       asset.mime_type = downloaded.contentType;
       asset.bytes = downloaded.buffer.length;
     } catch (err) {
-      asset.error = err instanceof Error ? err.message : String(err);
+      // A download error quotes the url it failed on, credentials included.
+      asset.error = scrubCredentials(err instanceof Error ? err.message : String(err));
       logger.warn({ imageHost: safeHostname(asset.source_url), role: asset.role }, "Creative image download failed");
     }
   }

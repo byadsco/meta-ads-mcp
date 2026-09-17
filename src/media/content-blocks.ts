@@ -1,3 +1,4 @@
+import { hasCredential } from "../utils/scrub-credentials.js";
 import type { ContentBlock } from "@modelcontextprotocol/sdk/types.js";
 
 export type { ContentBlock };
@@ -33,12 +34,17 @@ export function sanitizeMetadataUrl(url: string | undefined): string | undefined
     const parsed = new URL(url);
     const hasUserinfo = parsed.username !== "" || parsed.password !== "";
     const hasTokenParam = parsed.searchParams.has("access_token");
-    const hasTokenFragment = parsed.hash.toLowerCase().includes("access_token");
-    if (!hasUserinfo && !hasTokenParam && !hasTokenFragment) return url;
+    // Decoded first: a fragment can carry access%5Ftoken instead.
+    const hasTokenFragment = hasCredential(parsed.hash);
+    if (!hasUserinfo && !hasTokenParam && !hasTokenFragment && !hasCredential(parsed.search)) return url;
     parsed.username = "";
     parsed.password = "";
     parsed.searchParams.delete("access_token");
+    for (const [name] of [...parsed.searchParams]) {
+      if (hasCredential(`?${name}=x`)) parsed.searchParams.delete(name);
+    }
     if (hasTokenFragment) parsed.hash = "";
+    // Anything credential-shaped left in the query goes too.
     return parsed.toString();
   } catch {
     return undefined;
