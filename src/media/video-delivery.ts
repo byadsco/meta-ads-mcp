@@ -142,7 +142,7 @@ function publicErrorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-function looksLikeMp4(buffer: Buffer): boolean {
+export function looksLikeMp4(buffer: Buffer): boolean {
   // ISO BMFF: a size box followed by "ftyp" at byte 4.
   return buffer.length >= 12 && buffer.subarray(4, 8).toString("latin1") === "ftyp";
 }
