@@ -3,6 +3,7 @@ import { hashToken } from "../auth/token-store.js";
 import { getApifyTokenRepo } from "../store/apify-token-repo.js";
 import { logger } from "../utils/logger.js";
 import { isSingleTenantMode, LOCAL_TENANT_ID, resolveTenantId } from "../auth/tenant.js";
+import { BodyTooLargeError, readBodyWithLimit } from "../utils/bounded-body.js";
 import type { ApifyErrorBody } from "./types.js";
 
 /** Fixed on purpose: an env-overridable base URL would let a config change redirect tenant tokens to an attacker host. */
@@ -17,39 +18,14 @@ function tooLarge(detail: string): McpError {
   return new McpError(ErrorCode.InternalError, `Apify response too large (${detail}; limit ${MAX_RESPONSE_BYTES} bytes). Request a smaller page.`);
 }
 
-/**
- * Reads a body under a byte budget: the declared length is checked first,
- * streamed bodies are cancelled as soon as the budget is exceeded, and the
- * fallback path measures UTF-8 bytes rather than UTF-16 units.
- */
+/** Same budgeted read every outbound client uses; only the error is Apify-flavoured. */
 async function readBoundedBody(response: Response, maxBytes: number): Promise<string> {
-  const declared = Number.parseInt(response.headers.get("content-length") ?? "", 10);
-  if (Number.isFinite(declared) && declared > maxBytes) {
-    await response.body?.cancel().catch(() => undefined);
-    throw tooLarge(`declared ${declared} bytes`);
+  try {
+    return await readBodyWithLimit(response, maxBytes);
+  } catch (err) {
+    if (err instanceof BodyTooLargeError) throw tooLarge(err.detail);
+    throw err;
   }
-  const body = response.body;
-  if (body && typeof body.getReader === "function") {
-    const reader = body.getReader();
-    const chunks: Uint8Array[] = [];
-    let total = 0;
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (value) {
-        total += value.byteLength;
-        if (total > maxBytes) {
-          await reader.cancel().catch(() => undefined);
-          throw tooLarge(`over ${maxBytes} bytes`);
-        }
-        chunks.push(value);
-      }
-    }
-    return Buffer.concat(chunks.map((c) => Buffer.from(c.buffer, c.byteOffset, c.byteLength))).toString("utf8");
-  }
-  const text = await response.text();
-  if (Buffer.byteLength(text, "utf8") > maxBytes) throw tooLarge(`over ${maxBytes} bytes`);
-  return text;
 }
 
 /**
