@@ -357,11 +357,14 @@ const HTTP_URL = /^https?:\/\//i;
  * survives.
  */
 function sanitizeString(value: string): string {
-  if (!HTTP_URL.test(value)) return scrubCredentials(value);
-  const sanitized = sanitizeMetadataUrl(value);
-  // Text that merely begins like a url is prose, not a url: it keeps its
-  // wording and only loses anything credential-shaped inside it.
-  return sanitized ?? scrubCredentials(value);
+  // Only a value that is a url in its entirety is treated as one: the URL
+  // parser would otherwise swallow the rest of a sentence that happens to
+  // start with a link. Anything else keeps its wording and loses only what is
+  // credential-shaped inside it.
+  if (HTTP_URL.test(value) && !/\s/.test(value)) {
+    return sanitizeMetadataUrl(value) ?? scrubCredentials(value);
+  }
+  return scrubCredentials(value);
 }
 
 function sanitizeUrls(value: unknown, depth = 0): unknown {
@@ -632,6 +635,9 @@ export function registerAdDossierTools(server: McpServer, deps: AdDossierDeps = 
             if (image.downloaded && image.block_index !== undefined) image.block_index += 1;
           }
 
+          // Published before the delivery call, which can throw: a video that
+          // could not be delivered is reported either way.
+          deliveredVideos = [...undeliverable];
           if (sources.length > 0 && video_delivery !== "thumbnail") {
             const delivery = await deliverVideos(
               sources,

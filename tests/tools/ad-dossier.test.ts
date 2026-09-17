@@ -598,3 +598,57 @@ describe("round-3 review fixes", () => {
     expect(media.videos.map((v) => v.video_id).sort()).toEqual(["1000", "999"]);
   });
 });
+
+describe("round-4 review fixes", () => {
+  it("keeps the words of prose that starts with a real url", async () => {
+    const prose = "https://x.test/?access_token=SECRET123 is our link today";
+    vi.stubGlobal("fetch", routeFetch({ ...ROUTES, "/5001": { ...CREATIVE, object_story_spec: { link_data: { message: prose } } } }));
+    const { call } = setup();
+
+    const result = await call({ include_media: false });
+
+    const brief = result.content[0].text as string;
+    expect(brief).not.toContain("SECRET123");
+    expect(brief).toContain("is our link today");
+  });
+
+  it("closes the encoded evasions end to end", async () => {
+    for (const link of [
+      "https://x.test/a?%63lient_secret=SECRET123",
+      "https://x.test/a#%61ccess_token=SECRET123",
+      "https://x.test/a?access%255Ftoken=SECRET123",
+      "https://x.test/a#/access_token=SECRET123",
+    ]) {
+      vi.stubGlobal("fetch", routeFetch({ ...ROUTES, "/5001": { ...CREATIVE, object_story_spec: { link_data: { message: "copy", link } } } }));
+      const { call } = setup();
+      const result = await call({ include_media: false });
+      expect(JSON.stringify(result.content), link).not.toContain("SECRET123");
+    }
+  });
+
+  it("still reports an undeliverable video when the delivery step itself fails", async () => {
+    const twoVideos = { ...CREATIVE, object_story_spec: undefined, asset_feed_spec: { videos: [{ video_id: "999" }, { video_id: "1000" }] } };
+    vi.stubGlobal("fetch", routeFetch({ ...ROUTES, "/5001": twoVideos, "/999": { id: "999" }, "/1000": { id: "1000", source: "https://video.xx.fbcdn.net/ok.mp4", length: 12 } }));
+    const { call } = setup({
+      resolveTenantId: () => {
+        throw new Error("the video tools need an authenticated user in multi-tenant mode");
+      },
+    });
+
+    const result = await call({ include_media: true, video_delivery: "frames" });
+
+    const json = lastJson(result);
+    expect(json.sections_failed).toEqual(expect.arrayContaining(["media"]));
+    const media = json.media as { videos: Array<{ video_id?: string; delivered: { mode: string } }> };
+    expect(media.videos.map((v) => v.video_id)).toEqual(["999"]);
+    expect(media.videos[0].delivered.mode).toBe("none");
+  });
+
+  it("leaves a signed CDN url untouched through the whole dossier", async () => {
+    const signed = "https://scontent.xx.fbcdn.net/v/t39.35426-6/photo.jpg?_nc_cat=1&oh=abc~def&oe=69617495";
+    vi.stubGlobal("fetch", routeFetch({ ...ROUTES, "/5001": { ...CREATIVE, image_url: signed, object_story_spec: { link_data: { message: "copy", picture: signed } } } }));
+    const { call } = setup();
+    const result = await call({ include_media: false });
+    expect(JSON.stringify(result.content)).toContain(signed);
+  });
+});
