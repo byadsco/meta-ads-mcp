@@ -7,6 +7,7 @@ import {
   resolveApifyToken,
   scrubApifyToken,
   validateApifyId,
+  apifyApiClient,
 } from "../../src/apify/client.js";
 import {
   InMemoryApifyTokenRepo,
@@ -33,6 +34,86 @@ describe("apify client", () => {
     delete process.env.TOKEN_ENCRYPTION_KEY;
     resetKeyCacheForTests();
     configureApifyTokenRepoForTests(undefined);
+  });
+
+  describe("response size cap", () => {
+    it("rejects a body whose Content-Length exceeds the cap without parsing it", async () => {
+      const json = vi.fn(async () => []);
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+        ok: true, status: 200, headers: new Headers({ "content-length": String(64 * 1024 * 1024) }), json, text: async () => "[]",
+      }));
+      await expect(apifyApiClient.get("/v2/datasets/ds123abcde/items")).rejects.toThrow(/too large/);
+      expect(json).not.toHaveBeenCalled();
+    });
+
+    it("stops reading a streamed body as soon as the byte budget is exceeded", async () => {
+      let pulls = 0;
+      let cancelled = false;
+      const chunk = new TextEncoder().encode("x".repeat(1024 * 1024));
+      const stream = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          pulls += 1;
+          controller.enqueue(chunk);
+        },
+        cancel() {
+          cancelled = true;
+        },
+      });
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, status: 200, headers: new Headers(), body: stream }));
+      await expect(apifyApiClient.get("/v2/datasets/ds123abcde/items")).rejects.toThrow(/too large/);
+      expect(pulls).toBeLessThan(40);
+      expect(cancelled).toBe(true);
+    });
+
+    it("measures bytes, not UTF-16 units, and bounds error bodies too", async () => {
+      const wide = "\u{1F600}".repeat(9 * 1024 * 1024);
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, status: 200, headers: new Headers(), json: async () => [], text: async () => wide }));
+      await expect(apifyApiClient.get("/v2/datasets/ds123abcde/items")).rejects.toThrow(/too large/);
+
+      const json = vi.fn(async () => ({ error: { message: "bad" } }));
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 400, headers: new Headers({ "content-length": String(100 * 1024 * 1024) }), json, text: async () => "{}" }));
+      await expect(apifyApiClient.get("/v2/datasets/ds123abcde/items")).rejects.toThrow(/too large|400/);
+      expect(json).not.toHaveBeenCalled();
+    });
+
+    it("treats an empty 200 body as a failed request (retryable), not as null data", async () => {
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, status: 200, headers: new Headers(), text: async () => "   " }));
+      const client = new ApifyApiClient({ maxRetries: 0 });
+      await expect(client.get("/v2/datasets/ds123abcde/items")).rejects.toThrow(/empty/i);
+    });
+
+    it("retries a GET whose body came back empty", async () => {
+      vi.stubGlobal("fetch", vi.fn()
+        .mockResolvedValueOnce({ ok: true, status: 200, headers: new Headers(), text: async () => "" })
+        .mockResolvedValueOnce(mockFetchResponse([{ ok: true }])));
+      const client = new ApifyApiClient({ maxRetries: 1 });
+      await expect(client.get("/v2/datasets/ds123abcde/items")).resolves.toEqual([{ ok: true }]);
+      expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+    }, 10_000);
+
+    it("does not retry a POST whose body came back empty, but warns that it may have been accepted", async () => {
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, status: 201, headers: new Headers(), text: async () => "" }));
+      const client = new ApifyApiClient({ maxRetries: 3 });
+      await expect(client.post("/v2/acts/x~y/runs", { count: 1 })).rejects.toThrow(/may still have been accepted/);
+      expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+    });
+
+    it("keeps the indeterminate-acceptance warning when a POST response is too large", async () => {
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, status: 201, headers: new Headers({ "content-length": String(33 * 1024 * 1024) }), text: async () => "{}" }));
+      await expect(new ApifyApiClient({ maxRetries: 3 }).post("/v2/acts/x~y/runs", { count: 1 })).rejects.toThrow(/too large[\s\S]*may still have been accepted/);
+    });
+
+    it("still returns undefined for a 204", async () => {
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, status: 204, headers: new Headers(), text: async () => "" }));
+      await expect(new ApifyApiClient({ maxRetries: 0 }).delete("/v2/actor-runs/abcdefghij")).resolves.toBeUndefined();
+    });
+
+    it("rejects an undeclared body that turns out larger than the cap", async () => {
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+        ok: true, status: 200, headers: new Headers(), json: async () => [], text: async () => "x".repeat(33 * 1024 * 1024),
+      }));
+      await expect(apifyApiClient.get("/v2/datasets/ds123abcde/items")).rejects.toThrow(/too large/);
+    });
   });
 
   describe("token handling", () => {

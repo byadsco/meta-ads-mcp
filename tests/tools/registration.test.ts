@@ -3,7 +3,7 @@ import { registerAllTools } from "../../src/tools/index.js";
 import { createMockMcpServer } from "../setup.js";
 
 describe("registerAllTools", () => {
-  it("registers exactly 136 tools total", () => {
+  it("registers exactly 137 tools total", () => {
     // 79 v2 tools renamed (with account_insights removed → 79) + 14 new in v3 +
     //   3 audience-sharing tools (share / unshare / get-shared-accounts) +
     //   1 invoices tool (ads_get_invoices) +
@@ -12,10 +12,11 @@ describe("registerAllTools", () => {
     //   1 bulk video-ad macro (ads_bulk_create_video_ads) +
     //   1 creative media tool (ads_get_creative_media) +
     //   8 Ad Library scraping tools (ads_library_*, Apify-backed) +
-    //   1 video media tool (ads_get_video_media).
+    //   1 video media tool (ads_get_video_media) +
+    //   1 Ad Library details tool (ads_library_get_ad_details).
     const server = createMockMcpServer();
     registerAllTools(server as never);
-    expect(server.registerTool).toHaveBeenCalledTimes(136);
+    expect(server.registerTool).toHaveBeenCalledTimes(137);
   });
 
   it("registers all tools with unique names", () => {
@@ -47,7 +48,7 @@ describe("registerAllTools", () => {
     expect(whatsappTools.length).toBe(27);
   });
 
-  it("registers exactly 8 ads_library_ tools", () => {
+  it("registers exactly 9 ads_library_ tools", () => {
     const server = createMockMcpServer();
     registerAllTools(server as never);
 
@@ -58,6 +59,7 @@ describe("registerAllTools", () => {
     expect(names.sort()).toEqual([
       "ads_library_abort_run",
       "ads_library_delete_apify_token",
+      "ads_library_get_ad_details",
       "ads_library_get_apify_token_status",
       "ads_library_get_results",
       "ads_library_get_run_status",

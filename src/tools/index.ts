@@ -87,10 +87,10 @@ export function registerAllTools(server: McpServer): void {
   registerWhatsAppConfigTools(server);   // 7 tools — QR deep links + webhook subscriptions
 
   // ─── Ad Library scraping (Apify) ─────────────────────────
-  registerAdsLibraryTools(server);   // 8 tools — competitor ad research via Apify + token mgmt
+  registerAdsLibraryTools(server);   // 9 tools — competitor ad research via Apify + token mgmt + ad details with media
 
   // ─── Token Management ────────────────────────────────────
   registerTokenTools(server);        // 4 tools — list / set-active / register / delete
 
-  // Total: 136 tools (79 renamed + 14 new in v3 + 3 audience-sharing + 1 invoices + 27 WhatsApp + 1 url-tags + 1 bulk video ads + 1 creative media + 8 Ad Library/Apify + 1 video media)
+  // Total: 137 tools (79 renamed + 14 new in v3 + 3 audience-sharing + 1 invoices + 27 WhatsApp + 1 url-tags + 1 bulk video ads + 1 creative media + 9 Ad Library/Apify + 1 video media)
 }

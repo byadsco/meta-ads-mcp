@@ -30,7 +30,9 @@ export interface VideoSource {
  * lets an agent know whether a cached URL is still worth fetching.
  */
 export function fbcdnExpiresAt(url: string | undefined): string | undefined {
-  if (!url) return undefined;
+  // URL parsing materializes every query parameter; a signed CDN url is never
+  // anywhere near this long, so an oversized one is not worth decoding.
+  if (!url || url.length > 4096) return undefined;
   try {
     const oe = new URL(url).searchParams.get("oe");
     if (!oe || !/^[0-9a-f]{6,10}$/i.test(oe)) return undefined;
@@ -54,6 +56,8 @@ export interface MetaVideoSourceInput {
   ad_id?: string;
   creative_id?: string;
   max_videos?: number;
+  /** Resolve only the video at this position in the creative (0-based); one Graph call instead of one per video. */
+  video_index?: number;
 }
 
 export interface MetaVideoSourcesInfo {
@@ -134,6 +138,13 @@ export async function resolveMetaVideoSourcesWithInfo(input: MetaVideoSourceInpu
     thumbnail_height: 1080,
   });
   const { videos } = collectCreativeMedia(creative);
+  if (input.video_index !== undefined) {
+    const ref = videos[input.video_index];
+    if (!ref) {
+      throw new Error("video_index " + input.video_index + " is out of range: this creative has " + videos.length + " addressable video(s).");
+    }
+    return { sources: [await fetchVideo(ref.videoId, ref.specThumbnailUrl)], truncated: 0, creative_id: creative.id, account_id: accountId ?? creative.account_id };
+  }
   const selected = videos.slice(0, maxVideos);
   const sources: VideoSource[] = [];
   for (const ref of selected) {

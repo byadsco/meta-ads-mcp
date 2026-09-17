@@ -368,6 +368,35 @@ describe("deliverVideos", () => {
     expect(JSON.stringify(result.videos)).not.toContain("/tmp/");
   });
 
+  it("downloads Ad Library thumbnails behind the Meta CDN host allowlist", async () => {
+    let received: string[] | undefined;
+    const deps = fakeDeps({
+      downloadImage: async (url, opts) => {
+        received = opts?.allowedHostSuffixes;
+        return { buffer: Buffer.alloc(1), contentType: "image/jpeg", extension: ".jpg", finalUrl: new URL(url) };
+      },
+    });
+    const library = { ...SOURCE, key: "library:1:video:0", origin: "ad_library" as const, ad_archive_id: "12345678901", card_index: 0 };
+    await deliverVideos([library], { delivery: "thumbnail" }, deps, CTX);
+    expect(received).toEqual(expect.arrayContaining([".fbcdn.net"]));
+  });
+
+  it("url mode only links https urls on allowed hosts and never emits a block without a uri", async () => {
+    const deps = fakeDeps();
+    const bad = [
+      { ...SOURCE, key: "k1", source_url: "file:///etc/passwd", low_res_url: undefined },
+      { ...SOURCE, key: "k2", source_url: "javascript:alert(1)", low_res_url: undefined },
+      { ...SOURCE, key: "k3", origin: "ad_library" as const, ad_archive_id: "12345678901", card_index: 0, source_url: "https://evil.example.com/v.mp4", low_res_url: undefined },
+    ];
+    const result = await deliverVideos(bad, { delivery: "url", max_videos: 3 }, deps, CTX);
+    expect(result.blocks.filter((b) => b.type === "resource_link")).toHaveLength(0);
+    for (const v of result.videos) {
+      expect(v.delivered.mode).toBe("none");
+      expect(v.error).toMatch(/not an allowed|https/);
+    }
+    expect(() => JSON.stringify(result)).not.toThrow();
+  });
+
   it("enforces the total bytes budget across videos", async () => {
     const deps = fakeDeps({
       ffmpeg: fakeFfmpeg({

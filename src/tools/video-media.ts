@@ -11,11 +11,11 @@ import {
   type VideoDeliveryOptions,
 } from "../media/video-delivery.js";
 import { resolveMetaVideoSourcesWithInfo, type VideoSource } from "../media/video-sources.js";
+import { resolveAdLibraryVideoSources as defaultResolveAdLibraryVideoSources } from "../media/ad-library-sources.js";
 import { READ } from "./_register.js";
 
 export type VideoMediaDeps = VideoDeliveryDeps & {
-  /** Ad Library lookups are wired in by the ads-library module; absent until then. */
-  resolveAdLibraryVideoSources?: (input: { dataset_id: string; ad_archive_id: string; hint_offset?: number }) => Promise<VideoSource[]>;
+  resolveAdLibraryVideoSources?: (input: { dataset_id: string; ad_archive_id: string; hint_offset?: number; video_index?: number }) => Promise<VideoSource[]>;
 };
 
 const AD_ARCHIVE_ID_PATTERN = /^\d{5,25}$/;
@@ -27,6 +27,7 @@ export const videoSourceInputSchema = {
   dataset_id: z.string().optional().describe("Apify dataset ID of an Ad Library scrape (pair with ad_archive_id)"),
   ad_archive_id: z.string().optional().describe("Ad Library ad_archive_id inside dataset_id"),
   hint_offset: z.number().int().min(0).optional().describe("Offset of the ad inside the dataset, as reported by ads_library_get_results — skips the scan"),
+  video_index: z.number().int().min(0).max(99).optional().describe("Pick one video by its position in the resolved list (0-based; e.g. a carousel or DCO card beyond max_videos)"),
 };
 
 export interface VideoSourceInput {
@@ -36,6 +37,7 @@ export interface VideoSourceInput {
   dataset_id?: string;
   ad_archive_id?: string;
   hint_offset?: number;
+  video_index?: number;
 }
 
 export function assertSingleVideoSource(input: VideoSourceInput): "meta" | "ad_library" {
@@ -43,6 +45,9 @@ export function assertSingleVideoSource(input: VideoSourceInput): "meta" | "ad_l
   const library = Boolean(input.dataset_id || input.ad_archive_id);
   if (metaIds + (library ? 1 : 0) !== 1) {
     throw new Error("Provide exactly one of video_id, ad_id, creative_id, or dataset_id + ad_archive_id.");
+  }
+  if (input.video_id && input.video_index !== undefined) {
+    throw new Error("video_index applies to ad_id, creative_id or dataset_id sources; a video_id already identifies one video.");
   }
   if (library) {
     if (!input.dataset_id || !input.ad_archive_id) {
@@ -62,24 +67,37 @@ export async function resolveVideoSources(
   deps: VideoMediaDeps,
 ): Promise<{ sources: VideoSource[]; truncated: number; creative_id?: string; account_id?: string }> {
   const origin = assertSingleVideoSource(input);
-  if (origin === "ad_library") {
-    if (!deps.resolveAdLibraryVideoSources) {
-      throw new Error("Ad Library video lookup is not available on this server build.");
+  const pick = (all: VideoSource[]): { sources: VideoSource[]; truncated: number } => {
+    if (input.video_index !== undefined) {
+      const chosen = all[input.video_index];
+      if (!chosen) {
+        throw new Error(`video_index ${input.video_index} is out of range: this source has ${all.length} addressable video(s) (the record may list more than the pipeline keeps).`);
+      }
+      return { sources: [chosen], truncated: 0 };
     }
-    const all = await deps.resolveAdLibraryVideoSources({
+    const max = Math.max(1, input.max_videos ?? 3);
+    return { sources: all.slice(0, max), truncated: Math.max(0, all.length - max) };
+  };
+  if (origin === "ad_library") {
+    const resolveLibrary = deps.resolveAdLibraryVideoSources ?? defaultResolveAdLibraryVideoSources;
+    const all = await resolveLibrary({
       dataset_id: input.dataset_id as string,
       ad_archive_id: input.ad_archive_id as string,
       hint_offset: input.hint_offset,
+      video_index: input.video_index,
     });
-    const max = Math.max(1, input.max_videos ?? 3);
-    return { sources: all.slice(0, max), truncated: Math.max(0, all.length - max) };
+    // With video_index the resolver already returns the single addressed video.
+    return input.video_index !== undefined ? { sources: all.slice(0, 1), truncated: 0 } : pick(all);
   }
-  return resolveMetaVideoSourcesWithInfo({
+  const info = await resolveMetaVideoSourcesWithInfo({
     video_id: input.video_id,
     ad_id: input.ad_id,
     creative_id: input.creative_id,
     max_videos: input.max_videos,
+    video_index: input.video_index,
   });
+  // resolveMetaVideoSourcesWithInfo already applies max_videos / video_index and reports truncation.
+  return info;
 }
 
 type ToolExtra = {
@@ -102,7 +120,7 @@ export function progressReporter(extra: ToolExtra | undefined) {
   };
 }
 
-function describeDelivered(video: DeliveredVideo): string {
+export function describeDelivered(video: DeliveredVideo): string {
   const dims = video.width && video.height ? ` ${video.width}x${video.height}` : "";
   const dur = video.duration_seconds ? ` ${video.duration_seconds.toFixed(1)}s` : "";
   const head = `${video.label}${dur}${dims}${video.has_audio === false ? " (no audio)" : ""}`;
@@ -173,7 +191,7 @@ export function registerVideoMediaTools(server: McpServer, deps: VideoMediaDeps 
       const resolved = await resolveVideoSources({ ...sourceInput, max_videos }, deps);
       const warnings: string[] = [];
       if (resolved.truncated > 0) {
-        warnings.push(`${resolved.truncated} more video(s) exist beyond max_videos=${max_videos}; raise max_videos or call again per video_id.`);
+        warnings.push(`${resolved.truncated} more video(s) exist beyond max_videos=${max_videos}; raise max_videos (up to 3) or call again with video_index to pick one.`);
       }
 
       await report(1, 3, `Processing ${resolved.sources.length} video(s) (${delivery})`);

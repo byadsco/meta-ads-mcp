@@ -3,6 +3,7 @@ import https from "node:https";
 import type { RequestOptions } from "node:https";
 import { UnsafeUrlError, type AssertSafeUrlOptions, type ResolvedSafePublicUrl } from "./url-guard.js";
 import {
+  assertAllowedHost,
   buildPinnedLookup,
   followSafeRedirects,
   isRedirect,
@@ -28,6 +29,8 @@ export interface SafeImageDownloadOptions extends AssertSafeUrlOptions {
   maxRedirects?: number;
   timeoutMs?: number;
   signal?: AbortSignal;
+  /** Optional host allowlist by suffix, enforced on every hop. */
+  allowedHostSuffixes?: string[];
   request?: typeof https.request;
 }
 
@@ -173,7 +176,13 @@ export async function downloadSafePublicImage(
 
   return followSafeRedirects(
     rawUrl,
-    { maxRedirects, resolve: options.resolve, signal: options.signal, what: "image" },
+    {
+      maxRedirects,
+      resolve: options.resolve,
+      signal: options.signal,
+      what: "image",
+      validateHop: options.allowedHostSuffixes ? (url) => assertAllowedHost(url, options.allowedHostSuffixes as string[], "image") : undefined,
+    },
     (resolved) => requestImage(resolved, { request, maxBytes, timeoutMs, signal: options.signal }),
   );
 }

@@ -14,7 +14,13 @@ import {
   type ContentBlock,
 } from "./content-blocks.js";
 import { getFfmpeg, type Ffmpeg, type VideoProbe } from "./ffmpeg.js";
-import { downloadSafePublicVideo, type SafeVideoDownload, type SafeVideoDownloadOptions } from "./safe-video-download.js";
+import {
+  downloadSafePublicVideo,
+  resolveAllowedVideoHostSuffixes,
+  type SafeVideoDownload,
+  type SafeVideoDownloadOptions,
+} from "./safe-video-download.js";
+import { assertAllowedHost } from "../utils/safe-http.js";
 import { getVideoJobRunner, type VideoJobContext, type VideoJobRunner } from "./video-jobs.js";
 import { fbcdnExpiresAt, resourceUriFor, type VideoSource } from "./video-sources.js";
 
@@ -194,10 +200,28 @@ export async function deliverVideos(
 
   const fits = (bytes: number): boolean => budget.used + bytes <= budget.total;
 
+  // Ad Library records are tenant-controlled input: their preview URLs must stay on Meta CDN hosts.
+  const hostSuffixes = resolveAllowedVideoHostSuffixes();
+  const allowlistFor = (source: VideoSource): string[] | undefined => (source.origin === "ad_library" ? hostSuffixes : undefined);
+
+  /** A link is only published when it is https and, for Ad Library sources, on an allowed host. */
+  const safeLink = (source: VideoSource, url: string | undefined): { url?: string; error?: string } => {
+    if (!url) return {};
+    try {
+      const parsed = new URL(url);
+      if (parsed.protocol !== "https:") return { error: "Video URL rejected: only https links are published." };
+      const suffixes = allowlistFor(source);
+      if (suffixes) assertAllowedHost(parsed, suffixes, "video");
+      return { url: sanitizeMetadataUrl(url) };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : "Video URL rejected." };
+    }
+  };
+
   const fetchThumbnail = async (source: VideoSource, signal?: AbortSignal): Promise<{ block: ContentBlock; bytes: number } | undefined> => {
     if (!source.thumbnail_url || signal?.aborted) return undefined;
     try {
-      const image = await downloadImage(source.thumbnail_url, { maxBytes: THUMBNAIL_MAX_BYTES, signal });
+      const image = await downloadImage(source.thumbnail_url, { maxBytes: THUMBNAIL_MAX_BYTES, signal, allowedHostSuffixes: allowlistFor(source) });
       return { block: imageBlock(image.buffer, image.contentType), bytes: image.buffer.length };
     } catch (err) {
       logger.warn({ host: safeHostname(source.thumbnail_url), err: err instanceof Error ? err.message : String(err) }, "Video thumbnail download failed");
@@ -275,13 +299,21 @@ export async function deliverVideos(
 
     if (options.delivery === "url") {
       const links: number[] = [];
-      if (source.source_url) {
-        links.push(pushBlock(resourceLinkBlock(sanitizeMetadataUrl(source.source_url) as string, `${source.label} (source)`, { mimeType: "video/mp4", description: "Signed CDN URL; expires" }), 0));
+      const errors: string[] = [];
+      const primary = safeLink(source, source.source_url);
+      if (primary.url) {
+        links.push(pushBlock(resourceLinkBlock(primary.url, `${source.label} (source)`, { mimeType: "video/mp4", description: "Signed CDN URL; expires" }), 0));
+      } else if (primary.error) {
+        errors.push(primary.error);
       }
-      if (source.low_res_url) {
-        links.push(pushBlock(resourceLinkBlock(sanitizeMetadataUrl(source.low_res_url) as string, `${source.label} (low-res)`, { mimeType: "video/mp4" }), 0));
+      const lowRes = safeLink(source, source.low_res_url);
+      if (lowRes.url) {
+        links.push(pushBlock(resourceLinkBlock(lowRes.url, `${source.label} (low-res)`, { mimeType: "video/mp4" }), 0));
+      } else if (lowRes.error) {
+        errors.push(lowRes.error);
       }
-      meta.delivered.mode = "url";
+      if (errors.length > 0) meta.error = errors.join(" ");
+      meta.delivered.mode = links.length > 0 ? "url" : "none";
       meta.delivered.block_indexes = links;
       return;
     }

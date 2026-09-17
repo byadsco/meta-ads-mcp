@@ -1,6 +1,6 @@
 # Adding a new MCP tool
 
-This is the canonical guide for extending meta-ads-mcp with a Meta Marketing API endpoint that isn't already covered by the 136 built-in tools. Follow it end-to-end and your tool will inherit every security, rate-limit, circuit-breaker, error-handling, multi-tenant, and MCP-annotation guarantee the rest of the server provides.
+This is the canonical guide for extending meta-ads-mcp with a Meta Marketing API endpoint that isn't already covered by the 137 built-in tools. Follow it end-to-end and your tool will inherit every security, rate-limit, circuit-breaker, error-handling, multi-tenant, and MCP-annotation guarantee the rest of the server provides.
 
 If you're contributing for the first time, also read [CONTRIBUTING.md](../CONTRIBUTING.md) for setup, CI checks, commit conventions, and the auth-surface review policy.
 
@@ -346,7 +346,7 @@ describe("registerMyResourceTools", () => {
 });
 ```
 
-**Important:** [tests/tools/registration.test.ts](../tests/tools/registration.test.ts) hard-codes the total tool count (`expect(server.registerTool).toHaveBeenCalledTimes(136)` at the time of writing). When you add a tool, bump that number, add an `expect(names).toContain("ads_my_new_tool")` assertion, and update the count comment in [src/tools/index.ts](../src/tools/index.ts).
+**Important:** [tests/tools/registration.test.ts](../tests/tools/registration.test.ts) hard-codes the total tool count (`expect(server.registerTool).toHaveBeenCalledTimes(137)` at the time of writing). When you add a tool, bump that number, add an `expect(names).toContain("ads_my_new_tool")` assertion, and update the count comment in [src/tools/index.ts](../src/tools/index.ts).
 
 ## Verification
 

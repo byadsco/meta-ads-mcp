@@ -9,6 +9,23 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
+- **Ad Library ads with their media — `ads_library_get_ad_details` (136 → 137 tools).**
+  The compact projection of `ads_library_get_results` gains a `media` summary
+  (display format, image and video counts, `has_video`, the CDN expiry decoded
+  from the signed URLs) and the absolute `offset` of every item; the error
+  records the actor pushes (`ADS_NOT_FOUND`) come back as `{ offset, error }`
+  instead of empty rows. The new tool locates one ad in a dataset (by
+  `hint_offset`, or an id-only scan cached per dataset — reading a dataset is
+  free on Apify), normalizes the actor record (page, dates, platforms, copy per
+  card with DCO/DPA template detection, images, videos, transparency blocks),
+  attaches the images as inline blocks behind the Meta CDN host allowlist, and
+  delivers the videos through the same pipeline as own-account media
+  (`thumbnail` / `frames` / `url`) under the shared response budget.
+  `ads_get_video_media` now resolves `dataset_id` + `ad_archive_id` as well, so
+  a scraped video can be embedded inline for a video-capable model. Schema and
+  fixtures come from real actor output (build 2.7.x): snake_case records,
+  `video_hd_url` occasionally null with `video_sd_url` always present, and
+  `{{product.*}}` placeholders at ad level for DCO/DPA.
 - **Video analysis — `ads_get_video_media` (135 → 136 tools).** Any MCP agent
   can now analyze an ad video, not just its poster frame. The tool resolves a
   `video_id`, an `ad_id` or a `creative_id` (every video in the creative,
