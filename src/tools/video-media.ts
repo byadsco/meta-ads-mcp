@@ -46,6 +46,9 @@ export function assertSingleVideoSource(input: VideoSourceInput): "meta" | "ad_l
   if (metaIds + (library ? 1 : 0) !== 1) {
     throw new Error("Provide exactly one of video_id, ad_id, creative_id, or dataset_id + ad_archive_id.");
   }
+  if (input.video_id && input.video_index !== undefined) {
+    throw new Error("video_index applies to ad_id, creative_id or dataset_id sources; a video_id already identifies one video.");
+  }
   if (library) {
     if (!input.dataset_id || !input.ad_archive_id) {
       throw new Error("Ad Library videos need both dataset_id and ad_archive_id.");
@@ -68,7 +71,7 @@ export async function resolveVideoSources(
     if (input.video_index !== undefined) {
       const chosen = all[input.video_index];
       if (!chosen) {
-        throw new Error(`video_index ${input.video_index} is out of range: this source has ${all.length} video(s).`);
+        throw new Error(`video_index ${input.video_index} is out of range: this source has ${all.length} addressable video(s) (the record may list more than the pipeline keeps).`);
       }
       return { sources: [chosen], truncated: 0 };
     }
@@ -186,7 +189,7 @@ export function registerVideoMediaTools(server: McpServer, deps: VideoMediaDeps 
       const resolved = await resolveVideoSources({ ...sourceInput, max_videos }, deps);
       const warnings: string[] = [];
       if (resolved.truncated > 0) {
-        warnings.push(`${resolved.truncated} more video(s) exist beyond max_videos=${max_videos}; raise max_videos or call again per video_id.`);
+        warnings.push(`${resolved.truncated} more video(s) exist beyond max_videos=${max_videos}; raise max_videos (up to 3) or call again with video_index to pick one.`);
       }
 
       await report(1, 3, `Processing ${resolved.sources.length} video(s) (${delivery})`);

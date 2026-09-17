@@ -139,7 +139,7 @@ export async function resolveMetaVideoSourcesWithInfo(input: MetaVideoSourceInpu
   if (input.video_index !== undefined) {
     const ref = videos[input.video_index];
     if (!ref) {
-      throw new Error("video_index " + input.video_index + " is out of range: this creative has " + videos.length + " video(s).");
+      throw new Error("video_index " + input.video_index + " is out of range: this creative has " + videos.length + " addressable video(s).");
     }
     return { sources: [await fetchVideo(ref.videoId, ref.specThumbnailUrl)], truncated: 0, creative_id: creative.id, account_id: accountId ?? creative.account_id };
   }

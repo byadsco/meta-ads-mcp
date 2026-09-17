@@ -67,6 +67,9 @@ export interface LibraryMediaSummary {
   has_video: boolean;
   /** Expiry of the signed CDN URLs, decoded from the fbcdn oe parameter. */
   expires_at?: string;
+  /** Counts after the size caps, i.e. what the media tools can actually address; absent in cheap listings. */
+  images_available?: number;
+  videos_available?: number;
 }
 
 export interface LibraryAd {
@@ -141,9 +144,43 @@ function text(value: unknown): string | null {
     const record = value as Record<string, unknown>;
     if ("text" in record) return str(record.text);
     const html = asRecord(record.markup).__html;
-    if (typeof html === "string") return str(html.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim());
+    if (typeof html === "string") return str(stripTags(html));
   }
   return str(value);
+}
+
+/** Single linear pass over a bounded prefix: a tag regex backtracks quadratically on unclosed "<". */
+function stripTags(html: string): string {
+  const input = html.length > MAX_TEXT_CHARS * 4 ? html.slice(0, MAX_TEXT_CHARS * 4) : html;
+  let out = "";
+  let inTag = false;
+  let lastSpace = true;
+  for (const ch of input) {
+    if (ch === "<") {
+      inTag = true;
+      continue;
+    }
+    if (ch === ">") {
+      inTag = false;
+      if (!lastSpace) {
+        out += " ";
+        lastSpace = true;
+      }
+      continue;
+    }
+    if (inTag) continue;
+    const isSpace = /\s/.test(ch);
+    if (isSpace) {
+      if (!lastSpace) {
+        out += " ";
+        lastSpace = true;
+      }
+      continue;
+    }
+    out += ch;
+    lastSpace = false;
+  }
+  return out.trim();
 }
 
 function isoDate(epochSeconds: unknown): string | null {
@@ -159,7 +196,14 @@ function isoDate(epochSeconds: unknown): string | null {
 /** ad_archive_id in the current actor format, adArchiveID in the legacy one; numbers are tolerated. */
 export function archiveIdOf(item: unknown): string | null {
   const record = asRecord(item);
-  return str(record.ad_archive_id) ?? str(record.adArchiveID);
+  return idString(record.ad_archive_id) ?? idString(record.adArchiveID);
+}
+
+/** Ids are strings; a number is accepted only when JSON could not have rounded it. */
+function idString(value: unknown): string | null {
+  if (typeof value === "string") return value.length > 0 ? value : null;
+  if (typeof value === "number" && Number.isSafeInteger(value) && value > 0) return String(value);
+  return null;
 }
 
 function capText(value: string | null, label: string, truncated: string[]): string | null {
@@ -353,7 +397,11 @@ export function normalizeLibraryAd(raw: AdLibraryRawItem, offset: number | null)
     total_active_time: num(raw.total_active_time),
     contains_digital_created_media: bool(raw.contains_digital_created_media),
     details: Object.keys(details).length > 0 ? details : undefined,
-    media_summary: summarize(snapshot),
+    media_summary: {
+      ...summarize(snapshot),
+      images_available: images.length + cards.filter((c) => c.image !== null && c.video === null).length,
+      videos_available: videos.length + cards.filter((c) => c.video !== null).length,
+    },
     truncated,
   };
 }

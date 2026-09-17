@@ -54,6 +54,10 @@ const IMAGE_BYTES_BUDGET = 20 * 1024 * 1024;
 const MAX_IMAGE_CANDIDATES = 40;
 const MAX_CARD_TEXT_CHARS = 20_000;
 const MAX_JSON_CHARS = 50_000;
+const MAX_URL_CHARS = 2048;
+const JSON_MAX_DEPTH = 8;
+const JSON_MAX_NODES = 4000;
+const JSON_MAX_STRING = 4000;
 
 export interface AdLibraryToolDeps extends VideoDeliveryDeps {
   deliverVideos?: typeof defaultDeliverVideos;
@@ -742,8 +746,14 @@ export function registerAdsLibraryTools(server: McpServer, deps: AdLibraryToolDe
         const suffixes = resolveAllowedVideoHostSuffixes();
         let attempts = 0;
         for (const asset of libraryImageAssets(ad, image_size).slice(0, MAX_IMAGE_CANDIDATES)) {
-          const meta: LibraryImageMeta = { role: asset.role, card_index: asset.card_index, source_url: sanitizeMetadataUrl(asset.url), downloaded: false };
+          // A URL beyond any sane length is omitted whole: truncating it would break its signature.
+          const overlong = asset.url.length > MAX_URL_CHARS;
+          const meta: LibraryImageMeta = { role: asset.role, card_index: asset.card_index, source_url: overlong ? undefined : sanitizeMetadataUrl(asset.url), downloaded: false };
           images.push(meta);
+          if (overlong) {
+            meta.error = "Image URL too long (" + asset.url.length + " chars); omitted.";
+            continue;
+          }
           // Attempts, not successes, count against max_images: a record full of
           // dead URLs must not turn into hundreds of downloads.
           if (attempts >= max_images || extra?.signal?.aborted) {
@@ -841,8 +851,8 @@ function renderLibraryAdCard(ad: LibraryAd, images: LibraryImageMeta[], videos: 
   lines.push("Library link: " + ad.ad_library_url + (ad.page.profile_uri ? " · Page: " + line(ad.page.profile_uri, 200) : "") + (ad.page.like_count !== null ? " (" + ad.page.like_count + " likes)" : ""));
   const reach: string[] = [];
   if (ad.impressions_text) reach.push("impressions " + line(ad.impressions_text, 40));
-  if (ad.spend !== null && ad.spend !== undefined) reach.push("spend " + line(JSON.stringify(ad.spend), 80) + (ad.currency ? " " + ad.currency : ""));
-  if (ad.reach_estimate !== null && ad.reach_estimate !== undefined) reach.push("reach estimate " + line(JSON.stringify(ad.reach_estimate), 80));
+  if (ad.spend !== null && ad.spend !== undefined) reach.push("spend " + line(JSON.stringify(boundedClone(ad.spend, 3, 50)), 80) + (ad.currency ? " " + ad.currency : ""));
+  if (ad.reach_estimate !== null && ad.reach_estimate !== undefined) reach.push("reach estimate " + line(JSON.stringify(boundedClone(ad.reach_estimate, 3, 50)), 80));
   if (reach.length > 0) lines.push("Delivery data: " + reach.join(" · "));
   if (ad.details) lines.push("Detail blocks scraped: " + Object.keys(ad.details).join(", ") + " (see JSON).");
   if (ad.truncated.length > 0) lines.push("Fields cut to size caps: " + ad.truncated.slice(0, 10).join(", ") + (ad.truncated.length > 10 ? ", …" : "") + ".");
@@ -899,12 +909,38 @@ interface DetailsMetadata {
 }
 
 /**
+ * JSON-safe copy with depth, node and string budgets, so tenant-controlled
+ * records (7000-level nesting, 200 KB strings) can neither overflow the stack
+ * in JSON.stringify nor dominate the response. Omitted parts are marked.
+ */
+export function boundedClone(value: unknown, maxDepth = JSON_MAX_DEPTH, maxNodes = JSON_MAX_NODES, maxString = JSON_MAX_STRING): unknown {
+  let nodes = 0;
+  const visit = (v: unknown, depth: number): unknown => {
+    // undefined stays undefined so JSON.stringify drops the key instead of emitting null.
+    if (v === undefined || v === null) return v;
+    if (typeof v === "string") return v.length > maxString ? v.slice(0, maxString) + " [truncated]" : v;
+    if (typeof v === "number" || typeof v === "boolean") return v;
+    if (typeof v !== "object") return String(v);
+    if (nodes++ > maxNodes) return "[omitted: node budget]";
+    if (depth >= maxDepth) return Array.isArray(v) ? "[omitted: array too deep]" : "[omitted: object too deep]";
+    if (Array.isArray(v)) return v.slice(0, 200).map((item) => visit(item, depth + 1));
+    const out: Record<string, unknown> = {};
+    for (const [k, item] of Object.entries(v as Record<string, unknown>)) {
+      if (k === "__proto__" || k === "constructor" || k === "prototype") continue;
+      out[k] = visit(item, depth + 1);
+    }
+    return out;
+  };
+  return visit(value, 0);
+}
+
+/**
  * Serializes the metadata under MAX_JSON_CHARS while staying valid JSON:
- * the raw record goes first, then the cards are reduced, then dropped. A
- * truncated string would leave the agent with unparseable JSON.
+ * everything is bounded first, then the raw record goes, then the cards are
+ * reduced, then dropped. A truncated string would leave unparseable JSON.
  */
 function boundedMetadataJson(metadata: DetailsMetadata): string {
-  const attempt = (m: DetailsMetadata) => JSON.stringify(m, null, 2);
+  const attempt = (m: DetailsMetadata) => JSON.stringify(boundedClone(m), null, 2);
   let current: DetailsMetadata = metadata;
   let json = attempt(current);
   if (json.length <= MAX_JSON_CHARS) return json;
@@ -928,9 +964,11 @@ function boundedMetadataJson(metadata: DetailsMetadata): string {
     ad_archive_id: current.ad.ad_archive_id,
     ad_library_url: current.ad.ad_library_url,
     media_summary: current.ad.media_summary,
-    images: current.images,
-    videos: current.videos,
+    images: current.images.slice(0, 10),
+    videos: current.videos.slice(0, 3),
     warnings: [...current.warnings, "metadata reduced to a minimal summary: the record exceeds the JSON size limit even without cards."],
   };
-  return JSON.stringify(minimal, null, 2);
+  json = JSON.stringify(boundedClone(minimal, 6, 500, 1000), null, 2);
+  if (json.length <= MAX_JSON_CHARS) return json;
+  return JSON.stringify({ ad_archive_id: current.ad.ad_archive_id, warnings: ["metadata omitted: the record exceeds the JSON size limit."] }, null, 2);
 }

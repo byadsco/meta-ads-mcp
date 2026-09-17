@@ -765,6 +765,33 @@ describe("ads_library_* tools", () => {
       expect(result.content[0].text.length).toBeLessThan(25_000);
     });
 
+    it("omits absurdly long urls and survives deeply nested delivery data while keeping the JSON bounded", async () => {
+      const hostile = JSON.parse(JSON.stringify(FIX_IMAGE)) as Record<string, unknown>;
+      (hostile.snapshot as Record<string, unknown>).images = [{ original_image_url: "https://scontent.xx.fbcdn.net/" + "a".repeat(200_000), resized_image_url: null }];
+      // 7000 levels of nesting: JSON.parse copes, JSON.stringify overflows the stack,
+      // so the wire text is assembled by hand (a mock could not serialize the object).
+      hostile.spend = "__DEEP__";
+      hostile.reach_estimate = "__DEEP__";
+      const deep = "{\"n\":".repeat(7000) + "{\"v\":1}" + "}".repeat(7000);
+      const wire = JSON.stringify([hostile]).split("\"__DEEP__\"").join(deep);
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce({ ok: true, status: 200, headers: new Headers(), text: async () => wire }));
+      const downloadImage = vi.fn(async () => { throw new Error("HTTP 404"); });
+
+      const result = await setup({ deliverVideos: fakeDeliver(), downloadImage }).byName("ads_library_get_ad_details")({
+        dataset_id: "ds123abcde", ad_archive_id: "841513952022622", hint_offset: 0,
+        include_images: true, max_images: 8, image_size: "full", video_delivery: "thumbnail", frame_count: 6, include_raw: false,
+      });
+
+      const last = result.content[result.content.length - 1].text;
+      expect(last.length).toBeLessThanOrEqual(50_000);
+      const json = JSON.parse(last) as Record<string, unknown>;
+      const images = json.images as Block[];
+      expect(images[0].source_url).toBeUndefined();
+      expect(String(images[0].error ?? "")).toMatch(/too long|omitted/i);
+      expect(downloadImage).not.toHaveBeenCalled();
+      expect(result.content[0].text.length).toBeLessThan(25_000);
+    });
+
     it("include_raw returns the untouched actor record alongside the normalized ad", async () => {
       vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(mockFetchResponse([FIX_IMAGE])));
       const result = await setup({ deliverVideos: fakeDeliver(), downloadImage: fakeImage() }).byName("ads_library_get_ad_details")({

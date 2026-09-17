@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
+  archiveIdOf,
   extractLibraryVideoSources,
   isAdLibraryErrorItem,
   isTemplateCopy,
@@ -171,6 +172,34 @@ describe("normalizeLibraryAd hostile input", () => {
     const ad = normalizeLibraryAd(raw, 0);
     expect(({} as Record<string, unknown>).polluted).toBeUndefined();
     expect(ad.details).toBeUndefined();
+  });
+});
+
+describe("normalizeLibraryAd round-2 hardening", () => {
+  it("strips legacy html bodies in linear time even for pathological markup", () => {
+    // No closing ">" anywhere: a backtracking tag regex is quadratic on this input.
+    const raw = { ad_archive_id: "1234567890", snapshot: { body: { markup: { __html: "<".repeat(200_000) } } } } as AdLibraryRawItem;
+    const started = Date.now();
+    const ad = normalizeLibraryAd(raw, 0);
+    expect(Date.now() - started).toBeLessThan(200);
+    expect((ad.copy.body ?? "").length).toBeLessThanOrEqual(4100);
+  });
+
+  it("only accepts safe-integer numeric ids", () => {
+    expect(archiveIdOf({ ad_archive_id: 9007199254740993 })).toBeNull();
+    expect(archiveIdOf({ ad_archive_id: 1234567890123 })).toBe("1234567890123");
+    expect(archiveIdOf({ ad_archive_id: 12.5 })).toBeNull();
+  });
+
+  it("reports how many videos and images are actually available after the caps", () => {
+    const raw = {
+      ad_archive_id: "1234567890",
+      snapshot: { videos: Array.from({ length: 25 }, () => ({ video_sd_url: "https://video.xx.fbcdn.net/a.mp4" })) },
+    } as AdLibraryRawItem;
+    const ad = normalizeLibraryAd(raw, 0);
+    expect(ad.media_summary.video_count).toBe(25);
+    expect(ad.media_summary.videos_available).toBe(20);
+    expect(extractLibraryVideoSources(ad)).toHaveLength(20);
   });
 });
 

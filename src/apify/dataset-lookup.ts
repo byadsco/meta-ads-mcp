@@ -82,7 +82,14 @@ export function createDatasetLookup(config: DatasetLookupConfig = {}): DatasetLo
   const now = config.now ?? Date.now;
   const tenantId = config.tenantId ?? resolveApifyTenantId;
   const cache = new Map<string, CacheEntry>();
-  const inFlight = new Map<string, Promise<CacheEntry>>();
+  const inFlight = new Map<string, { generation: number; promise: Promise<CacheEntry> }>();
+  // Bumped on invalidation so a scan started before it can neither be reused nor published.
+  const generations = new Map<string, number>();
+  const generationOf = (key: string) => generations.get(key) ?? 0;
+  const invalidate = (key: string) => {
+    cache.delete(key);
+    generations.set(key, generationOf(key) + 1);
+  };
 
   const itemsPath = (datasetId: string) => "/v2/datasets/" + datasetId + "/items";
   const cacheKey = (datasetId: string) => tenantId() + ":" + datasetId;
@@ -122,8 +129,10 @@ export function createDatasetLookup(config: DatasetLookupConfig = {}): DatasetLo
 
   const putCache = (key: string, entry: CacheEntry): void => {
     cache.delete(key);
+    // An entry that alone exceeds the id budget is not worth keeping.
+    if (entry.offsets.size > maxTotalIds) return;
     cache.set(key, entry);
-    while (cache.size > maxDatasets || (cache.size > 1 && totalIds() > maxTotalIds)) {
+    while (cache.size > maxDatasets || totalIds() > maxTotalIds) {
       const oldest = cache.keys().next().value;
       if (oldest === undefined) break;
       cache.delete(oldest);
@@ -140,7 +149,7 @@ export function createDatasetLookup(config: DatasetLookupConfig = {}): DatasetLo
       const page = await client.get<AdLibraryRawItem[]>(itemsPath(datasetId), {
         offset: scanned,
         limit,
-        fields: "ad_archive_id",
+        fields: "ad_archive_id,adArchiveID",
         skipHidden: true,
         format: "json",
       });
@@ -157,27 +166,34 @@ export function createDatasetLookup(config: DatasetLookupConfig = {}): DatasetLo
   };
 
   const scan = async (key: string, datasetId: string, adArchiveId: string, previous: CacheEntry | undefined): Promise<CacheEntry> => {
+    const generation = generationOf(key);
     const running = inFlight.get(key);
-    if (running) return running;
+    if (running && running.generation === generation) return running.promise;
     const promise = scanFrom(datasetId, adArchiveId, previous)
       .then((entry) => {
-        putCache(key, entry);
+        if (generationOf(key) === generation) putCache(key, entry);
         return entry;
       })
-      .finally(() => inFlight.delete(key));
-    inFlight.set(key, promise);
+      .finally(() => {
+        if (inFlight.get(key)?.promise === promise) inFlight.delete(key);
+      });
+    inFlight.set(key, { generation, promise });
     return promise;
   };
 
+  const isExhausted = (entry: CacheEntry | undefined): boolean =>
+    entry !== undefined && (entry.complete || entry.scanned >= maxItems);
+
+  /** Scans (or joins a running scan) until the id shows up or the dataset is exhausted. */
   const locate = async (key: string, datasetId: string, adArchiveId: string): Promise<{ offset: number | undefined; entry: CacheEntry }> => {
     let entry = getCache(key);
     let offset = entry?.offsets.get(adArchiveId);
-    const exhausted = entry !== undefined && (entry.complete || entry.scanned >= maxItems);
-    if (offset === undefined && !exhausted) {
+    // A shared scan may have stopped at another caller target; keep going from where it ended.
+    for (let rounds = 0; offset === undefined && !isExhausted(entry) && rounds < 64; rounds++) {
       entry = await scan(key, datasetId, adArchiveId, entry);
       offset = entry.offsets.get(adArchiveId);
     }
-    return { offset, entry: entry as CacheEntry };
+    return { offset, entry: entry ?? { at: now(), offsets: new Map(), scanned: 0, complete: true } };
   };
 
   return {
@@ -198,8 +214,8 @@ export function createDatasetLookup(config: DatasetLookupConfig = {}): DatasetLo
       const item = await fetchOne(datasetId, first.offset);
       if (item && archiveIdOf(item) === adArchiveId) return { item, offset: first.offset };
 
-      // The dataset changed under a cached map: drop it and scan once more.
-      cache.delete(key);
+      // The dataset changed under a cached map: invalidate (which also retires any in-flight scan) and scan once more.
+      invalidate(key);
       const second = await locate(key, datasetId, adArchiveId);
       if (second.offset !== undefined) {
         const fresh = await fetchOne(datasetId, second.offset);

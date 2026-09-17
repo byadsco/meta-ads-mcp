@@ -46,6 +46,36 @@ describe("apify client", () => {
       expect(json).not.toHaveBeenCalled();
     });
 
+    it("stops reading a streamed body as soon as the byte budget is exceeded", async () => {
+      let pulls = 0;
+      let cancelled = false;
+      const chunk = new TextEncoder().encode("x".repeat(1024 * 1024));
+      const stream = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          pulls += 1;
+          controller.enqueue(chunk);
+        },
+        cancel() {
+          cancelled = true;
+        },
+      });
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, status: 200, headers: new Headers(), body: stream }));
+      await expect(apifyApiClient.get("/v2/datasets/ds123abcde/items")).rejects.toThrow(/too large/);
+      expect(pulls).toBeLessThan(40);
+      expect(cancelled).toBe(true);
+    });
+
+    it("measures bytes, not UTF-16 units, and bounds error bodies too", async () => {
+      const wide = "\u{1F600}".repeat(9 * 1024 * 1024);
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, status: 200, headers: new Headers(), json: async () => [], text: async () => wide }));
+      await expect(apifyApiClient.get("/v2/datasets/ds123abcde/items")).rejects.toThrow(/too large/);
+
+      const json = vi.fn(async () => ({ error: { message: "bad" } }));
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 400, headers: new Headers({ "content-length": String(100 * 1024 * 1024) }), json, text: async () => "{}" }));
+      await expect(apifyApiClient.get("/v2/datasets/ds123abcde/items")).rejects.toThrow(/too large|400/);
+      expect(json).not.toHaveBeenCalled();
+    });
+
     it("rejects an undeclared body that turns out larger than the cap", async () => {
       vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
         ok: true, status: 200, headers: new Headers(), json: async () => [], text: async () => "x".repeat(33 * 1024 * 1024),

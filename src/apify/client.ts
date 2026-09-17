@@ -13,6 +13,50 @@ const RETRY_BASE_DELAY = 1000;
 /** A dataset page is at most a few MB; anything larger is not a response worth buffering. */
 const MAX_RESPONSE_BYTES = 32 * 1024 * 1024;
 
+function tooLarge(detail: string): McpError {
+  return new McpError(ErrorCode.InternalError, `Apify response too large (${detail}; limit ${MAX_RESPONSE_BYTES} bytes). Request a smaller page.`);
+}
+
+/**
+ * Reads a body under a byte budget: the declared length is checked first,
+ * streamed bodies are cancelled as soon as the budget is exceeded, and the
+ * fallback path measures UTF-8 bytes rather than UTF-16 units.
+ */
+async function readBoundedBody(response: Response, maxBytes: number): Promise<string> {
+  const declared = Number.parseInt(response.headers.get("content-length") ?? "", 10);
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    await response.body?.cancel().catch(() => undefined);
+    throw tooLarge(`declared ${declared} bytes`);
+  }
+  const body = response.body;
+  if (body && typeof body.getReader === "function") {
+    const reader = body.getReader();
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value) {
+        total += value.byteLength;
+        if (total > maxBytes) {
+          await reader.cancel().catch(() => undefined);
+          throw tooLarge(`over ${maxBytes} bytes`);
+        }
+        chunks.push(value);
+      }
+    }
+    return Buffer.concat(chunks.map((c) => Buffer.from(c.buffer, c.byteOffset, c.byteLength))).toString("utf8");
+  }
+  const text = await response.text();
+  if (Buffer.byteLength(text, "utf8") > maxBytes) throw tooLarge(`over ${maxBytes} bytes`);
+  return text;
+}
+
+function parseJsonBody(text: string): unknown {
+  if (text.trim().length === 0) return null;
+  return JSON.parse(text);
+}
+
 export const ADS_LIBRARY_ACTOR_ID = "curious_coder~facebook-ads-library-scraper";
 
 export { LOCAL_TENANT_ID };
@@ -245,7 +289,10 @@ export class ApifyApiClient {
         // send headers and then stall mid-body forever; clearing the timeout
         // at header time would hang the call and hold the connection open.
         if (!response.ok) {
-          const errorBody = await response.json().catch(() => null);
+          const errorBody = await readBoundedBody(response, MAX_RESPONSE_BYTES).then(parseJsonBody).catch((err: unknown) => {
+            if (err instanceof McpError && /too large/.test(err.message)) throw err;
+            return null;
+          });
 
           if (response.status >= 500 && canRetry && attempt < this.maxRetries) {
             lastError = toMcpError(response.status, errorBody, null, token);
@@ -273,15 +320,7 @@ export class ApifyApiClient {
 
         // Apify returns 204 with no body for some endpoints (e.g. deletes).
         if (response.status === 204) return undefined as T;
-        const declared = Number.parseInt(response.headers.get("content-length") ?? "", 10);
-        if (Number.isFinite(declared) && declared > MAX_RESPONSE_BYTES) {
-          throw new McpError(ErrorCode.InternalError, `Apify response too large (${declared} bytes; limit ${MAX_RESPONSE_BYTES}). Request a smaller page.`);
-        }
-        const text = await response.text();
-        if (text.length > MAX_RESPONSE_BYTES) {
-          throw new McpError(ErrorCode.InternalError, `Apify response too large (over ${MAX_RESPONSE_BYTES} bytes). Request a smaller page.`);
-        }
-        return JSON.parse(text) as T;
+        return parseJsonBody(await readBoundedBody(response, MAX_RESPONSE_BYTES)) as T;
       } catch (error) {
         if (error instanceof McpError) throw error;
 

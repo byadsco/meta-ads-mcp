@@ -175,6 +175,13 @@ describe("ads_get_video_media", () => {
     expect(videos[0].video_id).toBe("9104");
   });
 
+  it("rejects video_index together with video_id instead of ignoring it", async () => {
+    const { handler } = setup();
+    vi.stubGlobal("fetch", vi.fn());
+    await expect(handler({ video_id: "999", video_index: 2, delivery: "url" }, EXTRA)).rejects.toThrow(/video_index/);
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+
   it("never echoes credentials from source urls", async () => {
     const { handler } = setup();
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockFetchResponse({ ...VIDEO, source: "https://video.xx.fbcdn.net/v.mp4?access_token=SECRET123&oe=69617495" })));

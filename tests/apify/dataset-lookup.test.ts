@@ -50,7 +50,7 @@ describe("findDatasetItem", () => {
     expect(found).toEqual({ item: FULL, offset: 1 });
     const urls = calls();
     expect(urls).toHaveLength(3);
-    expect(urls[1].searchParams.get("fields")).toBe("ad_archive_id");
+    expect(urls[1].searchParams.get("fields")).toBe("ad_archive_id,adArchiveID");
     expect(urls[1].searchParams.get("limit")).toBe("1000");
     expect(urls[1].searchParams.get("offset")).toBe("0");
     expect(urls[2].searchParams.get("offset")).toBe("1");
@@ -155,7 +155,7 @@ describe("findDatasetItem", () => {
     const gate = new Promise<void>((r) => { release = r; });
     const fetchMock = vi.fn().mockImplementation(async (input: string) => {
       const params = new URL(input).searchParams;
-      if (params.get("fields") === "ad_archive_id") {
+      if (params.get("fields")?.startsWith("ad_archive_id")) {
         await gate;
         return mockFetchResponse([{ ad_archive_id: "5550000000001" }, { ad_archive_id: "5560000000002" }]);
       }
@@ -171,7 +171,7 @@ describe("findDatasetItem", () => {
     await Promise.all([a, b]);
 
     // one scan + two single-record fetches
-    expect(calls().filter((u) => u.searchParams.get("fields") === "ad_archive_id")).toHaveLength(1);
+    expect(calls().filter((u) => u.searchParams.get("fields")?.startsWith("ad_archive_id"))).toHaveLength(1);
   });
 
   it("only caches well-formed ids and bounds the number of cached entries", async () => {
@@ -181,6 +181,78 @@ describe("findDatasetItem", () => {
 
     await expect(lookup.findDatasetItem("ds123abcde", "9999999999999")).rejects.toThrow(/not found/);
     expect(lookup.stats().cached_ids).toBe(0);
+  });
+
+  it("keeps scanning after a shared scan stopped at another caller target", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    const rows = ["1000000000000", "1000000000001", "1000000000002", "1000000000003"];
+    const fetchMock = vi.fn().mockImplementation(async (input: string) => {
+      const params = new URL(input).searchParams;
+      const offset = Number(params.get("offset"));
+      if (params.get("fields")) {
+        if (offset === 0) await gate;
+        const limit = Number(params.get("limit"));
+        return mockFetchResponse(rows.slice(offset, offset + limit).map((id) => ({ ad_archive_id: id })));
+      }
+      return mockFetchResponse([{ ad_archive_id: rows[offset] }]);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const lookup = createDatasetLookup({ pageSize: 2, maxItems: 10 });
+
+    const first = lookup.findDatasetItem("ds123abcde", "1000000000000");
+    const second = lookup.findDatasetItem("ds123abcde", "1000000000003");
+    await new Promise((r) => setTimeout(r, 5));
+    release();
+    const [a, b] = await Promise.all([first, second]);
+    expect(a.offset).toBe(0);
+    expect(b.offset).toBe(3);
+  });
+
+  it("does not reuse a stale in-flight scan after the cache was invalidated by a mismatch", async () => {
+    // Dataset rows: id A at 0, then B at 1. After the first scan, the dataset
+    // changes so that offset 0 now holds C; a lookup for A must rescan and fail
+    // cleanly instead of reusing the old map.
+    const phase = { changed: false };
+    const fetchMock = vi.fn().mockImplementation(async (input: string) => {
+      const params = new URL(input).searchParams;
+      const offset = Number(params.get("offset"));
+      const rowsNow = phase.changed ? ["3000000000003", "2000000000002"] : ["1000000000001", "2000000000002"];
+      if (params.get("fields")) {
+        const limit = Number(params.get("limit"));
+        return mockFetchResponse(rowsNow.slice(offset, offset + limit).map((id) => ({ ad_archive_id: id })));
+      }
+      return mockFetchResponse([{ ad_archive_id: rowsNow[offset] }]);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const lookup = createDatasetLookup({ pageSize: 1000 });
+
+    await lookup.findDatasetItem("ds123abcde", "1000000000001");
+    phase.changed = true;
+    await expect(lookup.findDatasetItem("ds123abcde", "1000000000001")).rejects.toThrow(/not found/);
+    const found = await lookup.findDatasetItem("ds123abcde", "3000000000003");
+    expect(found.offset).toBe(0);
+  });
+
+  it("projects the legacy adArchiveID alias during the scan", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn()
+        .mockResolvedValueOnce(mockFetchResponse([{ adArchiveID: "1000000000001" }]))
+        .mockResolvedValueOnce(mockFetchResponse([{ adArchiveID: "1000000000001", pageName: "Legacy" }])),
+    );
+    const lookup = createDatasetLookup({ pageSize: 1000 });
+    const found = await lookup.findDatasetItem("ds123abcde", "1000000000001");
+    expect(found.offset).toBe(0);
+    expect(calls()[0].searchParams.get("fields")).toBe("ad_archive_id,adArchiveID");
+  });
+
+  it("never keeps a single entry above the total id budget", async () => {
+    const rows = Array.from({ length: 4 }, (_, i) => ({ ad_archive_id: String(1000000000000 + i) }));
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockFetchResponse(rows)));
+    const lookup = createDatasetLookup({ pageSize: 1000, maxTotalIds: 2 });
+    await expect(lookup.findDatasetItem("ds123abcde", "9999999999999")).rejects.toThrow(/not found/);
+    expect(lookup.stats().cached_ids).toBeLessThanOrEqual(2);
   });
 
   it("rejects malformed ids before any request", async () => {
