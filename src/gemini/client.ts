@@ -520,8 +520,10 @@ export function createGeminiClient(config: GeminiClientConfig = {}): GeminiClien
         if (err instanceof GeminiApiError) err.fileName = requestedName;
         throw err;
       }
-      const body = parseJson(finalize.text, "upload") as { file?: unknown } | null;
+      // Parsing is inside the post-send handling too: an accepted upload whose
+      // 200 came back empty or truncated must still leave a name to delete.
       try {
+        const body = parseJson(finalize.text, "upload") as { file?: unknown } | null;
         return fileFrom(body?.file);
       } catch (err) {
         if (err instanceof GeminiApiError) err.fileName = requestedName;

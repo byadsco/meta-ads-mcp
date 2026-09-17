@@ -345,6 +345,32 @@ function abortedError(): Error {
   return new Error("Video analysis aborted before the video was sent to Gemini.");
 }
 
+export class VideoAnalysisAbortedError extends Error {
+  constructor() {
+    super("Video analysis aborted by the caller.");
+    this.name = "VideoAnalysisAbortedError";
+  }
+}
+
+function isAborted(err: unknown): boolean {
+  return err instanceof VideoAnalysisAbortedError;
+}
+
+/**
+ * Waits for work someone else started, but only for as long as this caller is
+ * still there. The shared work is left running: another joiner, or the caller
+ * that started it, still wants the result.
+ */
+function raceAbort<T>(work: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (!signal) return work;
+  if (signal.aborted) return Promise.reject(new VideoAnalysisAbortedError());
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(new VideoAnalysisAbortedError());
+    signal.addEventListener("abort", onAbort, { once: true });
+    work.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
+  });
+}
+
 /**
  * Downloads one ad video through the hardened pipeline and asks Gemini for a
  * structured analysis, for agents whose own model cannot watch video. Nothing
@@ -378,10 +404,13 @@ export async function analyzeVideoWithGemini(
   const shared = inFlight.get(cacheKey);
   if (shared) {
     try {
-      return { ...(await shared), cached: true, key_source: keySource };
-    } catch {
-      // That caller's failure (an abort, say) is not this one's: fall through
-      // and do the work, exactly as if nothing had been in flight.
+      // The joiner keeps its own cancellation: it stops waiting when its
+      // caller goes away, without disturbing the work it was waiting on.
+      return { ...(await raceAbort(shared, ctx.signal)), cached: true, key_source: keySource };
+    } catch (err) {
+      if (isAborted(err)) throw err;
+      // That caller's failure is not this one's: fall through and do the work,
+      // exactly as if nothing had been in flight.
     }
   }
 
@@ -399,17 +428,7 @@ export async function analyzeVideoWithGemini(
   const warnings: string[] = [];
   let billed = false;
 
-  let publish: ((result: CachedAnalysis) => void) | undefined;
-  let fail: ((err: unknown) => void) | undefined;
-  inFlight.set(
-    cacheKey,
-    new Promise<CachedAnalysis>((resolve, reject) => {
-      publish = resolve;
-      fail = reject;
-    }),
-  );
-
-  try {
+  const work = (async (): Promise<CachedAnalysis> => {
     const result = await runner.run({ tenantId, signal: ctx.signal }, async (job) => {
       await report(1, 4, "Downloading the video");
       const file = await downloadVideo(preferred, { destDir: job.dir, maxBytes: videoMaxBytes(), signal: job.signal });
@@ -526,7 +545,6 @@ export async function analyzeVideoWithGemini(
     });
 
     cache.set(cacheKey, result);
-    publish?.(result);
     logger.info(
       {
         event: "gemini_video_analysis",
@@ -540,12 +558,22 @@ export async function analyzeVideoWithGemini(
       "Video analyzed with Gemini",
     );
     await report(4, 4, "Done");
-    return { ...result, cached: false, key_source: keySource };
+    return result;
+  })();
+
+  // The stored promise may never be joined, and an unobserved rejection would
+  // take the process down for every tenant. This caller is the one that
+  // reports the error; the stored copy only has to be observed.
+  work.catch(() => undefined);
+  inFlight.set(cacheKey, work);
+
+  try {
+    return { ...(await work), cached: false, key_source: keySource };
   } catch (err) {
     if (!billed) permit.refund();
-    fail?.(err);
     throw err;
   } finally {
-    inFlight.delete(cacheKey);
+    // Only this attempt's entry: a retry started meanwhile owns its own.
+    if (inFlight.get(cacheKey) === work) inFlight.delete(cacheKey);
   }
 }

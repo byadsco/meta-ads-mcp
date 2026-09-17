@@ -9,7 +9,7 @@ import {
   GeminiAnalysisRateLimitError,
   type VideoAnalysisDeps,
 } from "../../src/gemini/video-analysis.js";
-import type { GeminiClient } from "../../src/gemini/client.js";
+import { createGeminiClient, GeminiApiError, type GeminiClient } from "../../src/gemini/client.js";
 import type { Ffmpeg } from "../../src/media/ffmpeg.js";
 import { createVideoJobRunner } from "../../src/media/video-jobs.js";
 import type { VideoSource } from "../../src/media/video-sources.js";
@@ -383,5 +383,87 @@ describe("round-1 review fixes (analysis)", () => {
     const { deps, client } = setup({ client: fakeClient({ uploadFile }) }, 32 * 1024);
     await expect(analyzeVideoWithGemini(SOURCE, OPTIONS, deps, {})).rejects.toThrow(/socket hang up/);
     expect(client.deleteFile).toHaveBeenCalledWith({ key: KEY, name: "files/lost-123" });
+  });
+});
+
+describe("round-2 review fixes", () => {
+  it("does not leave an unobserved rejection behind when nobody joins the work", async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      const { deps } = setup({ downloadVideo: (async () => { throw new Error("download refused"); }) as never });
+      await expect(analyzeVideoWithGemini(SOURCE, OPTIONS, deps, {})).rejects.toThrow(/download refused/);
+      // A macrotask is enough for Node to report an unobserved rejection.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
+
+  it("does not leave one behind when the caller was already gone", async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      const controller = new AbortController();
+      controller.abort();
+      const { deps } = setup();
+      await expect(analyzeVideoWithGemini(SOURCE, OPTIONS, deps, { signal: controller.signal })).rejects.toThrow();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
+
+  it("lets a joiner stop waiting when its own caller disconnects, without disturbing the work", async () => {
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const generateJson = vi.fn(async () => {
+      await gate;
+      return { json: ANALYSIS, usage: {}, model: "gemini-3.8-flash", schema_enforced: true };
+    });
+    const { deps } = setup({ client: fakeClient({ generateJson }) });
+
+    const leader = analyzeVideoWithGemini(SOURCE, OPTIONS, deps, {});
+    // Let the leader reach the gate and publish its in-flight entry.
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const joinerAbort = new AbortController();
+    const joiner = analyzeVideoWithGemini(SOURCE, OPTIONS, deps, { signal: joinerAbort.signal });
+    joinerAbort.abort();
+
+    await expect(joiner).rejects.toThrow(/aborted/i);
+    release();
+    await expect(leader).resolves.toMatchObject({ cached: false });
+    expect(generateJson).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the name to delete when the finalize body is truncated or empty", async () => {
+    for (const body of ['{"file":', "", "not json"]) {
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(new Response("", { status: 200, headers: { "x-goog-upload-url": "https://generativelanguage.googleapis.com/upload/v1beta/files?upload_id=abc" } }))
+        .mockResolvedValueOnce(new Response(body, { status: 200, headers: { "content-type": "application/json" } }));
+      const client = createGeminiClient({ fetch: fetchMock as never });
+      const error = (await client.uploadFile({ key: KEY, data: Buffer.from("x"), mimeType: "video/mp4", displayName: "ad-video" }).catch((e: unknown) => e)) as GeminiApiError & { fileName?: string };
+      expect(error).toBeInstanceOf(GeminiApiError);
+      expect(error.fileName, `body ${JSON.stringify(body)} lost the file name`).toMatch(/^files\/mcp-[a-z0-9-]+$/);
+    }
+  });
+
+  it("frees only its own in-flight entry", async () => {
+    const { deps, client } = setup();
+    await analyzeVideoWithGemini(SOURCE, OPTIONS, deps, {});
+    // A second call with the same key must run (the cache serves it) and a
+    // third with a different key must not be blocked by a stale entry.
+    const second = await analyzeVideoWithGemini(SOURCE, OPTIONS, deps, {});
+    expect(second.cached).toBe(true);
+    const other = { ...SOURCE, key: "meta:video:1000", source_url: "https://video.xx.fbcdn.net/o.mp4", low_res_url: "https://video.xx.fbcdn.net/o.mp4" };
+    await analyzeVideoWithGemini(other, OPTIONS, deps, {});
+    expect(client.generateJson).toHaveBeenCalledTimes(2);
   });
 });
