@@ -1,8 +1,8 @@
 import { McpError, ErrorCode } from "@modelcontextprotocol/sdk/types.js";
-import { getCurrentFbUserId, hashToken } from "../auth/token-store.js";
+import { hashToken } from "../auth/token-store.js";
 import { getApifyTokenRepo } from "../store/apify-token-repo.js";
 import { logger } from "../utils/logger.js";
-import { isStdioTransport } from "../utils/transport-mode.js";
+import { isSingleTenantMode, LOCAL_TENANT_ID, resolveTenantId } from "../auth/tenant.js";
 import type { ApifyErrorBody } from "./types.js";
 
 /** Fixed on purpose: an env-overridable base URL would let a config change redirect tenant tokens to an attacker host. */
@@ -13,12 +13,7 @@ const RETRY_BASE_DELAY = 1000;
 
 export const ADS_LIBRARY_ACTOR_ID = "curious_coder~facebook-ads-library-scraper";
 
-/**
- * Storage key for stdio / single-operator mode, where there is no OAuth
- * request context. Facebook user ids are numeric, so this cannot collide with
- * a real tenant. It is only ever reachable via isSingleTenantMode().
- */
-export const LOCAL_TENANT_ID = "_local";
+export { LOCAL_TENANT_ID };
 
 const APIFY_TOKEN_PATTERN = /apify_api_[A-Za-z0-9]+/g;
 
@@ -78,35 +73,13 @@ export function maskApifyToken(token: string): string {
 }
 
 /**
- * Multi-tenant is on exactly when the Meta OAuth app is configured, mirroring
- * `metaAppConfigured` in src/transport/security-config.ts. Read directly from
- * env rather than calling resolveSecurityConfig(), which validates and can
- * throw — this runs on every request and must not turn a config problem into
- * an unrelated tool failure.
- */
-function isSingleTenantMode(): boolean {
-  if (isStdioTransport(process.argv)) return true;
-  return !(process.env.META_APP_ID?.trim() && process.env.META_APP_SECRET?.trim());
-}
-
-/**
- * Which encrypted-token bucket this request may read.
- *
- * Fails closed: in multi-tenant HTTP mode an unidentified caller (API-key
- * mode, or any flow that loses the OAuth identity) must NOT silently land in
- * the shared `_local` bucket or on the server-wide APIFY_TOKEN — that would
- * let one tenant read another's credential and spend their Apify credit.
+ * Which encrypted-token bucket this request may read. Fails closed in
+ * multi-tenant mode without an OAuth identity (see src/auth/tenant.ts): an
+ * unidentified caller must never land on the shared `_local` bucket or the
+ * server-wide APIFY_TOKEN and spend another tenant's Apify credit.
  */
 export function resolveApifyTenantId(): string {
-  const fbUserId = getCurrentFbUserId();
-  if (fbUserId) return fbUserId;
-
-  if (isSingleTenantMode()) return LOCAL_TENANT_ID;
-
-  throw new McpError(
-    ErrorCode.InvalidRequest,
-    "The ads_library_* tools need an authenticated user in multi-tenant mode. Sign in through the Meta OAuth flow — API-key requests have no tenant identity, so no Apify token can be resolved for them.",
-  );
+  return resolveTenantId({ feature: "ads_library_*" });
 }
 
 /**

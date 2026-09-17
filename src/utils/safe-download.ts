@@ -1,13 +1,16 @@
 import type { IncomingHttpHeaders, IncomingMessage } from "node:http";
 import https from "node:https";
 import type { RequestOptions } from "node:https";
-import type { LookupFunction } from "node:net";
+import { UnsafeUrlError, type AssertSafeUrlOptions, type ResolvedSafePublicUrl } from "./url-guard.js";
 import {
-  resolveSafePublicUrl,
-  UnsafeUrlError,
-  type AssertSafeUrlOptions,
-  type ResolvedSafePublicUrl,
-} from "./url-guard.js";
+  buildPinnedLookup,
+  followSafeRedirects,
+  isRedirect,
+  parseContentLength,
+  parseContentType,
+  redirectTarget,
+  type RedirectOrResult,
+} from "./safe-http.js";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_BYTES = 10 * 1024 * 1024;
@@ -41,67 +44,10 @@ function extensionFor(contentType: string): SafeImageDownload["extension"] {
   return ".jpg";
 }
 
-function normalizeContentType(headers: IncomingHttpHeaders): string | null {
-  const raw = headers["content-type"];
-  const value = Array.isArray(raw) ? raw[0] : raw;
-  if (!value) return null;
-  const contentType = value.split(";")[0].trim().toLowerCase();
+function normalizeImageContentType(headers: IncomingHttpHeaders): string | null {
+  const contentType = parseContentType(headers);
+  if (!contentType) return null;
   return JPEG_MIME_ALIASES.has(contentType) ? "image/jpeg" : contentType;
-}
-
-function parseContentLength(headers: IncomingHttpHeaders): number | null {
-  const raw = headers["content-length"];
-  const value = Array.isArray(raw) ? raw[0] : raw;
-  if (!value) return null;
-  const parsed = Number.parseInt(value, 10);
-  return Number.isFinite(parsed) ? parsed : null;
-}
-
-function normalizeHostname(hostname: string): string {
-  return hostname.startsWith("[") && hostname.endsWith("]")
-    ? hostname.slice(1, -1)
-    : hostname;
-}
-
-function buildPinnedLookup(resolved: ResolvedSafePublicUrl): LookupFunction {
-  const primary = resolved.addresses[0];
-  if (!primary) {
-    throw new UnsafeUrlError(`Hostname ${resolved.url.hostname} did not resolve to any address`);
-  }
-
-  type LookupOneCallback = (err: Error | null, address: string, family: number) => void;
-  type LookupAllCallback = (
-    err: Error | null,
-    addresses: Array<{ address: string; family: 4 | 6 }>,
-  ) => void;
-
-  return ((hostname: string, options: unknown, callback?: unknown) => {
-    const cb = typeof options === "function" ? options : callback;
-    if (!cb) return;
-    const wantsAll =
-      typeof options === "object" && options !== null && "all" in options && options.all === true;
-    if (normalizeHostname(hostname) !== normalizeHostname(resolved.url.hostname)) {
-      (cb as LookupOneCallback)(new Error(`Unexpected lookup hostname ${hostname}`), "", 0);
-      return;
-    }
-    if (wantsAll) {
-      (cb as LookupAllCallback)(null, resolved.addresses);
-      return;
-    }
-    (cb as LookupOneCallback)(null, primary.address, primary.family);
-  }) as LookupFunction;
-}
-
-function isRedirect(statusCode: number | undefined): boolean {
-  return statusCode === 301 || statusCode === 302 || statusCode === 303 || statusCode === 307 || statusCode === 308;
-}
-
-type ImageRequestResult =
-  | SafeImageDownload
-  | { redirectUrl: URL };
-
-function isRedirectResult(result: ImageRequestResult): result is { redirectUrl: URL } {
-  return "redirectUrl" in result;
 }
 
 function requestImage(
@@ -109,7 +55,7 @@ function requestImage(
   options: Required<Pick<SafeImageDownloadOptions, "maxBytes" | "timeoutMs">> & {
     request: typeof https.request;
   },
-): Promise<ImageRequestResult> {
+): Promise<RedirectOrResult<SafeImageDownload>> {
   return new Promise((resolve, reject) => {
     let settled = false;
     const reqOptions: RequestOptions = {
@@ -120,18 +66,11 @@ function requestImage(
 
     const req = options.request(resolved.url, reqOptions, (res: IncomingMessage) => {
       if (isRedirect(res.statusCode)) {
-        const location = res.headers.location;
         res.resume();
-        if (!location) {
-          reject(new UnsafeUrlError(`Redirect from ${resolved.url.hostname} did not include Location`));
-          return;
-        }
         try {
-          resolve({
-            redirectUrl: new URL(Array.isArray(location) ? location[0] : location, resolved.url),
-          });
-        } catch {
-          reject(new UnsafeUrlError("Redirect Location is malformed"));
+          resolve({ redirectUrl: redirectTarget(res, resolved.url) });
+        } catch (err) {
+          reject(err);
         }
         return;
       }
@@ -142,7 +81,7 @@ function requestImage(
         return;
       }
 
-      const contentType = normalizeContentType(res.headers);
+      const contentType = normalizeImageContentType(res.headers);
       if (!contentType || !ALLOWED_IMAGE_TYPES.has(contentType)) {
         res.resume();
         reject(new UnsafeUrlError(`Image content-type "${contentType ?? "missing"}" is not allowed`));
@@ -212,18 +151,9 @@ export async function downloadSafePublicImage(
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const maxRedirects = options.maxRedirects ?? DEFAULT_MAX_REDIRECTS;
 
-  let resolved = await resolveSafePublicUrl(rawUrl, { resolve: options.resolve });
-  for (let redirects = 0; redirects <= maxRedirects; redirects++) {
-    const result = await requestImage(resolved, { request, maxBytes, timeoutMs });
-    if (!isRedirectResult(result)) {
-      return result;
-    }
-
-    if (redirects === maxRedirects) {
-      throw new UnsafeUrlError(`Too many redirects while downloading image (max ${maxRedirects})`);
-    }
-    resolved = await resolveSafePublicUrl(result.redirectUrl.toString(), { resolve: options.resolve });
-  }
-
-  throw new UnsafeUrlError(`Too many redirects while downloading image (max ${maxRedirects})`);
+  return followSafeRedirects(
+    rawUrl,
+    { maxRedirects, resolve: options.resolve, what: "image" },
+    (resolved) => requestImage(resolved, { request, maxBytes, timeoutMs }),
+  );
 }

@@ -3,7 +3,7 @@ import { registerAllTools } from "../../src/tools/index.js";
 import { createMockMcpServer } from "../setup.js";
 
 describe("registerAllTools", () => {
-  it("registers exactly 135 tools total", () => {
+  it("registers exactly 136 tools total", () => {
     // 79 v2 tools renamed (with account_insights removed → 79) + 14 new in v3 +
     //   3 audience-sharing tools (share / unshare / get-shared-accounts) +
     //   1 invoices tool (ads_get_invoices) +
@@ -11,10 +11,11 @@ describe("registerAllTools", () => {
     //   1 UTM editing tool (ads_update_ad_url_tags) +
     //   1 bulk video-ad macro (ads_bulk_create_video_ads) +
     //   1 creative media tool (ads_get_creative_media) +
-    //   8 Ad Library scraping tools (ads_library_*, Apify-backed).
+    //   8 Ad Library scraping tools (ads_library_*, Apify-backed) +
+    //   1 video media tool (ads_get_video_media).
     const server = createMockMcpServer();
     registerAllTools(server as never);
-    expect(server.registerTool).toHaveBeenCalledTimes(135);
+    expect(server.registerTool).toHaveBeenCalledTimes(136);
   });
 
   it("registers all tools with unique names", () => {
@@ -125,6 +126,7 @@ describe("registerAllTools", () => {
     expect(names).toContain("ads_get_insights");
     expect(names).toContain("ads_get_creative_details");
     expect(names).toContain("ads_get_creative_media");
+    expect(names).toContain("ads_get_video_media");
     expect(names).toContain("ads_update_ad_url_tags");
     expect(names).toContain("ads_clone_ad_set_bundle");
 

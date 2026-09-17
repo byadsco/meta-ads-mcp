@@ -39,9 +39,13 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      - name: Install ffmpeg (video keyframe tests)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+
       - name: Test
         env:
           CI: '1'
+          FFMPEG_REQUIRED: '1'
         run: npm test
 
       - name: Build

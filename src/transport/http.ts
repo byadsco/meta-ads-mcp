@@ -49,6 +49,8 @@ import {
 import { isFirestoreEnabled } from "../store/firestore.js";
 import { logger } from "../utils/logger.js";
 import { unsafeIpReason } from "../utils/url-guard.js";
+import { getFfmpeg } from "../media/ffmpeg.js";
+import { sweepStaleVideoDirs } from "../media/video-jobs.js";
 
 interface PendingAuth {
   fbUserId: string;
@@ -110,8 +112,8 @@ export function getServerUrl(): URL {
   return new URL(`http://localhost:${port}`);
 }
 
-export function healthPayload(): { status: "ok" } {
-  return { status: "ok" };
+export function healthPayload(extras: { ffmpeg?: boolean } = {}): { status: "ok"; ffmpeg?: boolean } {
+  return extras.ffmpeg === undefined ? { status: "ok" } : { status: "ok", ffmpeg: extras.ffmpeg };
 }
 
 interface ConsentContext {
@@ -479,8 +481,18 @@ export async function startHttpTransport(
     }
   }
 
+  // Probed once at startup; the health check must never spawn a process per request.
+  let ffmpegAvailable: boolean | undefined;
+  void getFfmpeg().isAvailable().then((available) => {
+    ffmpegAvailable = available;
+    logger.info({ ffmpeg_available: available }, available ? "ffmpeg detected; video keyframe extraction enabled" : "ffmpeg not found; video tools fall back to thumbnails");
+  });
+  void sweepStaleVideoDirs().then((removed) => {
+    if (removed > 0) logger.info({ removed }, "Removed stale video scratch directories");
+  });
+
   app.get("/health", (_req, res) => {
-    res.json(healthPayload());
+    res.json(healthPayload({ ffmpeg: ffmpegAvailable }));
   });
 
   if (config.multiTenantEnabled) {
