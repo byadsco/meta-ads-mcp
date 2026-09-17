@@ -6,6 +6,7 @@ import {
 } from "../../src/transport/html-pages.js";
 import { renderConsentPage } from "../../src/transport/http.js";
 import type { ApifyTokenStatus } from "../../src/store/apify-token-repo.js";
+import type { GeminiKeyStatus } from "../../src/store/gemini-key-repo.js";
 import type { MetaTokenSummary } from "../../src/store/meta-token-repo.js";
 
 const NOT_REGISTERED: ApifyTokenStatus = {
@@ -21,6 +22,9 @@ const REGISTERED: ApifyTokenStatus = {
   apifyUsername: "byads",
   updatedAt: 1_786_000_000,
 };
+
+/** The Gemini section has its own suite (gemini-section.test.ts); these fixtures only need it present. */
+const NO_GEMINI: GeminiKeyStatus = { registered: false, keyFingerprint: null, updatedAt: null };
 
 const metaToken = (over: Partial<MetaTokenSummary> = {}): MetaTokenSummary => ({
   name: "byads",
@@ -157,7 +161,7 @@ describe("renderApifySection", () => {
 });
 
 describe("renderConnectionsPage", () => {
-  const base = { user, tokens: [metaToken()], activeName: "byads", apify: NOT_REGISTERED };
+  const base = { user, tokens: [metaToken()], activeName: "byads", apify: NOT_REGISTERED, gemini: NO_GEMINI };
 
   it("lists Meta tokens and marks the active one", () => {
     const html = renderConnectionsPage({
@@ -253,6 +257,7 @@ describe("renderConsentPage", () => {
     tokens: [metaToken()],
     activeName: "byads",
     apify: NOT_REGISTERED,
+    gemini: NO_GEMINI,
   };
 
   it("includes the Apify section and a link to the connections page", () => {

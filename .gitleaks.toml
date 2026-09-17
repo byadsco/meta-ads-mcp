@@ -100,6 +100,23 @@ regex = '''AIza[0-9A-Za-z_-]{35}'''
 tags = ["gcp", "key"]
 
 [[rules]]
+id = "gemini-auth-key"
+# AI Studio keys created from September 2026 carry an AQ. prefix instead of AIza,
+# so the rule above does not see them. Real keys are far longer than 20 chars;
+# the floor keeps short test fixtures out.
+description = "Gemini / Google AI Studio auth key (AQ. prefix)"
+regex = '''AQ\.[A-Za-z0-9_-]{20,}'''
+tags = ["gemini", "key"]
+
+[[rules]]
+id = "gemini-api-key-assignment"
+# Catches any shape assigned to the variable, including formats Google has not
+# shipped yet: the assignment itself is the signal.
+description = "GEMINI_API_KEY assigned a non-placeholder value"
+regex = '''(?i)GEMINI_API_KEY\s*[:=]\s*["']?[A-Za-z0-9_.\-]{20,}'''
+tags = ["gemini", "key"]
+
+[[rules]]
 id = "gcp-service-account-private-key"
 description = "GCP service account JSON containing a private key"
 regex = '''"private_key"\s*:\s*"-----BEGIN'''

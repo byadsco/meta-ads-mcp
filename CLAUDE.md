@@ -40,6 +40,7 @@ Before **any** `git commit -m`, `git push`, `gcloud run deploy`, `docker push`, 
    - Apify API tokens: `apify_api_[A-Za-z0-9]{20,}`
    - `META_TOKENS` as a JSON map of `EAA…` tokens (multi-tenant)
    - Google: `AIza[A-Za-z0-9_-]{35}`, `ya29\.[A-Za-z0-9_-]+`, GCP service account JSON
+   - Gemini keys: `AQ\.[A-Za-z0-9_-]{20,}` and any `GEMINI_API_KEY=` assignment
    - Generic: `-----BEGIN … PRIVATE KEY-----`, GitHub PATs (`gh[pousr]_`), AWS keys (`AKIA`)
 8. `.gitignore` covers `.env`, `.env.local`, `*.key`, `*.pem`, `credentials.json`, `service-account*.json`, `dist/`, `node_modules/`.
 
@@ -94,6 +95,7 @@ Source: [.env.example](.env.example). Each one is treated as a hard secret.
 | `TOKEN_ENCRYPTION_KEY` | AES-256-GCM key for tokens-at-rest | Decrypt every Meta token in Firestore. **Catastrophic.** |
 | `MCP_API_KEY` | Service-to-service key | Bypass OAuth entirely. |
 | `APIFY_TOKEN` | Apify API token (fallback only; per-tenant tokens live encrypted in Firestore) | Full control of the Apify account: run any actor, drain credits, read every dataset. |
+| `GEMINI_API_KEY` | Gemini API key (fallback only; per-tenant keys live encrypted in Firestore) | Full use of the Google AI Studio project: burn paid quota and read anything uploaded to its Files API. |
 | GCP creds (WIF / service account) | Cloud auth | Deploy malicious revisions, read Firestore, escalate via IAM. |
 
 If any of these leaks, see the rotation playbooks in [.github/pre-deploy-guard/references/sensitive-patterns.md](.github/pre-deploy-guard/references/sensitive-patterns.md).
