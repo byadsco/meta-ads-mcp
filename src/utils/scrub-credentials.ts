@@ -114,6 +114,28 @@ export function scrubCredentials(text: string): string {
   });
 }
 
+/**
+ * A name=value pair where the name is any bounded run of non-separator
+ * characters, so a name spelled with characters the redaction pattern does
+ * not allow (access+token, access!token) is still recognized. Used where the
+ * whole value can be dropped, which is why it can afford to be this loose:
+ * it still requires an actual assignment, so an ordinary route like
+ * #/products/password-manager is left alone.
+ */
+const LOOSE_PAIR = /([^=&#;,\s]{1,80})=([^&#;,\s]+)/g;
+
+export function carriesCredentialPair(text: string): boolean {
+  const decoded = decodeRepeatedly(text);
+  for (const candidate of [text, decoded]) {
+    LOOSE_PAIR.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = LOOSE_PAIR.exec(candidate)) !== null) {
+      if (mentionsCredential(match[1])) return true;
+    }
+  }
+  return false;
+}
+
 /** True when the text carries a credential-shaped parameter with a value. */
 export function hasCredential(text: string): boolean {
   return scrubCredentials(text) !== text;
@@ -152,11 +174,12 @@ export function scrubUrlCredentials(raw: string): string | undefined {
     changed = true;
   }
 
-  // A fragment is never needed for a CDN signature and is never sent to the
-  // server, so the whole thing goes as soon as it mentions a credential in
-  // any shape. That covers the separators and encodings a parameter-by-
-  // parameter scrub would have to enumerate.
-  if (url.hash.length > 1 && mentionsCredential(url.hash)) {
+  // A fragment goes only when it actually carries a credential as a
+  // name=value pair, decoded first so an encoded name is caught. Dropping it
+  // whenever a credential word appeared anywhere cost ordinary shop urls
+  // their route (#/products/password-manager), which is data the reader needs;
+  // a credential spelled as a path segment is inside the documented scope.
+  if (url.hash.length > 1 && carriesCredentialPair(url.hash)) {
     url.hash = "";
     changed = true;
   }

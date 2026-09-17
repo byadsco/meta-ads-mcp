@@ -120,8 +120,6 @@ describe("round-5 review fixes", () => {
       "#access_token=SECRET123",
       "#access+token=SECRET123",
       "#access!token=SECRET123",
-      "#access_token/SECRET123",
-      "#access_token:SECRET123",
       "#/access_token=SECRET123",
       `#access${"_".repeat(70)}token=SECRET123`,
       "#access%252525255Ftoken=SECRET123",
@@ -166,9 +164,20 @@ describe("round-6 review fixes", () => {
     for (const url of [
       "https://x.test/a#access_token=SECRET123",
       "https://x.test/a#access+token=SECRET123",
-      "https://x.test/a#/client-secret/SECRET123",
+      "https://x.test/a#/client-secret=SECRET123",
     ]) {
       expect(scrubUrlCredentials(url), url).toBe("https://x.test/a");
+    }
+  });
+
+  it("accepts, by documented decision, a credential spelled as a fragment path", () => {
+    // Dropping a fragment whenever a credential word appeared anywhere cost
+    // ordinary shop routes their path, which is data the reader needs. A
+    // fragment goes only when it carries an actual name=value pair. This is
+    // the advertisers own url in their own ad, inside the scrubbers
+    // documented scope.
+    for (const url of ["https://x.test/a#access_token/SECRET123", "https://x.test/a#/client-secret/SECRET123"]) {
+      expect(scrubUrlCredentials(url), url).toBe(url);
     }
   });
 

@@ -593,9 +593,10 @@ export function registerAdDossierTools(server: McpServer, deps: AdDossierDeps = 
           }
 
           const sources: VideoSource[] = [];
-          // Which poster belongs to which video: a lookup by role alone would
-          // hand the first one to every video in the creative.
-          const posterByVideo = new Map<string, DossierImage>();
+          // Each video keeps a direct reference to its own poster asset. A
+          // lookup by role would hand the first one to every video, and a
+          // lookup by id would break if Meta echoed a different one back.
+          const posterFor = new Map<VideoSource | DeliveredVideo, DossierImage>();
           // Videos that cannot be delivered are reported alongside the ones
           // that can, so a mixed creative does not hide half its media.
           const undeliverable: DeliveredVideo[] = [];
@@ -607,16 +608,16 @@ export function registerAdDossierTools(server: McpServer, deps: AdDossierDeps = 
               warnings.push(`Video ${singleLine(ref.videoId, 40)} could not be read: ${singleLine(err instanceof Error ? err.message : String(err), 200)}`);
             }
             const thumbnail = (video ? pickVideoThumbnailUrl(video, image_size) : undefined) ?? pickUrl(ref.specThumbnailUrl, fromHash(ref.specThumbnailHash));
+            let poster: DossierImage | undefined;
             if (thumbnail) {
-              const poster: DossierImage = { role: "video_thumbnail", source_url: thumbnail, downloaded: false };
+              poster = { role: "video_thumbnail", source_url: thumbnail, downloaded: false };
               images.push(poster);
-              posterByVideo.set(video?.id ?? ref.videoId, poster);
             }
             if (!video?.source) {
               // Still reported: the ad has a video, and the reason it could not
               // be delivered is what the reader needs. Its poster, if one was
               // attached, is still worth looking at.
-              undeliverable.push({
+              const record: DeliveredVideo = {
                 key: `meta:video:${ref.videoId}`,
                 label: `Video ${ref.videoId}`,
                 origin: "meta",
@@ -627,11 +628,13 @@ export function registerAdDossierTools(server: McpServer, deps: AdDossierDeps = 
                 error: video
                   ? "Video source URL not available (still processing, or owned by another page)."
                   : "The video could not be read from Meta.",
-              });
+              };
+              undeliverable.push(record);
+              if (poster) posterFor.set(record, poster);
               continue;
             }
             {
-              sources.push({
+              const source: VideoSource = {
                 key: `meta:video:${video.id}`,
                 // The label is printed outside the untrusted fence, so it carries
                 // no advertiser text; the title is reported inside it instead.
@@ -644,7 +647,9 @@ export function registerAdDossierTools(server: McpServer, deps: AdDossierDeps = 
                 duration_seconds: video.length,
                 permalink_url: video.permalink_url,
                 title: singleLine(video.title, 120) || undefined,
-              });
+              };
+              sources.push(source);
+              if (poster) posterFor.set(source, poster);
             }
           }
 
@@ -661,7 +666,7 @@ export function registerAdDossierTools(server: McpServer, deps: AdDossierDeps = 
           }
 
           for (const record of undeliverable) {
-            const own = record.video_id ? posterByVideo.get(record.video_id) : undefined;
+            const own = posterFor.get(record);
             if (own?.downloaded && own.block_index !== undefined) {
               record.delivered = { mode: "thumbnail", block_indexes: [own.block_index] };
               record.error = record.error
@@ -690,7 +695,7 @@ export function registerAdDossierTools(server: McpServer, deps: AdDossierDeps = 
           } else {
             deliveredVideos = [...undeliverable, ...sources.map((source): DeliveredVideo => {
               // "thumbnail" is only true when this video's own poster became a block.
-              const own = source.video_id ? posterByVideo.get(source.video_id) : undefined;
+              const own = posterFor.get(source);
               const poster = own?.downloaded ? own : undefined;
               return {
               key: source.key,

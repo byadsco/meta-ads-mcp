@@ -12,7 +12,12 @@ What can cost the advertiser money, what changes live data, and the limits worth
 
 Everything else is free to call. Reading is never the expensive part; deciding badly is.
 
-Both paid tools are capped per tenant per hour and cache their results, so a repeat of the same question is free. Neither will run without the tenant having registered their own credential.
+Neither paid tool will run without the tenant having registered their own credential.
+
+`ads_analyze_video` is capped per tenant per hour and caches its results, so an
+identical repeat is free. `ads_library_scrape` is **not** cached: calling it
+twice with the same arguments starts two runs and bills twice. Its protection is
+the per-run spend cap, so list the existing runs and reuse a dataset instead.
 
 ## What changes live data
 
