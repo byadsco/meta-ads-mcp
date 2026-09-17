@@ -531,7 +531,21 @@ export function mountAuthRoutes(
       listTokens(session.fbUserId),
       getDefaultTokenName(session.fbUserId),
       getApifyTokenRepo().getStatus(session.fbUserId),
-      getGeminiKeyRepo().getStatus(session.fbUserId),
+      // Gemini is an optional add-on: a failure reading its status must not
+      // take the page down, the same way the consent page degrades.
+      getGeminiKeyRepo()
+        .getStatus(session.fbUserId)
+        .catch((error: unknown) => {
+          logger.warn(
+            {
+              event: "gemini_status_unavailable",
+              fbUserId: hashPii(session.fbUserId),
+              error: error instanceof Error ? error.message : String(error),
+            },
+            "Could not read Gemini key status; rendering connections without it",
+          );
+          return { registered: false, keyFingerprint: null, updatedAt: null };
+        }),
     ]);
 
     res.setHeader(

@@ -431,9 +431,12 @@ describe("round-2 review fixes", () => {
 
     const leader = analyzeVideoWithGemini(SOURCE, OPTIONS, deps, {});
     // Let the leader reach the gate and publish its in-flight entry.
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await new Promise((resolve) => setTimeout(resolve, 20));
     const joinerAbort = new AbortController();
     const joiner = analyzeVideoWithGemini(SOURCE, OPTIONS, deps, { signal: joinerAbort.signal });
+    // Aborted only once the joiner is actually waiting on the shared work, so
+    // this exercises the abort listener rather than the already-aborted guard.
+    await new Promise((resolve) => setTimeout(resolve, 20));
     joinerAbort.abort();
 
     await expect(joiner).rejects.toThrow(/aborted/i);
@@ -455,15 +458,37 @@ describe("round-2 review fixes", () => {
     }
   });
 
-  it("frees only its own in-flight entry", async () => {
-    const { deps, client } = setup();
-    await analyzeVideoWithGemini(SOURCE, OPTIONS, deps, {});
-    // A second call with the same key must run (the cache serves it) and a
-    // third with a different key must not be blocked by a stale entry.
-    const second = await analyzeVideoWithGemini(SOURCE, OPTIONS, deps, {});
-    expect(second.cached).toBe(true);
-    const other = { ...SOURCE, key: "meta:video:1000", source_url: "https://video.xx.fbcdn.net/o.mp4", low_res_url: "https://video.xx.fbcdn.net/o.mp4" };
-    await analyzeVideoWithGemini(other, OPTIONS, deps, {});
-    expect(client.generateJson).toHaveBeenCalledTimes(2);
+  it("lets an attempt that replaced a failed one still be joined and cached", async () => {
+    // The first attempt fails, so the joiner falls through and starts its own.
+    // A third call must join that retry, and the retry's own cleanup must not
+    // remove an entry it does not own.
+    let attempt = 0;
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const generateJson = vi.fn(async () => {
+      attempt += 1;
+      if (attempt === 1) throw new Error("leader failed");
+      await gate;
+      return { json: ANALYSIS, usage: {}, model: "gemini-3.8-flash", schema_enforced: true };
+    });
+    const { deps } = setup({ client: fakeClient({ generateJson }), limiter: createSlidingWindowLimiter({ limit: 5, windowMs: 3_600_000 }) });
+
+    const leader = analyzeVideoWithGemini(SOURCE, OPTIONS, deps, {});
+    const joiner = analyzeVideoWithGemini(SOURCE, OPTIONS, deps, {});
+    await expect(leader).rejects.toThrow(/leader failed/);
+    // The joiner is now the owner of the in-flight entry, still gated.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const third = analyzeVideoWithGemini(SOURCE, OPTIONS, deps, {});
+    release();
+
+    await expect(joiner).resolves.toMatchObject({ cached: false });
+    await expect(third).resolves.toMatchObject({ cached: true });
+    expect(generateJson).toHaveBeenCalledTimes(2);
+
+    // Nothing was stranded: a later identical call is served from the cache.
+    await expect(analyzeVideoWithGemini(SOURCE, OPTIONS, deps, {})).resolves.toMatchObject({ cached: true });
+    expect(generateJson).toHaveBeenCalledTimes(2);
   });
 });
