@@ -6,6 +6,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { UnsafeUrlError, type AssertSafeUrlOptions, type ResolvedSafePublicUrl } from "../utils/url-guard.js";
 import {
+  assertAllowedHost,
   buildPinnedLookup,
   followSafeRedirects,
   isRedirect,
@@ -66,11 +67,7 @@ export function resolveAllowedVideoHostSuffixes(env: NodeJS.ProcessEnv = process
 }
 
 export function assertAllowedVideoHost(url: URL, suffixes: string[]): void {
-  const host = url.hostname.toLowerCase();
-  const allowed = suffixes.some((suffix) => host.endsWith(suffix) || host === suffix.slice(1));
-  if (!allowed) {
-    throw new UnsafeUrlError(`Host "${host}" is not an allowed video host`);
-  }
+  assertAllowedHost(url, suffixes, "video");
 }
 
 function abortError(): UnsafeUrlError {

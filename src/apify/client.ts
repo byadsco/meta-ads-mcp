@@ -10,6 +10,8 @@ const APIFY_BASE_URL = "https://api.apify.com";
 const DEFAULT_TIMEOUT = 30_000;
 const MAX_RETRIES = 3;
 const RETRY_BASE_DELAY = 1000;
+/** A dataset page is at most a few MB; anything larger is not a response worth buffering. */
+const MAX_RESPONSE_BYTES = 32 * 1024 * 1024;
 
 export const ADS_LIBRARY_ACTOR_ID = "curious_coder~facebook-ads-library-scraper";
 
@@ -271,7 +273,15 @@ export class ApifyApiClient {
 
         // Apify returns 204 with no body for some endpoints (e.g. deletes).
         if (response.status === 204) return undefined as T;
-        return (await response.json()) as T;
+        const declared = Number.parseInt(response.headers.get("content-length") ?? "", 10);
+        if (Number.isFinite(declared) && declared > MAX_RESPONSE_BYTES) {
+          throw new McpError(ErrorCode.InternalError, `Apify response too large (${declared} bytes; limit ${MAX_RESPONSE_BYTES}). Request a smaller page.`);
+        }
+        const text = await response.text();
+        if (text.length > MAX_RESPONSE_BYTES) {
+          throw new McpError(ErrorCode.InternalError, `Apify response too large (over ${MAX_RESPONSE_BYTES} bytes). Request a smaller page.`);
+        }
+        return JSON.parse(text) as T;
       } catch (error) {
         if (error instanceof McpError) throw error;
 

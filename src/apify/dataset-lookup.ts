@@ -1,18 +1,21 @@
 import { McpError, ErrorCode } from "@modelcontextprotocol/sdk/types.js";
 import { apifyApiClient, resolveApifyTenantId, validateApifyId, type ApifyApiClient } from "./client.js";
-import type { AdLibraryRawItem } from "./ad-library-schema.js";
+import { archiveIdOf, type AdLibraryRawItem } from "./ad-library-schema.js";
 
 const DEFAULT_PAGE_SIZE = 1000;
 const DEFAULT_MAX_ITEMS = 5000;
 const DEFAULT_TTL_MS = 10 * 60 * 1000;
 const DEFAULT_MAX_DATASETS = 50;
+const DEFAULT_MAX_TOTAL_IDS = 100_000;
 const AD_ARCHIVE_ID_PATTERN = /^\d{5,25}$/;
 
 export class DatasetItemNotFoundError extends McpError {
-  constructor(adArchiveId: string, datasetId: string, scanned: number) {
+  constructor(adArchiveId: string, datasetId: string, scanned: number, capped: boolean) {
     super(
       ErrorCode.InvalidParams,
-      "Ad " + adArchiveId + " was not found in dataset " + datasetId + " (scanned " + scanned + " items). Check the ad_archive_id, or pass hint_offset from ads_library_get_results.",
+      capped
+        ? "Ad " + adArchiveId + " was not found in the first " + scanned + " items of dataset " + datasetId + "; the dataset may be larger than the scan cap. Pass hint_offset from ads_library_get_results."
+        : "Ad " + adArchiveId + " was not found in dataset " + datasetId + " (scanned " + scanned + " items). Check the ad_archive_id, or pass hint_offset from ads_library_get_results.",
     );
     this.name = "DatasetItemNotFoundError";
   }
@@ -32,6 +35,7 @@ export interface DatasetLookupConfig {
   maxItems?: number;
   ttlMs?: number;
   maxDatasets?: number;
+  maxTotalIds?: number;
   now?: () => number;
   /** Cache entries are scoped to the tenant that scanned the dataset; defaults to the Apify tenant of the request. */
   tenantId?: () => string;
@@ -44,24 +48,29 @@ export interface FoundDatasetItem {
 
 export interface DatasetLookup {
   findDatasetItem(datasetId: string, adArchiveId: string, options?: { hintOffset?: number }): Promise<FoundDatasetItem>;
+  stats(): { cached_datasets: number; cached_ids: number; in_flight: number };
 }
 
 interface CacheEntry {
   at: number;
   offsets: Map<string, number>;
+  /** Items scanned so far (offset 0 .. scanned-1 are covered by the map). */
   scanned: number;
+  /** True once a short page proved the dataset ends within the scanned range. */
   complete: boolean;
 }
 
 /**
  * Locates one scraped ad inside an Apify dataset. Reading a dataset is free on
- * Apify, so the only cost is latency: the scan projects records down to
- * ad_archive_id (fields=) in large pages, remembers the id -> offset map per
- * dataset, and only then fetches the single full record.
+ * Apify, so the only cost is latency and our own memory: the scan projects
+ * records down to ad_archive_id (fields=) in large pages, remembers the
+ * id -> offset map per tenant+dataset (well-formed ids only, bounded), resumes
+ * a partial scan instead of restarting it, shares an in-flight scan between
+ * concurrent callers, and only then fetches the single full record.
  *
- * skipHidden (not clean) keeps positional alignment: clean would drop items
- * that become empty under the projection (the actor error records), shifting
- * every later offset.
+ * skipHidden (not clean) keeps positional alignment with ads_library_get_results:
+ * clean would drop items that become empty under the projection (the actor
+ * error records), shifting every later offset.
  */
 export function createDatasetLookup(config: DatasetLookupConfig = {}): DatasetLookup {
   const client = config.client ?? apifyApiClient;
@@ -69,12 +78,14 @@ export function createDatasetLookup(config: DatasetLookupConfig = {}): DatasetLo
   const maxItems = config.maxItems ?? DEFAULT_MAX_ITEMS;
   const ttlMs = config.ttlMs ?? DEFAULT_TTL_MS;
   const maxDatasets = config.maxDatasets ?? DEFAULT_MAX_DATASETS;
+  const maxTotalIds = config.maxTotalIds ?? DEFAULT_MAX_TOTAL_IDS;
   const now = config.now ?? Date.now;
   const tenantId = config.tenantId ?? resolveApifyTenantId;
   const cache = new Map<string, CacheEntry>();
-  const cacheKey = (datasetId: string) => tenantId() + ":" + datasetId;
+  const inFlight = new Map<string, Promise<CacheEntry>>();
 
   const itemsPath = (datasetId: string) => "/v2/datasets/" + datasetId + "/items";
+  const cacheKey = (datasetId: string) => tenantId() + ":" + datasetId;
 
   const fetchOne = async (datasetId: string, offset: number): Promise<AdLibraryRawItem | undefined> => {
     const items = await client.get<AdLibraryRawItem[]>(itemsPath(datasetId), {
@@ -86,41 +97,48 @@ export function createDatasetLookup(config: DatasetLookupConfig = {}): DatasetLo
     return Array.isArray(items) ? items[0] : undefined;
   };
 
-  const idOf = (item: AdLibraryRawItem | undefined): string | null => {
-    const raw = item?.ad_archive_id;
-    return typeof raw === "string" ? raw : typeof raw === "number" ? String(raw) : null;
+  const wellFormedId = (item: AdLibraryRawItem | undefined): string | null => {
+    const id = archiveIdOf(item);
+    return id !== null && AD_ARCHIVE_ID_PATTERN.test(id) ? id : null;
   };
 
-  const getCache = (datasetId: string): CacheEntry | undefined => {
-    const key = cacheKey(datasetId);
-    const entry = cache.get(key);
-    if (!entry) return undefined;
-    if (now() - entry.at > ttlMs) {
-      cache.delete(key);
-      return undefined;
+  const totalIds = (): number => {
+    let n = 0;
+    for (const entry of cache.values()) n += entry.offsets.size;
+    return n;
+  };
+
+  const purgeExpired = (): void => {
+    const current = now();
+    for (const [key, entry] of cache) {
+      if (current - entry.at > ttlMs) cache.delete(key);
     }
-    return entry;
   };
 
-  const putCache = (datasetId: string, entry: CacheEntry): void => {
-    const key = cacheKey(datasetId);
+  const getCache = (key: string): CacheEntry | undefined => {
+    purgeExpired();
+    return cache.get(key);
+  };
+
+  const putCache = (key: string, entry: CacheEntry): void => {
     cache.delete(key);
     cache.set(key, entry);
-    while (cache.size > maxDatasets) {
+    while (cache.size > maxDatasets || (cache.size > 1 && totalIds() > maxTotalIds)) {
       const oldest = cache.keys().next().value;
       if (oldest === undefined) break;
       cache.delete(oldest);
     }
   };
 
-  const scan = async (datasetId: string, adArchiveId: string): Promise<CacheEntry> => {
-    const offsets = new Map<string, number>();
-    let scanned = 0;
-    let complete = false;
-    for (let offset = 0; offset < maxItems; offset += pageSize) {
-      const limit = Math.min(pageSize, maxItems - offset);
+  /** Scans from where a previous partial scan stopped, until the id shows up, the dataset ends, or the cap is hit. */
+  const scanFrom = async (datasetId: string, adArchiveId: string, previous: CacheEntry | undefined): Promise<CacheEntry> => {
+    const offsets = previous?.offsets ?? new Map<string, number>();
+    let scanned = previous?.scanned ?? 0;
+    let complete = previous?.complete ?? false;
+    while (!complete && scanned < maxItems) {
+      const limit = Math.min(pageSize, maxItems - scanned);
       const page = await client.get<AdLibraryRawItem[]>(itemsPath(datasetId), {
-        offset,
+        offset: scanned,
         limit,
         fields: "ad_archive_id",
         skipHidden: true,
@@ -128,53 +146,69 @@ export function createDatasetLookup(config: DatasetLookupConfig = {}): DatasetLo
       });
       const items = Array.isArray(page) ? page : [];
       items.forEach((item, i) => {
-        const id = idOf(item);
-        if (id && !offsets.has(id)) offsets.set(id, offset + i);
+        const id = wellFormedId(item);
+        if (id && !offsets.has(id)) offsets.set(id, scanned + i);
       });
       scanned += items.length;
+      if (items.length < limit) complete = true;
       if (offsets.has(adArchiveId)) break;
-      if (items.length < limit) {
-        complete = true;
-        break;
-      }
     }
-    const entry = { at: now(), offsets, scanned, complete };
-    putCache(datasetId, entry);
-    return entry;
+    return { at: now(), offsets, scanned, complete };
+  };
+
+  const scan = async (key: string, datasetId: string, adArchiveId: string, previous: CacheEntry | undefined): Promise<CacheEntry> => {
+    const running = inFlight.get(key);
+    if (running) return running;
+    const promise = scanFrom(datasetId, adArchiveId, previous)
+      .then((entry) => {
+        putCache(key, entry);
+        return entry;
+      })
+      .finally(() => inFlight.delete(key));
+    inFlight.set(key, promise);
+    return promise;
+  };
+
+  const locate = async (key: string, datasetId: string, adArchiveId: string): Promise<{ offset: number | undefined; entry: CacheEntry }> => {
+    let entry = getCache(key);
+    let offset = entry?.offsets.get(adArchiveId);
+    const exhausted = entry !== undefined && (entry.complete || entry.scanned >= maxItems);
+    if (offset === undefined && !exhausted) {
+      entry = await scan(key, datasetId, adArchiveId, entry);
+      offset = entry.offsets.get(adArchiveId);
+    }
+    return { offset, entry: entry as CacheEntry };
   };
 
   return {
     async findDatasetItem(rawDatasetId, rawAdArchiveId, options = {}) {
       const datasetId = validateApifyId(rawDatasetId, "dataset");
       const adArchiveId = validateAdArchiveId(rawAdArchiveId);
+      const key = cacheKey(datasetId);
 
       if (options.hintOffset !== undefined && Number.isInteger(options.hintOffset) && options.hintOffset >= 0) {
         const item = await fetchOne(datasetId, options.hintOffset);
-        if (item && idOf(item) === adArchiveId) return { item, offset: options.hintOffset };
+        if (item && archiveIdOf(item) === adArchiveId) return { item, offset: options.hintOffset };
       }
 
-      let entry = getCache(datasetId);
-      let offset = entry?.offsets.get(adArchiveId);
-      if (offset === undefined) {
-        entry = await scan(datasetId, adArchiveId);
-        offset = entry.offsets.get(adArchiveId);
+      const first = await locate(key, datasetId, adArchiveId);
+      if (first.offset === undefined) {
+        throw new DatasetItemNotFoundError(adArchiveId, datasetId, first.entry.scanned, !first.entry.complete);
       }
-      if (offset === undefined) {
-        throw new DatasetItemNotFoundError(adArchiveId, datasetId, entry?.scanned ?? 0);
-      }
+      const item = await fetchOne(datasetId, first.offset);
+      if (item && archiveIdOf(item) === adArchiveId) return { item, offset: first.offset };
 
-      const item = await fetchOne(datasetId, offset);
-      if (item && idOf(item) === adArchiveId) return { item, offset };
-
-      // The dataset changed under a cached map (or a stale hint): rescan once.
-      cache.delete(cacheKey(datasetId));
-      entry = await scan(datasetId, adArchiveId);
-      offset = entry.offsets.get(adArchiveId);
-      if (offset !== undefined) {
-        const fresh = await fetchOne(datasetId, offset);
-        if (fresh && idOf(fresh) === adArchiveId) return { item: fresh, offset };
+      // The dataset changed under a cached map: drop it and scan once more.
+      cache.delete(key);
+      const second = await locate(key, datasetId, adArchiveId);
+      if (second.offset !== undefined) {
+        const fresh = await fetchOne(datasetId, second.offset);
+        if (fresh && archiveIdOf(fresh) === adArchiveId) return { item: fresh, offset: second.offset };
       }
-      throw new DatasetItemNotFoundError(adArchiveId, datasetId, entry.scanned);
+      throw new DatasetItemNotFoundError(adArchiveId, datasetId, second.entry.scanned, !second.entry.complete);
+    },
+    stats() {
+      return { cached_datasets: cache.size, cached_ids: totalIds(), in_flight: inFlight.size };
     },
   };
 }

@@ -27,6 +27,7 @@ export const videoSourceInputSchema = {
   dataset_id: z.string().optional().describe("Apify dataset ID of an Ad Library scrape (pair with ad_archive_id)"),
   ad_archive_id: z.string().optional().describe("Ad Library ad_archive_id inside dataset_id"),
   hint_offset: z.number().int().min(0).optional().describe("Offset of the ad inside the dataset, as reported by ads_library_get_results — skips the scan"),
+  video_index: z.number().int().min(0).max(99).optional().describe("Pick one video by its position in the resolved list (0-based; e.g. a carousel or DCO card beyond max_videos)"),
 };
 
 export interface VideoSourceInput {
@@ -36,6 +37,7 @@ export interface VideoSourceInput {
   dataset_id?: string;
   ad_archive_id?: string;
   hint_offset?: number;
+  video_index?: number;
 }
 
 export function assertSingleVideoSource(input: VideoSourceInput): "meta" | "ad_library" {
@@ -62,6 +64,17 @@ export async function resolveVideoSources(
   deps: VideoMediaDeps,
 ): Promise<{ sources: VideoSource[]; truncated: number; creative_id?: string; account_id?: string }> {
   const origin = assertSingleVideoSource(input);
+  const pick = (all: VideoSource[]): { sources: VideoSource[]; truncated: number } => {
+    if (input.video_index !== undefined) {
+      const chosen = all[input.video_index];
+      if (!chosen) {
+        throw new Error(`video_index ${input.video_index} is out of range: this source has ${all.length} video(s).`);
+      }
+      return { sources: [chosen], truncated: 0 };
+    }
+    const max = Math.max(1, input.max_videos ?? 3);
+    return { sources: all.slice(0, max), truncated: Math.max(0, all.length - max) };
+  };
   if (origin === "ad_library") {
     const resolveLibrary = deps.resolveAdLibraryVideoSources ?? defaultResolveAdLibraryVideoSources;
     const all = await resolveLibrary({
@@ -69,15 +82,17 @@ export async function resolveVideoSources(
       ad_archive_id: input.ad_archive_id as string,
       hint_offset: input.hint_offset,
     });
-    const max = Math.max(1, input.max_videos ?? 3);
-    return { sources: all.slice(0, max), truncated: Math.max(0, all.length - max) };
+    return pick(all);
   }
-  return resolveMetaVideoSourcesWithInfo({
+  const info = await resolveMetaVideoSourcesWithInfo({
     video_id: input.video_id,
     ad_id: input.ad_id,
     creative_id: input.creative_id,
     max_videos: input.max_videos,
+    video_index: input.video_index,
   });
+  // resolveMetaVideoSourcesWithInfo already applies max_videos / video_index and reports truncation.
+  return info;
 }
 
 type ToolExtra = {

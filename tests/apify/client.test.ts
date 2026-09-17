@@ -7,6 +7,7 @@ import {
   resolveApifyToken,
   scrubApifyToken,
   validateApifyId,
+  apifyApiClient,
 } from "../../src/apify/client.js";
 import {
   InMemoryApifyTokenRepo,
@@ -33,6 +34,24 @@ describe("apify client", () => {
     delete process.env.TOKEN_ENCRYPTION_KEY;
     resetKeyCacheForTests();
     configureApifyTokenRepoForTests(undefined);
+  });
+
+  describe("response size cap", () => {
+    it("rejects a body whose Content-Length exceeds the cap without parsing it", async () => {
+      const json = vi.fn(async () => []);
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+        ok: true, status: 200, headers: new Headers({ "content-length": String(64 * 1024 * 1024) }), json, text: async () => "[]",
+      }));
+      await expect(apifyApiClient.get("/v2/datasets/ds123abcde/items")).rejects.toThrow(/too large/);
+      expect(json).not.toHaveBeenCalled();
+    });
+
+    it("rejects an undeclared body that turns out larger than the cap", async () => {
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+        ok: true, status: 200, headers: new Headers(), json: async () => [], text: async () => "x".repeat(33 * 1024 * 1024),
+      }));
+      await expect(apifyApiClient.get("/v2/datasets/ds123abcde/items")).rejects.toThrow(/too large/);
+    });
   });
 
   describe("token handling", () => {

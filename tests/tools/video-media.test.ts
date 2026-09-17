@@ -158,6 +158,23 @@ describe("ads_get_video_media", () => {
     expect(first.params.progressToken).toBe("p1");
   });
 
+  it("video_index selects one video beyond the max_videos window", async () => {
+    const { handler } = setup();
+    const children = Array.from({ length: 5 }, (_, i) => ({ video_id: String(9100 + i) }));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn()
+        .mockResolvedValueOnce(mockFetchResponse({ id: "7001", object_story_spec: { link_data: { child_attachments: children } } }))
+        .mockResolvedValueOnce(mockFetchResponse({ ...VIDEO, id: "9104" })),
+    );
+
+    const result = (await handler({ creative_id: "7001", delivery: "url", video_index: 4 }, EXTRA)) as ToolResult;
+    const json = lastJson(result);
+    const videos = json.videos as Array<Record<string, unknown>>;
+    expect(videos).toHaveLength(1);
+    expect(videos[0].video_id).toBe("9104");
+  });
+
   it("never echoes credentials from source urls", async () => {
     const { handler } = setup();
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockFetchResponse({ ...VIDEO, source: "https://video.xx.fbcdn.net/v.mp4?access_token=SECRET123&oe=69617495" })));

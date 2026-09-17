@@ -256,6 +256,24 @@ describe("downloadSafePublicImage", () => {
     }
   });
 
+  it("enforces an optional host allowlist on the first hop and on every redirect", async () => {
+    const resolve = fakeResolve({ "cdn.example.com": ["203.0.113.10"], "scontent.xx.fbcdn.net": ["203.0.113.11"] });
+    const direct = makeRequest([{ headers: { "content-type": "image/jpeg" }, chunks: ["x"] }]);
+    await expect(
+      downloadSafePublicImage("https://cdn.example.com/image.jpg", { request: direct.request, resolve, allowedHostSuffixes: [".fbcdn.net"] }),
+    ).rejects.toThrow(/not an allowed/);
+    expect(direct.calls).toHaveLength(0);
+
+    const redirected = makeRequest([
+      { statusCode: 302, headers: { location: "https://cdn.example.com/other.jpg" } },
+      { headers: { "content-type": "image/jpeg" }, chunks: ["x"] },
+    ]);
+    await expect(
+      downloadSafePublicImage("https://scontent.xx.fbcdn.net/image.jpg", { request: redirected.request, resolve, allowedHostSuffixes: [".fbcdn.net"] }),
+    ).rejects.toThrow(/not an allowed/);
+    expect(redirected.calls).toHaveLength(1);
+  });
+
   it("rejects images whose Content-Length exceeds the limit", async () => {
     const { request } = makeRequest([
       {

@@ -116,6 +116,64 @@ describe("normalizeLibraryAd", () => {
   });
 });
 
+describe("normalizeLibraryAd hostile input", () => {
+  it("caps cards, media arrays and string lengths so a hostile record cannot balloon", () => {
+    const cards = Array.from({ length: 5000 }, (_, i) => ({ title: "t" + i, original_image_url: "https://scontent.xx.fbcdn.net/" + i + ".jpg" }));
+    const raw = {
+      ad_archive_id: "1234567890",
+      snapshot: {
+        body: { text: "x".repeat(200_000) },
+        title: "y".repeat(50_000),
+        cards,
+        images: Array.from({ length: 500 }, () => ({ original_image_url: "https://scontent.xx.fbcdn.net/a.jpg" })),
+        videos: Array.from({ length: 500 }, () => ({ video_sd_url: "https://video.xx.fbcdn.net/a.mp4" })),
+        extra_texts: Array.from({ length: 500 }, () => "z"),
+      },
+    } as AdLibraryRawItem;
+    const ad = normalizeLibraryAd(raw, 0);
+    expect(ad.cards.length).toBeLessThanOrEqual(30);
+    expect(ad.images.length).toBeLessThanOrEqual(20);
+    expect(ad.videos.length).toBeLessThanOrEqual(20);
+    expect(ad.extra_texts.length).toBeLessThanOrEqual(20);
+    expect((ad.copy.body as string).length).toBeLessThanOrEqual(4100);
+    expect(ad.copy.body).toMatch(/\[truncated\]$/);
+    expect(ad.truncated).toEqual(expect.arrayContaining(["cards", "images", "videos", "copy.body"]));
+    expect(ad.media_summary.image_count).toBe(500 + 5000);
+    expect(JSON.stringify(ad).length).toBeLessThan(300_000);
+  });
+
+  it("skips cards that are not objects instead of materializing empty ones", () => {
+    const raw = { ad_archive_id: "1234567890", snapshot: { cards: [null, 5, "x", { title: "real" }] } } as AdLibraryRawItem;
+    const ad = normalizeLibraryAd(raw, 0);
+    expect(ad.cards).toHaveLength(1);
+    expect(ad.cards[0]).toMatchObject({ index: 3, title: "real" });
+    expect(mediaSummary(raw)).toMatchObject({ image_count: 0, video_count: 0 });
+  });
+
+  it("returns null dates for timestamps outside the representable range", () => {
+    for (const bad of [8640000000001, 1e308, -5, "soon"]) {
+      const ad = normalizeLibraryAd({ ad_archive_id: "1234567890", start_date: bad, end_date: bad } as AdLibraryRawItem, 0);
+      expect(ad.start_date).toBeNull();
+      expect(ad.end_date).toBeNull();
+    }
+  });
+
+  it("accepts the legacy adArchiveID / pageName aliases and numeric ids", () => {
+    const legacy = { adArchiveID: 12345678901, pageName: "Legacy", snapshot: { body: { markup: { __html: "<p>Copy</p>" } } } } as AdLibraryRawItem;
+    expect(isAdLibraryErrorItem(legacy)).toBe(false);
+    const ad = normalizeLibraryAd(legacy, 0);
+    expect(ad.ad_archive_id).toBe("12345678901");
+    expect(ad.page.name).toBe("Legacy");
+  });
+
+  it("ignores prototype-polluting keys in raw records", () => {
+    const raw = JSON.parse("{\"ad_archive_id\":\"1234567890\",\"__proto__\":{\"polluted\":true},\"snapshot\":{\"__proto__\":{\"x\":1}}}") as AdLibraryRawItem;
+    const ad = normalizeLibraryAd(raw, 0);
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+    expect(ad.details).toBeUndefined();
+  });
+});
+
 describe("extractLibraryVideoSources", () => {
   it("builds delivery sources with sd as low-res and the preview as thumbnail", () => {
     const ad = normalizeLibraryAd(VIDEO, 0);

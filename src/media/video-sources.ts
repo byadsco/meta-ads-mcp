@@ -54,6 +54,8 @@ export interface MetaVideoSourceInput {
   ad_id?: string;
   creative_id?: string;
   max_videos?: number;
+  /** Resolve only the video at this position in the creative (0-based); one Graph call instead of one per video. */
+  video_index?: number;
 }
 
 export interface MetaVideoSourcesInfo {
@@ -134,6 +136,13 @@ export async function resolveMetaVideoSourcesWithInfo(input: MetaVideoSourceInpu
     thumbnail_height: 1080,
   });
   const { videos } = collectCreativeMedia(creative);
+  if (input.video_index !== undefined) {
+    const ref = videos[input.video_index];
+    if (!ref) {
+      throw new Error("video_index " + input.video_index + " is out of range: this creative has " + videos.length + " video(s).");
+    }
+    return { sources: [await fetchVideo(ref.videoId, ref.specThumbnailUrl)], truncated: 0, creative_id: creative.id, account_id: accountId ?? creative.account_id };
+  }
   const selected = videos.slice(0, maxVideos);
   const sources: VideoSource[] = [];
   for (const ref of selected) {

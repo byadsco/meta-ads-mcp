@@ -95,10 +95,20 @@ export interface LibraryAd {
   /** Top-level blocks the actor adds with scrapeAdDetails (advertiser, aaa_info, insights, transparency). */
   details?: Record<string, unknown>;
   media_summary: LibraryMediaSummary;
+  /** Fields cut down to the size caps (a hostile or pathological record cannot balloon the response). */
+  truncated: string[];
 }
 
 const DETAIL_KEYS = ["advertiser", "aaa_info", "insights", "violation_types", "finserv_data", "regional_regulation_data"];
 const TEMPLATE_PATTERN = /\{\{\s*[a-z_]+\.[a-z_.]+\s*\}\}/i;
+const UNSAFE_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+export const MAX_CARDS = 30;
+export const MAX_MEDIA_ITEMS = 20;
+export const MAX_EXTRA_ITEMS = 20;
+export const MAX_TEXT_CHARS = 4000;
+const TRUNCATION_MARKER = " [truncated]";
+// Epoch seconds up to year 2100; anything else is not a date the actor would emit.
+const MAX_EPOCH_SECONDS = 4_102_444_800;
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
@@ -122,18 +132,46 @@ function bool(value: unknown): boolean | null {
   return typeof value === "boolean" ? value : null;
 }
 
-/** The actor returns some copy fields as { text } objects and others as plain strings. */
+/**
+ * The actor returns some copy fields as { text } objects and others as plain
+ * strings; the legacy format wrapped body in { markup: { __html } }.
+ */
 function text(value: unknown): string | null {
-  if (value && typeof value === "object" && "text" in (value as Record<string, unknown>)) {
-    return str((value as Record<string, unknown>).text);
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    if ("text" in record) return str(record.text);
+    const html = asRecord(record.markup).__html;
+    if (typeof html === "string") return str(html.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim());
   }
   return str(value);
 }
 
 function isoDate(epochSeconds: unknown): string | null {
   const n = num(epochSeconds);
-  if (n === null || n <= 0) return null;
-  return new Date(n * 1000).toISOString().slice(0, 10);
+  if (n === null || n <= 0 || n > MAX_EPOCH_SECONDS) return null;
+  try {
+    return new Date(n * 1000).toISOString().slice(0, 10);
+  } catch {
+    return null;
+  }
+}
+
+/** ad_archive_id in the current actor format, adArchiveID in the legacy one; numbers are tolerated. */
+export function archiveIdOf(item: unknown): string | null {
+  const record = asRecord(item);
+  return str(record.ad_archive_id) ?? str(record.adArchiveID);
+}
+
+function capText(value: string | null, label: string, truncated: string[]): string | null {
+  if (value === null || value.length <= MAX_TEXT_CHARS) return value;
+  truncated.push(label);
+  return value.slice(0, MAX_TEXT_CHARS) + TRUNCATION_MARKER;
+}
+
+function capList<T>(items: T[], max: number, label: string, truncated: string[]): T[] {
+  if (items.length <= max) return items;
+  truncated.push(label);
+  return items.slice(0, max);
 }
 
 function strings(value: unknown): string[] {
@@ -142,7 +180,7 @@ function strings(value: unknown): string[] {
 
 export function isAdLibraryErrorItem(item: unknown): boolean {
   const record = asRecord(item);
-  return typeof record.error === "string" || str(record.ad_archive_id) === null;
+  return typeof record.error === "string" || archiveIdOf(record) === null;
 }
 
 export function isTemplateCopy(value: string | null | undefined): boolean {
@@ -162,86 +200,124 @@ function video(record: Record<string, unknown>): LibraryVideo | null {
   return hd_url || sd_url ? { hd_url, sd_url, preview_image_url } : null;
 }
 
-function card(record: Record<string, unknown>, index: number): LibraryCard {
+function card(record: Record<string, unknown>, index: number, truncated: string[]): LibraryCard {
+  const label = "cards[" + index + "]";
   return {
     index,
-    body: text(record.body),
-    title: str(record.title),
-    caption: str(record.caption),
-    link_description: str(record.link_description),
-    link_url: str(record.link_url),
-    cta_text: str(record.cta_text),
+    body: capText(text(record.body), label + ".body", truncated),
+    title: capText(str(record.title), label + ".title", truncated),
+    caption: capText(str(record.caption), label + ".caption", truncated),
+    link_description: capText(str(record.link_description), label + ".link_description", truncated),
+    link_url: capText(str(record.link_url), label + ".link_url", truncated),
+    cta_text: capText(str(record.cta_text), label + ".cta_text", truncated),
     cta_type: str(record.cta_type),
     image: image(record),
     video: video(record),
   };
 }
 
-function firstMediaUrl(images: LibraryImage[], videos: LibraryVideo[], cards: LibraryCard[]): string | undefined {
-  for (const v of videos) {
-    const url = v.sd_url ?? v.hd_url ?? v.preview_image_url;
-    if (url) return url;
-  }
-  for (const i of images) {
-    const url = i.original_url ?? i.resized_url;
-    if (url) return url;
-  }
-  for (const c of cards) {
-    const url = c.video?.sd_url ?? c.video?.hd_url ?? c.image?.original_url ?? c.image?.resized_url;
-    if (url) return url;
-  }
-  return undefined;
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
-function summarize(displayFormat: string | null, images: LibraryImage[], videos: LibraryVideo[], cards: LibraryCard[]): LibraryMediaSummary {
-  const image_count = images.length + cards.filter((c) => c.image !== null && c.video === null).length;
-  const video_count = videos.length + cards.filter((c) => c.video !== null).length;
+/** Counts media over the raw arrays without materializing anything, so listings stay cheap. */
+function countMedia(snapshot: Record<string, unknown>): { image_count: number; video_count: number; first_url?: string } {
+  let image_count = 0;
+  let video_count = 0;
+  let first_url: string | undefined;
+  const note = (url: string | null) => {
+    if (!first_url && url) first_url = url;
+  };
+  for (const v of asArray(snapshot.videos)) {
+    if (!isRecord(v)) continue;
+    const hd = str(v.video_hd_url);
+    const sd = str(v.video_sd_url);
+    if (hd || sd) {
+      video_count += 1;
+      note(sd ?? hd);
+    }
+  }
+  for (const i of asArray(snapshot.images)) {
+    if (!isRecord(i)) continue;
+    const url = str(i.original_image_url) ?? str(i.resized_image_url);
+    if (url) {
+      image_count += 1;
+      note(url);
+    }
+  }
+  for (const c of asArray(snapshot.cards)) {
+    if (!isRecord(c)) continue;
+    const vid = str(c.video_sd_url) ?? str(c.video_hd_url);
+    const img = str(c.original_image_url) ?? str(c.resized_image_url);
+    if (vid) {
+      video_count += 1;
+      note(vid);
+    } else if (img) {
+      image_count += 1;
+      note(img);
+    }
+  }
+  return { image_count, video_count, first_url };
+}
+
+function summarize(snapshot: Record<string, unknown>): LibraryMediaSummary {
+  const { image_count, video_count, first_url } = countMedia(snapshot);
   return {
-    display_format: displayFormat,
+    display_format: str(snapshot.display_format),
     image_count,
     video_count,
     has_video: video_count > 0,
-    expires_at: fbcdnExpiresAt(firstMediaUrl(images, videos, cards)),
+    expires_at: fbcdnExpiresAt(first_url),
   };
 }
 
-function collectMedia(snapshot: Record<string, unknown>): { images: LibraryImage[]; videos: LibraryVideo[]; cards: LibraryCard[] } {
-  const images = asArray(snapshot.images).map((i) => image(asRecord(i))).filter((i): i is LibraryImage => i !== null);
-  const videos = asArray(snapshot.videos).map((v) => video(asRecord(v))).filter((v): v is LibraryVideo => v !== null);
-  const cards = asArray(snapshot.cards).map((c, index) => card(asRecord(c), index));
+function collectMedia(snapshot: Record<string, unknown>, truncated: string[]): { images: LibraryImage[]; videos: LibraryVideo[]; cards: LibraryCard[] } {
+  const images = capList(asArray(snapshot.images).filter(isRecord).map(image).filter((i): i is LibraryImage => i !== null), MAX_MEDIA_ITEMS, "images", truncated);
+  const videos = capList(asArray(snapshot.videos).filter(isRecord).map(video).filter((v): v is LibraryVideo => v !== null), MAX_MEDIA_ITEMS, "videos", truncated);
+  const rawCards = asArray(snapshot.cards);
+  const cards: LibraryCard[] = [];
+  for (let index = 0; index < rawCards.length; index++) {
+    const raw = rawCards[index];
+    if (!isRecord(raw)) continue;
+    if (cards.length >= MAX_CARDS) {
+      truncated.push("cards");
+      break;
+    }
+    cards.push(card(raw, index, truncated));
+  }
   return { images, videos, cards };
 }
 
 /** Cheap projection for listings: enough to decide whether an ad deserves ads_library_get_ad_details. */
 export function mediaSummary(raw: AdLibraryRawItem): LibraryMediaSummary {
-  const snapshot = asRecord(raw.snapshot);
-  const { images, videos, cards } = collectMedia(snapshot);
-  return summarize(str(snapshot.display_format), images, videos, cards);
+  return summarize(asRecord(raw.snapshot));
 }
 
 export function normalizeLibraryAd(raw: AdLibraryRawItem, offset: number | null): LibraryAd {
   const snapshot = asRecord(raw.snapshot);
-  const id = str(raw.ad_archive_id) ?? "";
-  const { images, videos, cards } = collectMedia(snapshot);
+  const id = archiveIdOf(raw) ?? "";
+  const truncated: string[] = [];
+  const { images, videos, cards } = collectMedia(snapshot, truncated);
   const impressions = asRecord(raw.impressions_with_index);
   const details: Record<string, unknown> = {};
   for (const key of DETAIL_KEYS) {
     if (raw[key] !== undefined && raw[key] !== null) details[key] = raw[key];
   }
   for (const key of Object.keys(raw)) {
+    if (UNSAFE_KEYS.has(key)) continue;
     if (key.endsWith("_transparency") && raw[key] !== null) details[key] = raw[key];
   }
-  const body = text(snapshot.body);
-  const title = str(snapshot.title);
-  const linkDescription = str(snapshot.link_description);
+  const body = capText(text(snapshot.body), "copy.body", truncated);
+  const title = capText(str(snapshot.title), "copy.title", truncated);
+  const linkDescription = capText(str(snapshot.link_description), "copy.link_description", truncated);
 
   return {
     ad_archive_id: id,
     offset,
     ad_library_url: str(raw.ad_library_url) ?? "https://www.facebook.com/ads/library/?id=" + id,
     page: {
-      id: str(raw.page_id) ?? str(snapshot.page_id),
-      name: str(raw.page_name) ?? str(snapshot.page_name),
+      id: str(raw.page_id) ?? str(snapshot.page_id) ?? str(raw.pageID),
+      name: capText(str(raw.page_name) ?? str(snapshot.page_name) ?? str(raw.pageName), "page.name", truncated),
       profile_uri: str(snapshot.page_profile_uri),
       profile_picture_url: str(snapshot.page_profile_picture_url),
       categories: strings(snapshot.page_categories),
@@ -256,19 +332,19 @@ export function normalizeLibraryAd(raw: AdLibraryRawItem, offset: number | null)
     copy: {
       body,
       title,
-      caption: str(snapshot.caption),
+      caption: capText(str(snapshot.caption), "copy.caption", truncated),
       link_description: linkDescription,
-      cta_text: str(snapshot.cta_text),
+      cta_text: capText(str(snapshot.cta_text), "copy.cta_text", truncated),
       cta_type: str(snapshot.cta_type),
-      link_url: str(snapshot.link_url),
-      byline: str(snapshot.byline),
+      link_url: capText(str(snapshot.link_url), "copy.link_url", truncated),
+      byline: capText(str(snapshot.byline), "copy.byline", truncated),
       is_template: isTemplateCopy(body) || isTemplateCopy(title) || isTemplateCopy(linkDescription),
     },
     cards,
     images,
     videos,
-    extra_texts: asArray(snapshot.extra_texts),
-    extra_links: asArray(snapshot.extra_links),
+    extra_texts: capList(asArray(snapshot.extra_texts), MAX_EXTRA_ITEMS, "extra_texts", truncated),
+    extra_links: capList(asArray(snapshot.extra_links), MAX_EXTRA_ITEMS, "extra_links", truncated),
     impressions_text: str(impressions.impressions_text),
     spend: raw.spend ?? null,
     currency: str(raw.currency),
@@ -277,7 +353,8 @@ export function normalizeLibraryAd(raw: AdLibraryRawItem, offset: number | null)
     total_active_time: num(raw.total_active_time),
     contains_digital_created_media: bool(raw.contains_digital_created_media),
     details: Object.keys(details).length > 0 ? details : undefined,
-    media_summary: summarize(str(snapshot.display_format), images, videos, cards),
+    media_summary: summarize(snapshot),
+    truncated,
   };
 }
 

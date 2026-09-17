@@ -130,6 +130,59 @@ describe("findDatasetItem", () => {
     expect(calls()).toHaveLength(4);
   });
 
+  it("remembers a fully scanned dataset so a missing id does not trigger another scan", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockFetchResponse([{ ad_archive_id: "1110000000001" }])));
+    const lookup = createDatasetLookup({ pageSize: 1000 });
+
+    await expect(lookup.findDatasetItem("ds123abcde", "9999999999999")).rejects.toThrow(/not found/);
+    await expect(lookup.findDatasetItem("ds123abcde", "9999999999999")).rejects.toThrow(/not found/);
+    await expect(lookup.findDatasetItem("ds123abcde", "8888888888888")).rejects.toThrow(/not found/);
+    expect(calls()).toHaveLength(1);
+  });
+
+  it("does not rescan a dataset that hit the scan cap until the cache expires", async () => {
+    const page = Array.from({ length: 2 }, (_, i) => ({ ad_archive_id: String(10000 + i) }));
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockFetchResponse(page)));
+    const lookup = createDatasetLookup({ pageSize: 2, maxItems: 4 });
+
+    await expect(lookup.findDatasetItem("ds123abcde", "9999999999999")).rejects.toThrow(/larger than/);
+    await expect(lookup.findDatasetItem("ds123abcde", "9999999999999")).rejects.toThrow(/larger than/);
+    expect(calls()).toHaveLength(2);
+  });
+
+  it("shares an in-flight scan between concurrent lookups of the same dataset", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    const fetchMock = vi.fn().mockImplementation(async (input: string) => {
+      const params = new URL(input).searchParams;
+      if (params.get("fields") === "ad_archive_id") {
+        await gate;
+        return mockFetchResponse([{ ad_archive_id: "5550000000001" }, { ad_archive_id: "5560000000002" }]);
+      }
+      return mockFetchResponse([{ ...FULL, ad_archive_id: params.get("offset") === "1" ? "5560000000002" : "5550000000001" }]);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const lookup = createDatasetLookup({ pageSize: 1000 });
+
+    const a = lookup.findDatasetItem("ds123abcde", "5550000000001");
+    const b = lookup.findDatasetItem("ds123abcde", "5560000000002");
+    await new Promise((r) => setTimeout(r, 5));
+    release();
+    await Promise.all([a, b]);
+
+    // one scan + two single-record fetches
+    expect(calls().filter((u) => u.searchParams.get("fields") === "ad_archive_id")).toHaveLength(1);
+  });
+
+  it("only caches well-formed ids and bounds the number of cached entries", async () => {
+    const junk = Array.from({ length: 50 }, (_, i) => ({ ad_archive_id: "j".repeat(8000) + i }));
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockFetchResponse(junk)));
+    const lookup = createDatasetLookup({ pageSize: 1000 });
+
+    await expect(lookup.findDatasetItem("ds123abcde", "9999999999999")).rejects.toThrow(/not found/);
+    expect(lookup.stats().cached_ids).toBe(0);
+  });
+
   it("rejects malformed ids before any request", async () => {
     vi.stubGlobal("fetch", vi.fn());
     const lookup = createDatasetLookup();
