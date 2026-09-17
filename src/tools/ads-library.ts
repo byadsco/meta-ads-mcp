@@ -27,7 +27,35 @@ import { getApifyTokenRepo } from "../store/apify-token-repo.js";
 import { hashToken } from "../auth/token-store.js";
 import { truncateResponse } from "../utils/format.js";
 import { logger } from "../utils/logger.js";
+import { downloadSafePublicImage } from "../utils/safe-download.js";
+import {
+  extractLibraryVideoSources,
+  isAdLibraryErrorItem,
+  libraryImageAssets,
+  mediaSummary,
+  normalizeLibraryAd,
+  type AdLibraryRawItem,
+  type LibraryAd,
+} from "../apify/ad-library-schema.js";
+import { getDatasetLookup, type DatasetLookup } from "../apify/dataset-lookup.js";
+import { imageBlock, safeHostname, sanitizeMetadataUrl, textBlock, type ContentBlock } from "../media/content-blocks.js";
+import { assertAllowedVideoHost, resolveAllowedVideoHostSuffixes } from "../media/safe-video-download.js";
+import {
+  deliverVideos as defaultDeliverVideos,
+  DEFAULT_VIDEO_TOTAL_BYTES_BUDGET,
+  type DeliveredVideo,
+  type VideoDeliveryDeps,
+} from "../media/video-delivery.js";
+import { describeDelivered } from "./video-media.js";
 import { APIFY_WRITE_WARNING, DELETE, READ, TOKEN, TOGGLE, CREATE } from "./_register.js";
+
+const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
+const IMAGE_BYTES_BUDGET = 20 * 1024 * 1024;
+
+export interface AdLibraryToolDeps extends VideoDeliveryDeps {
+  deliverVideos?: typeof defaultDeliverVideos;
+  lookup?: DatasetLookup;
+}
 
 /**
  * Hosts the actor knows how to scrape. Deliberately NOT routed through
@@ -161,9 +189,13 @@ function flattenText(value: unknown): unknown {
   return value ?? null;
 }
 
-function slimAd(ad: RawAd): Record<string, unknown> {
+function slimAd(ad: RawAd, offset: number): Record<string, unknown> {
+  if (isAdLibraryErrorItem(ad)) {
+    return { offset, error: typeof ad.error === "string" ? ad.error : "record without ad_archive_id" };
+  }
   const snapshot = (ad.snapshot ?? {}) as Record<string, unknown>;
   return {
+    offset,
     ad_archive_id: ad.ad_archive_id ?? ad.adArchiveID ?? null,
     page_id: ad.page_id ?? ad.pageID ?? null,
     page_name: ad.page_name ?? ad.pageName ?? snapshot.page_name ?? null,
@@ -180,6 +212,7 @@ function slimAd(ad: RawAd): Record<string, unknown> {
     display_format: snapshot.display_format ?? null,
     collation_count: ad.collation_count ?? null,
     reach_estimate: ad.reach_estimate ?? null,
+    media: mediaSummary(ad as AdLibraryRawItem),
   };
 }
 
@@ -211,7 +244,9 @@ function describeRun(run: ApifyRun): string {
   return `${run.id} — ${run.status}${runtime}${describeCost(run)}`;
 }
 
-export function registerAdsLibraryTools(server: McpServer): void {
+export function registerAdsLibraryTools(server: McpServer, deps: AdLibraryToolDeps = {}): void {
+  const downloadImage = deps.downloadImage ?? downloadSafePublicImage;
+  const deliverVideos = deps.deliverVideos ?? defaultDeliverVideos;
   server.registerTool(
     "ads_library_register_apify_token",
     {
@@ -583,12 +618,15 @@ export function registerAdsLibraryTools(server: McpServer): void {
       });
 
       const ads = Array.isArray(items) ? items : [];
-      const projected = raw ? ads : ads.map(slimAd);
+      const projected = raw ? ads : ads.map((ad, i) => slimAd(ad, offset + i));
+      const withVideo = projected.filter((ad) => (ad.media as { has_video?: boolean } | undefined)?.has_video).length;
+      const errors = projected.filter((ad) => typeof ad.error === "string").length;
 
       const summary =
         ads.length === 0
           ? `No ads at offset ${offset}. The run may still be in progress, or you have reached the end of the dataset.`
-          : `Fetched ${ads.length} ad(s) starting at offset ${offset}.` +
+          : `Fetched ${ads.length} ad(s) starting at offset ${offset}` +
+            (raw ? "." : ` (${withVideo} with video${errors ? `, ${errors} error record(s)` : ""}). Each item carries its absolute offset — pass it as hint_offset to ads_library_get_ad_details for the full card with media.`) +
             (ads.length === limit
               ? ` More may be available — call again with offset=${offset + ads.length}.`
               : "");
@@ -659,4 +697,171 @@ export function registerAdsLibraryTools(server: McpServer): void {
       };
     },
   );
+  // ─── Get Ad Details (with media) ───────────────────────────
+  server.registerTool(
+    "ads_library_get_ad_details",
+    {
+      description:
+        "Everything about one scraped Ad Library ad, with its media: page, dates, platforms, spend/impressions when Meta exposes them, the full copy (per card for carousels; DCO/DPA template copy is flagged and the real creative comes from the cards), links, EU/UK transparency blocks when scraped, and the images attached as inline image blocks. " +
+        "video_delivery=thumbnail (default) attaches each video poster and returns the signed CDN URLs with their expiry; frames extracts real keyframes with ffmpeg; url returns resource_link blocks. For the MP4 itself (video-capable models such as Gemini) call ads_get_video_media with dataset_id + ad_archive_id and delivery=inline. " +
+        "Pass hint_offset from ads_library_get_results to skip the dataset scan. Reading a dataset is free on Apify.",
+      inputSchema: {
+        dataset_id: z.string().describe("Dataset id from ads_library_scrape / ads_library_get_run_status"),
+        ad_archive_id: z.string().describe("The ad_archive_id from ads_library_get_results"),
+        hint_offset: z.number().int().min(0).optional().describe("Absolute offset of the ad in the dataset (from ads_library_get_results); avoids scanning"),
+        include_images: z.boolean().default(true).describe("Attach the ad images (and image cards) as inline image blocks"),
+        max_images: z.number().int().min(1).max(10).default(8).describe("Cap on attached image blocks"),
+        image_size: z.enum(["full", "small"]).default("full").describe("full = original CDN image; small = 600px resized copy (cheaper on context)"),
+        video_delivery: z.enum(["thumbnail", "frames", "url"]).default("thumbnail").describe("How videos come back: poster image, ffmpeg keyframes, or signed links"),
+        frame_count: z.number().int().min(1).max(12).default(6).describe("Frames per video when video_delivery=frames"),
+        include_raw: z.boolean().default(false).describe("Also return the untouched actor record"),
+      },
+      annotations: { ...READ },
+    },
+    async ({ dataset_id, ad_archive_id, hint_offset, include_images = true, max_images = 8, image_size = "full", video_delivery = "thumbnail", frame_count = 6, include_raw = false }, extra) => {
+      const lookup = deps.lookup ?? getDatasetLookup();
+      const { item, offset } = await lookup.findDatasetItem(dataset_id, ad_archive_id, { hintOffset: hint_offset });
+      if (isAdLibraryErrorItem(item)) {
+        throw new McpError(
+          ErrorCode.InvalidParams,
+          "Dataset item at offset " + offset + " is an actor error record (" + (typeof item.error === "string" ? item.error : "no ad_archive_id") + "), not an ad.",
+        );
+      }
+      const ad = normalizeLibraryAd(item, offset);
+      const warnings: string[] = [];
+      const imageBlocks: ContentBlock[] = [];
+      const images: LibraryImageMeta[] = [];
+      let imageBytes = 0;
+
+      if (include_images) {
+        const suffixes = resolveAllowedVideoHostSuffixes();
+        for (const asset of libraryImageAssets(ad, image_size)) {
+          const meta: LibraryImageMeta = { role: asset.role, card_index: asset.card_index, source_url: sanitizeMetadataUrl(asset.url), downloaded: false };
+          images.push(meta);
+          if (imageBlocks.length >= max_images) {
+            meta.skipped = "max_images";
+            continue;
+          }
+          try {
+            assertAllowedVideoHost(new URL(asset.url), suffixes);
+          } catch (err) {
+            meta.error = err instanceof Error ? err.message : String(err);
+            continue;
+          }
+          const remaining = IMAGE_BYTES_BUDGET - imageBytes;
+          if (remaining <= 0) {
+            meta.skipped = "size_budget";
+            continue;
+          }
+          try {
+            const image = await downloadImage(asset.url, { maxBytes: Math.min(MAX_IMAGE_BYTES, remaining), signal: extra?.signal });
+            imageBlocks.push(imageBlock(image.buffer, image.contentType));
+            imageBytes += image.buffer.length;
+            meta.downloaded = true;
+            meta.block_index = imageBlocks.length; // block 0 is the text card
+            meta.bytes = image.buffer.length;
+            meta.mime_type = image.contentType;
+          } catch (err) {
+            meta.error = err instanceof Error ? err.message : String(err);
+            logger.warn({ host: safeHostname(asset.url), event: "ad_library_image_download_failed" }, "Ad Library image download failed");
+          }
+        }
+      }
+
+      const sources = extractLibraryVideoSources(ad);
+      let videoBlocks: ContentBlock[] = [];
+      let videos: DeliveredVideo[] = [];
+      if (sources.length > 0) {
+        const delivery = await deliverVideos(
+          sources,
+          { delivery: video_delivery, frame_count, frame_layout: "grid" },
+          deps,
+          { tenantId: resolveApifyTenantId(), signal: extra?.signal },
+          { totalBytesBudget: Math.max(0, DEFAULT_VIDEO_TOTAL_BYTES_BUDGET - imageBytes) },
+        );
+        const shift = 1 + imageBlocks.length;
+        videoBlocks = delivery.blocks;
+        videos = delivery.videos.map((video) => ({
+          ...video,
+          delivered: { ...video.delivered, block_indexes: video.delivered.block_indexes.map((i) => i + shift) },
+        }));
+        warnings.push(...delivery.warnings);
+      }
+
+      const metadata = { ad, images, videos, video_delivery, warnings, ...(include_raw ? { raw: item } : {}) };
+      return {
+        content: [
+          textBlock(renderLibraryAdCard(ad, images, videos, video_delivery, warnings)),
+          ...imageBlocks,
+          ...videoBlocks,
+          textBlock(truncateResponse(JSON.stringify(metadata, null, 2))),
+        ],
+      };
+    },
+  );
+
+}
+
+interface LibraryImageMeta {
+  role: "primary" | "card";
+  card_index?: number;
+  source_url?: string;
+  downloaded: boolean;
+  block_index?: number;
+  bytes?: number;
+  mime_type?: string;
+  error?: string;
+  skipped?: "max_images" | "size_budget";
+}
+
+function renderLibraryAdCard(ad: LibraryAd, images: LibraryImageMeta[], videos: DeliveredVideo[], videoDelivery: string, warnings: string[]): string {
+  const lines: string[] = [];
+  const status = ad.is_active === null ? "status unknown" : ad.is_active ? "active" : "inactive";
+  lines.push("Ad Library ad " + ad.ad_archive_id + " — " + (ad.page.name ?? "unknown page") + " (" + (ad.display_format ?? "unknown format") + ", " + status + ")");
+  lines.push("Running: " + (ad.start_date ?? "?") + " → " + (ad.end_date ?? "?") + " · Platforms: " + (ad.publisher_platforms.join(", ") || "n/a") + (ad.collation_count ? " · Variants collated: " + ad.collation_count : ""));
+  lines.push("Library link: " + ad.ad_library_url + (ad.page.profile_uri ? " · Page: " + ad.page.profile_uri : "") + (ad.page.like_count !== null ? " (" + ad.page.like_count + " likes)" : ""));
+  const reach: string[] = [];
+  if (ad.impressions_text) reach.push("impressions " + ad.impressions_text);
+  if (ad.spend !== null && ad.spend !== undefined) reach.push("spend " + JSON.stringify(ad.spend) + (ad.currency ? " " + ad.currency : ""));
+  if (ad.reach_estimate !== null && ad.reach_estimate !== undefined) reach.push("reach estimate " + JSON.stringify(ad.reach_estimate));
+  if (reach.length > 0) lines.push("Delivery data: " + reach.join(" · "));
+  if (ad.details) lines.push("Detail blocks scraped: " + Object.keys(ad.details).join(", ") + " (see JSON).");
+
+  lines.push("");
+  if (ad.copy.is_template) {
+    lines.push("Copy at ad level is a DCO/DPA template ({{product.*}} placeholders); the real creative is in the cards below.");
+  }
+  if (ad.copy.body) lines.push("Primary text: " + ad.copy.body);
+  if (ad.copy.title) lines.push("Headline: " + ad.copy.title);
+  if (ad.copy.link_description) lines.push("Description: " + ad.copy.link_description);
+  if (ad.copy.caption) lines.push("Display link: " + ad.copy.caption);
+  if (ad.copy.cta_text || ad.copy.cta_type) lines.push("CTA: " + (ad.copy.cta_text ?? "") + (ad.copy.cta_type ? " [" + ad.copy.cta_type + "]" : ""));
+  if (ad.copy.link_url) lines.push("Landing URL: " + ad.copy.link_url);
+
+  if (ad.cards.length > 0) {
+    lines.push("");
+    lines.push("Cards (" + ad.cards.length + "):");
+    for (const c of ad.cards) {
+      const kind = c.video ? "video" : c.image ? "image" : "no media";
+      const parts = [c.title ? "title: " + c.title : "", c.body ? "body: " + c.body : "", c.link_description ? "description: " + c.link_description : "", c.cta_text ? "CTA: " + c.cta_text : "", c.link_url ? "→ " + c.link_url : ""].filter(Boolean);
+      lines.push("• Card " + c.index + " [" + kind + "] " + parts.join(" · "));
+    }
+  }
+
+  lines.push("");
+  const attached = images.filter((i) => i.downloaded);
+  if (attached.length > 0) {
+    lines.push(attached.length + " image(s) attached as content block(s) " + attached.map((i) => i.block_index).join(", ") + " (" + attached.map((i) => i.role + (i.card_index !== undefined ? "#" + i.card_index : "")).join(", ") + ").");
+  }
+  const failedImages = images.filter((i) => !i.downloaded && i.error);
+  if (failedImages.length > 0) lines.push(failedImages.length + " image(s) not attached: " + failedImages.map((i) => i.error).join("; "));
+  for (const video of videos) {
+    lines.push("• " + describeDelivered(video));
+  }
+  if (videos.length > 0 && videoDelivery === "thumbnail") {
+    lines.push("For real analysis of a video: ads_get_video_media with dataset_id + ad_archive_id (delivery=frames for keyframes, delivery=inline to embed the MP4 for a video-capable model).");
+  }
+  if (ad.media_summary.expires_at) lines.push("Media URLs expire " + ad.media_summary.expires_at + "; re-scrape after that.");
+  for (const w of warnings) lines.push("⚠ " + w);
+  return lines.join("\n");
 }

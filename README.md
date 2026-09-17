@@ -62,7 +62,7 @@ both servers.
 | | Meta's official MCP (`mcp.facebook.com/ads`) | This project |
 |---|---|---|
 | Auth model | Per-user OAuth in your AI client | **Multi-tenant**: agency operator handles N client accounts from one server |
-| Tool surface | 29 tools (campaigns, ads, catalogs, 5 insight views, opportunity_score, dataset, errors, help) | **136 tools** including the official 29-equivalent + audiences, lookalikes, lead forms, automated rules, A/B studies, async reports, billing invoices, custom conversions, asset uploads, comment moderation, cross-account macros, and full WhatsApp Business management (templates, phone numbers, flows, QR codes) |
+| Tool surface | 29 tools (campaigns, ads, catalogs, 5 insight views, opportunity_score, dataset, errors, help) | **137 tools** including the official 29-equivalent + audiences, lookalikes, lead forms, automated rules, A/B studies, async reports, billing invoices, custom conversions, asset uploads, comment moderation, cross-account macros, and full WhatsApp Business management (templates, phone numbers, flows, QR codes) |
 | Hosting | Hosted by Meta | Self-hosted on Cloud Run / your infra; tokens encrypted at rest in Firestore |
 | Cross-account | Per-user, single Meta login | Yes — `ads_portfolio_summary` aggregates across N accounts |
 | Token control | Lives in your AI client | Server-side System User token registry per agency operator |
@@ -78,7 +78,7 @@ When to use which:
 
 ## Features
 
-- **136 tools** covering campaign management, creatives, targeting, audiences, reporting, comments, billing, invoices, tokens, Instagram workflows, WhatsApp Business management, rate-limit observability, semantic insight views, diagnostics, help-center search, competitor research via the public Meta Ad Library, video analysis (keyframes or the MP4 itself for video-capable models), and agency-tier cross-account macros.
+- **137 tools** covering campaign management, creatives, targeting, audiences, reporting, comments, billing, invoices, tokens, Instagram workflows, WhatsApp Business management, rate-limit observability, semantic insight views, diagnostics, help-center search, competitor research via the public Meta Ad Library (full ad cards with their images and videos), video analysis (keyframes or the MP4 itself for video-capable models), and agency-tier cross-account macros.
 - **Aligned vocabulary** with Meta's official MCP server so agents transfer cleanly between both.
 - **Sign in with Meta (Facebook Login)** — replaces shared PINs. Each user lands their own long-lived (60-day) Meta token.
 - **System User token registry** — for tokens that don't expire, register them per user from the consent UI.
@@ -126,7 +126,7 @@ Ads tools use the `ads_*` naming convention, aligned with Meta's official MCP se
 | Agency macros | 2 | `ads_diagnose_underperformance`, `ads_portfolio_summary` (cross-account) |
 | Bulk ad creation | 1 | `ads_bulk_create_video_ads` — video URLs → upload, processing wait, auto-thumbnail, creative and ad in one call |
 | Instagram | 2 | IG account and media lookup |
-| Ad Library (Apify) | 8 | Competitor ad research: `ads_library_scrape` the public Meta Ad Library by keyword or Facebook page, poll run status, page through results, abort runs, plus per-user Apify token register/status/delete |
+| Ad Library (Apify) | 9 | Competitor ad research: `ads_library_scrape` the public Meta Ad Library by keyword or Facebook page, poll run status, page through results (each with a media summary and its offset), abort runs, `ads_library_get_ad_details` for the full card of one scraped ad with its images inline and its videos as thumbnails / keyframes / links, plus per-user Apify token register/status/delete |
 | Tokens | 4 | List / set-active / register / delete |
 | Rate Status | 1 | Live view of quota usage, open circuits and write-pacer state |
 | WhatsApp — WABAs & phones | 8 | `whatsapp_get_business_accounts`, phone number list/register/deregister/verify, business profile get/update |
@@ -164,6 +164,19 @@ behaviour without a change in this repo; and a scrape start that times out is
 *indeterminate* rather than failed — Apify may have accepted it — so check
 `ads_library_list_runs` before starting another.
 
+Once a run has finished, `ads_library_get_results` lists each ad with a `media`
+summary (display format, image and video counts, `has_video`, the CDN expiry)
+and its absolute `offset`. `ads_library_get_ad_details` then returns the full
+card of one ad — page, dates, platforms, delivery data, the copy per card
+(DCO/DPA template copy is flagged and the real creative read from the cards),
+links and any transparency blocks — with its images attached inline behind the
+Meta CDN host allowlist and its videos delivered as thumbnails, ffmpeg keyframes
+or signed links; `ads_get_video_media` takes the same `dataset_id` +
+`ad_archive_id` to embed the MP4 for a video-capable model. Reading a dataset
+is free on Apify. Media URLs are signed and expire roughly four days after the
+scrape (the exact moment is reported as `expires_at`), so download promptly or
+re-scrape.
+
 ### Video analysis
 
 `ads_get_video_media` lets an agent actually look at an ad video instead of
@@ -182,8 +195,9 @@ consume:
 | `thumbnail` | Poster image only | Cheap previews |
 
 Sources can be a `video_id`, an `ad_id` or `creative_id` (every video in the
-creative, capped by `max_videos`), and — once the Ad Library integration lands —
-a scraped `dataset_id` + `ad_archive_id`. `ads_get_creative_media` accepts the
+creative, capped by `max_videos`), or a scraped `dataset_id` + `ad_archive_id`
+from the Ad Library (pass `hint_offset` from `ads_library_get_results` to skip
+the dataset scan). `ads_get_creative_media` accepts the
 same `video_delivery` for `frames` and `url`.
 
 Operational guardrails, all configurable through the `VIDEO_*` variables in

@@ -6,7 +6,13 @@ import {
   configureApifyTokenRepoForTests,
 } from "../../src/store/apify-token-repo.js";
 import { resetKeyCacheForTests } from "../../src/auth/crypto.js";
+import { readFileSync } from "node:fs";
 import { createMockMcpServer, mockFetchResponse } from "../setup.js";
+import type { AdLibraryRawItem } from "../../src/apify/ad-library-schema.js";
+import { configureDatasetLookupForTests, createDatasetLookup } from "../../src/apify/dataset-lookup.js";
+
+const FIXTURES = JSON.parse(readFileSync(new URL("../fixtures/ad-library/items.json", import.meta.url), "utf8")) as AdLibraryRawItem[];
+const [FIX_IMAGE, FIX_VIDEO, , FIX_DCO, , , FIX_ERROR] = FIXTURES;
 
 // Kept under the 20-char suffix that .gitleaks.toml's apify-api-token rule
 // matches, so this fixture never trips the secret scanner.
@@ -14,9 +20,9 @@ const TOKEN = "apify_api_testfixture";
 
 type ToolResult = { content: Array<{ type: string; text: string }>; isError?: boolean };
 
-function setup() {
+function setup(deps: Record<string, unknown> = {}) {
   const server = createMockMcpServer();
-  registerAdsLibraryTools(server as never);
+  registerAdsLibraryTools(server as never, deps as never);
   const byName = (name: string) => {
     const tool = server._registeredTools.find((t) => t.name === name);
     if (!tool) throw new Error(`tool ${name} not registered`);
@@ -47,10 +53,12 @@ describe("ads_library_* tools", () => {
     repo = new InMemoryApifyTokenRepo();
     configureApifyTokenRepoForTests(repo);
     process.env.APIFY_TOKEN = TOKEN;
+    configureDatasetLookupForTests(createDatasetLookup());
   });
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    configureDatasetLookupForTests(undefined);
     delete process.env.APIFY_TOKEN;
     delete process.env.TOKEN_ENCRYPTION_KEY;
     resetKeyCacheForTests();
@@ -58,9 +66,9 @@ describe("ads_library_* tools", () => {
   });
 
   describe("registration", () => {
-    it("registers exactly 8 tools", () => {
+    it("registers exactly 9 tools", () => {
       const { server } = setup();
-      expect(server.registerTool).toHaveBeenCalledTimes(8);
+      expect(server.registerTool).toHaveBeenCalledTimes(9);
     });
 
     it("registers the expected names", () => {
@@ -74,6 +82,7 @@ describe("ads_library_* tools", () => {
         "ads_library_get_results",
         "ads_library_abort_run",
         "ads_library_list_runs",
+        "ads_library_get_ad_details",
       ]);
     });
 
@@ -513,6 +522,21 @@ describe("ads_library_* tools", () => {
       expect(ads[0].page_name).toBe("Nike");
       expect(ads[0].body).toBe("Just do it");
       expect(ads[0]).not.toHaveProperty("internal_noise");
+      expect(ads[0].offset).toBe(0);
+      expect(ads[0].media).toEqual({ display_format: null, image_count: 0, video_count: 0, has_video: false });
+    });
+
+    it("summarizes media and absolute offsets so an agent can pick videos for ads_library_get_ad_details", async () => {
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockFetchResponse([FIX_IMAGE, FIX_VIDEO, FIX_ERROR])));
+
+      const result = await setup().byName("ads_library_get_results")({ dataset_id: "ds123abc", offset: 10, limit: 50, raw: false });
+
+      const ads = JSON.parse(result.content[1].text) as Array<Record<string, unknown>>;
+      expect(ads[0]).toMatchObject({ offset: 10, media: { display_format: "IMAGE", image_count: 1, has_video: false } });
+      expect(ads[1]).toMatchObject({ offset: 11, media: { display_format: "VIDEO", video_count: 1, has_video: true } });
+      expect((ads[1].media as Record<string, unknown>).expires_at).toMatch(/^2026-/);
+      expect(ads[2]).toMatchObject({ offset: 12, error: "ADS_NOT_FOUND" });
+      expect(result.content[0].text).toMatch(/1 with video/);
     });
 
     it("returns untouched records when raw=true", async () => {
@@ -554,6 +578,145 @@ describe("ads_library_* tools", () => {
 
       expect(result.content[0].text).toContain("No ads at offset 0");
       expect(JSON.parse(result.content[1].text)).toEqual([]);
+    });
+  });
+
+  describe("ads_library_get_ad_details", () => {
+    type Block = Record<string, unknown>;
+    const MB = 1024 * 1024;
+
+    function fakeImage(bytes = 3) {
+      return vi.fn(async (url: string) => ({
+        buffer: Buffer.alloc(bytes, 1),
+        contentType: "image/jpeg",
+        extension: ".jpg" as const,
+        finalUrl: new URL(url),
+      }));
+    }
+
+    function fakeDeliver(mode = "thumbnail") {
+      return vi.fn(async (sources: Array<Record<string, unknown>>) => ({
+        blocks: sources.map(() => ({ type: "image", data: Buffer.from("thumb").toString("base64"), mimeType: "image/jpeg" })),
+        videos: sources.map((src, i) => ({ ...src, delivered: { mode, block_indexes: [i] } })),
+        warnings: [],
+        bytes: 5 * sources.length,
+      }));
+    }
+
+    function lastJson(result: ToolResult): Record<string, unknown> {
+      return JSON.parse(result.content[result.content.length - 1].text) as Record<string, unknown>;
+    }
+
+    it("is read-only, without a write warning, and documents the video delivery modes", () => {
+      const tool = setup().server._registeredTools.find((t) => t.name === "ads_library_get_ad_details");
+      expect(tool?.annotations?.readOnlyHint).toBe(true);
+      expect(tool?.description).not.toContain("⚠️");
+      expect(tool?.description).toMatch(/ads_get_video_media/);
+    });
+
+    it("fetches the record at hint_offset and renders a full card for a VIDEO ad", async () => {
+      const fetchMock = vi.fn().mockResolvedValueOnce(mockFetchResponse([FIX_VIDEO]));
+      vi.stubGlobal("fetch", fetchMock);
+      const deliverVideos = fakeDeliver();
+      const downloadImage = fakeImage();
+
+      const result = await setup({ deliverVideos, downloadImage }).byName("ads_library_get_ad_details")({
+        dataset_id: "ds123abcde", ad_archive_id: "1178344137830897", hint_offset: 1,
+        include_images: true, max_images: 8, image_size: "full", video_delivery: "thumbnail", frame_count: 6, include_raw: false,
+      });
+
+      const url = new URL((fetchMock.mock.calls[0] as [string])[0]);
+      expect(url.searchParams.get("offset")).toBe("1");
+      expect(url.searchParams.get("limit")).toBe("1");
+      expect(result.content[0].text).toMatch(/TB SHOP/);
+      expect(result.content[0].text).toMatch(/VIDEO/);
+      expect(result.content[0].text).toMatch(/Shop now|SHOP_NOW/i);
+      expect(result.content[0].text).toMatch(/facebook\.com\/ads\/library\/\?id=1178344137830897/);
+      expect(downloadImage).not.toHaveBeenCalled();
+      expect(deliverVideos).toHaveBeenCalledTimes(1);
+      const [sources, options] = deliverVideos.mock.calls[0] as unknown as [Array<Record<string, unknown>>, Record<string, unknown>];
+      expect(sources[0]).toMatchObject({ origin: "ad_library", ad_archive_id: "1178344137830897" });
+      expect(options.delivery).toBe("thumbnail");
+      const json = lastJson(result);
+      expect((json.ad as Record<string, unknown>).display_format).toBe("VIDEO");
+      expect((json.videos as Block[])[0]).toMatchObject({ delivered: { mode: "thumbnail", block_indexes: [1] } });
+      expect(json).not.toHaveProperty("raw");
+    });
+
+    it("attaches the image of an IMAGE ad as an inline block and reports its index", async () => {
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(mockFetchResponse([FIX_IMAGE])));
+      const downloadImage = fakeImage();
+      const deliverVideos = fakeDeliver();
+
+      const result = await setup({ deliverVideos, downloadImage }).byName("ads_library_get_ad_details")({
+        dataset_id: "ds123abcde", ad_archive_id: "841513952022622", hint_offset: 0,
+        include_images: true, max_images: 8, image_size: "full", video_delivery: "thumbnail", frame_count: 6, include_raw: false,
+      });
+
+      expect(downloadImage).toHaveBeenCalledTimes(1);
+      expect(String(downloadImage.mock.calls[0][0])).toMatch(/fbcdn\.net/);
+      expect(result.content[1]).toMatchObject({ type: "image", mimeType: "image/jpeg" });
+      expect(deliverVideos).not.toHaveBeenCalled();
+      const images = lastJson(result).images as Block[];
+      expect(images[0]).toMatchObject({ role: "primary", downloaded: true, block_index: 1 });
+    });
+
+    it("flags DCO template copy and hands every video card to the pipeline with the remaining budget", async () => {
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(mockFetchResponse([FIX_DCO])));
+      const deliverVideos = fakeDeliver("frames");
+
+      const result = await setup({ deliverVideos, downloadImage: fakeImage(2 * MB) }).byName("ads_library_get_ad_details")({
+        dataset_id: "ds123abcde", ad_archive_id: "706579198992184", hint_offset: 3,
+        include_images: true, max_images: 8, image_size: "full", video_delivery: "frames", frame_count: 4, include_raw: false,
+      });
+
+      expect(result.content[0].text).toMatch(/template/i);
+      expect(result.content[0].text).toMatch(/Card 0/);
+      const json = lastJson(result);
+      const ad = json.ad as Record<string, unknown>;
+      const [sources, options, , , limits] = deliverVideos.mock.calls[0] as unknown as [Array<Block>, Record<string, unknown>, unknown, unknown, Record<string, unknown>];
+      expect(sources).toHaveLength((ad.media_summary as Record<string, number>).video_count);
+      expect(options).toMatchObject({ delivery: "frames", frame_count: 4 });
+      const imageBytes = (json.images as Block[]).filter((i) => i.downloaded).length * 2 * MB;
+      expect(limits.totalBytesBudget).toBe(30 * MB - imageBytes);
+    });
+
+    it("refuses image hosts outside the Meta CDN allowlist without downloading", async () => {
+      const evil = JSON.parse(JSON.stringify(FIX_IMAGE)) as Record<string, unknown>;
+      (evil.snapshot as Record<string, unknown>).images = [{ original_image_url: "https://evil.example.com/x.jpg", resized_image_url: null }];
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(mockFetchResponse([evil])));
+      const downloadImage = fakeImage();
+
+      const result = await setup({ deliverVideos: fakeDeliver(), downloadImage }).byName("ads_library_get_ad_details")({
+        dataset_id: "ds123abcde", ad_archive_id: "841513952022622", hint_offset: 0,
+        include_images: true, max_images: 8, image_size: "full", video_delivery: "thumbnail", frame_count: 6, include_raw: false,
+      });
+
+      expect(downloadImage).not.toHaveBeenCalled();
+      const images = lastJson(result).images as Block[];
+      expect(images[0]).toMatchObject({ downloaded: false });
+      expect(String(images[0].error)).toMatch(/not an allowed/);
+    });
+
+    it("rejects an actor error record with a clear message", async () => {
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockFetchResponse([FIX_ERROR])));
+      await expect(
+        setup({ deliverVideos: fakeDeliver(), downloadImage: fakeImage() }).byName("ads_library_get_ad_details")({
+          dataset_id: "ds123abcde", ad_archive_id: "841513952022622", hint_offset: 6,
+          include_images: true, max_images: 8, image_size: "full", video_delivery: "thumbnail", frame_count: 6, include_raw: false,
+        }),
+      ).rejects.toThrow(/not found|error record/);
+    });
+
+    it("include_raw returns the untouched actor record alongside the normalized ad", async () => {
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(mockFetchResponse([FIX_IMAGE])));
+      const result = await setup({ deliverVideos: fakeDeliver(), downloadImage: fakeImage() }).byName("ads_library_get_ad_details")({
+        dataset_id: "ds123abcde", ad_archive_id: "841513952022622", hint_offset: 0,
+        include_images: false, max_images: 8, image_size: "full", video_delivery: "thumbnail", frame_count: 6, include_raw: true,
+      });
+      const json = lastJson(result);
+      expect((json.raw as Record<string, unknown>).ad_archive_id).toBe("841513952022622");
+      expect(result.content.filter((b) => b.type === "image")).toHaveLength(0);
     });
   });
 

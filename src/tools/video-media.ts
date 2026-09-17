@@ -11,10 +11,10 @@ import {
   type VideoDeliveryOptions,
 } from "../media/video-delivery.js";
 import { resolveMetaVideoSourcesWithInfo, type VideoSource } from "../media/video-sources.js";
+import { resolveAdLibraryVideoSources as defaultResolveAdLibraryVideoSources } from "../media/ad-library-sources.js";
 import { READ } from "./_register.js";
 
 export type VideoMediaDeps = VideoDeliveryDeps & {
-  /** Ad Library lookups are wired in by the ads-library module; absent until then. */
   resolveAdLibraryVideoSources?: (input: { dataset_id: string; ad_archive_id: string; hint_offset?: number }) => Promise<VideoSource[]>;
 };
 
@@ -63,10 +63,8 @@ export async function resolveVideoSources(
 ): Promise<{ sources: VideoSource[]; truncated: number; creative_id?: string; account_id?: string }> {
   const origin = assertSingleVideoSource(input);
   if (origin === "ad_library") {
-    if (!deps.resolveAdLibraryVideoSources) {
-      throw new Error("Ad Library video lookup is not available on this server build.");
-    }
-    const all = await deps.resolveAdLibraryVideoSources({
+    const resolveLibrary = deps.resolveAdLibraryVideoSources ?? defaultResolveAdLibraryVideoSources;
+    const all = await resolveLibrary({
       dataset_id: input.dataset_id as string,
       ad_archive_id: input.ad_archive_id as string,
       hint_offset: input.hint_offset,
@@ -102,7 +100,7 @@ export function progressReporter(extra: ToolExtra | undefined) {
   };
 }
 
-function describeDelivered(video: DeliveredVideo): string {
+export function describeDelivered(video: DeliveredVideo): string {
   const dims = video.width && video.height ? ` ${video.width}x${video.height}` : "";
   const dur = video.duration_seconds ? ` ${video.duration_seconds.toFixed(1)}s` : "";
   const head = `${video.label}${dur}${dims}${video.has_audio === false ? " (no audio)" : ""}`;
