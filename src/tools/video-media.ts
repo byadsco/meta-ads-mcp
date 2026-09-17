@@ -15,7 +15,7 @@ import { resolveAdLibraryVideoSources as defaultResolveAdLibraryVideoSources } f
 import { READ } from "./_register.js";
 
 export type VideoMediaDeps = VideoDeliveryDeps & {
-  resolveAdLibraryVideoSources?: (input: { dataset_id: string; ad_archive_id: string; hint_offset?: number }) => Promise<VideoSource[]>;
+  resolveAdLibraryVideoSources?: (input: { dataset_id: string; ad_archive_id: string; hint_offset?: number; video_index?: number }) => Promise<VideoSource[]>;
 };
 
 const AD_ARCHIVE_ID_PATTERN = /^\d{5,25}$/;
@@ -84,8 +84,10 @@ export async function resolveVideoSources(
       dataset_id: input.dataset_id as string,
       ad_archive_id: input.ad_archive_id as string,
       hint_offset: input.hint_offset,
+      video_index: input.video_index,
     });
-    return pick(all);
+    // With video_index the resolver already returns the single addressed video.
+    return input.video_index !== undefined ? { sources: all.slice(0, 1), truncated: 0 } : pick(all);
   }
   const info = await resolveMetaVideoSourcesWithInfo({
     video_id: input.video_id,

@@ -6,6 +6,7 @@ import {
   isAdLibraryErrorItem,
   isTemplateCopy,
   libraryImageAssets,
+  libraryVideoAt,
   mediaSummary,
   normalizeLibraryAd,
   type AdLibraryRawItem,
@@ -200,6 +201,66 @@ describe("normalizeLibraryAd round-2 hardening", () => {
     expect(ad.media_summary.video_count).toBe(25);
     expect(ad.media_summary.videos_available).toBe(20);
     expect(extractLibraryVideoSources(ad)).toHaveLength(20);
+  });
+});
+
+describe("normalizeLibraryAd round-3 hardening", () => {
+  it("omits any media or link url longer than the url limit instead of truncating it", () => {
+    const long = "https://scontent.xx.fbcdn.net/" + "a".repeat(5000);
+    const raw = {
+      ad_archive_id: "1234567890",
+      snapshot: {
+        link_url: long,
+        page_profile_picture_url: long,
+        images: [{ original_image_url: long, resized_image_url: "https://scontent.xx.fbcdn.net/ok.jpg" }],
+        videos: [{ video_hd_url: long, video_sd_url: "https://video.xx.fbcdn.net/ok.mp4", video_preview_image_url: long }],
+        cards: [{ video_sd_url: long }],
+      },
+    } as AdLibraryRawItem;
+    const ad = normalizeLibraryAd(raw, 0);
+    expect(ad.copy.link_url).toBeNull();
+    expect(ad.page.profile_picture_url).toBeNull();
+    expect(ad.images[0]).toEqual({ original_url: null, resized_url: "https://scontent.xx.fbcdn.net/ok.jpg" });
+    expect(ad.videos[0]).toEqual({ hd_url: null, sd_url: "https://video.xx.fbcdn.net/ok.mp4", preview_image_url: null });
+    expect(ad.cards[0].video).toBeNull();
+    expect(ad.truncated.some((t) => /url omitted/.test(t))).toBe(true);
+    expect(JSON.stringify(ad)).not.toContain("a".repeat(100));
+  });
+
+  it("keeps a literal > outside tags and reports when the html prefix was cut", () => {
+    const ad = normalizeLibraryAd({ ad_archive_id: "1234567890", snapshot: { body: { markup: { __html: "<p>Save > 50% today</p>" } } } } as AdLibraryRawItem, 0);
+    expect(ad.copy.body).toBe("Save > 50% today");
+
+    const longHtml = "<b>x</b>".repeat(10_000) + "TAIL";
+    const cut = normalizeLibraryAd({ ad_archive_id: "1234567890", snapshot: { body: { markup: { __html: longHtml } } } } as AdLibraryRawItem, 0);
+    expect(cut.truncated).toContain("copy.body");
+  });
+
+  it("stops collecting media at the caps instead of materializing everything first", () => {
+    const raw = {
+      ad_archive_id: "1234567890",
+      snapshot: {
+        images: Array.from({ length: 200_000 }, () => ({ original_image_url: "https://scontent.xx.fbcdn.net/a.jpg" })),
+        cards: Array.from({ length: 200_000 }, () => ({ title: "t", original_image_url: "https://scontent.xx.fbcdn.net/c.jpg" })),
+      },
+    } as AdLibraryRawItem;
+    const started = Date.now();
+    const ad = normalizeLibraryAd(raw, 0);
+    expect(Date.now() - started).toBeLessThan(500);
+    expect(ad.images).toHaveLength(20);
+    expect(ad.cards).toHaveLength(30);
+    expect(ad.truncated).toEqual(expect.arrayContaining(["images", "cards"]));
+  });
+
+  it("libraryVideoAt addresses a video beyond the presentation caps", () => {
+    const raw = {
+      ad_archive_id: "1234567890",
+      page_name: "P",
+      snapshot: { videos: Array.from({ length: 25 }, (_, i) => ({ video_sd_url: "https://video.xx.fbcdn.net/" + i + ".mp4" })) },
+    } as AdLibraryRawItem;
+    const source = libraryVideoAt(raw, 22);
+    expect(source).toMatchObject({ card_index: 22, low_res_url: "https://video.xx.fbcdn.net/22.mp4", key: "library:1234567890:video:22" });
+    expect(libraryVideoAt(raw, 25)).toBeUndefined();
   });
 });
 

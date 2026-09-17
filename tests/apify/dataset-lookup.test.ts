@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDatasetLookup, DatasetItemNotFoundError } from "../../src/apify/dataset-lookup.js";
+import { ApifyApiClient } from "../../src/apify/client.js";
 import { mockFetchResponse } from "../setup.js";
 
 const TOKEN = "apify_api_testfixture";
@@ -253,6 +254,89 @@ describe("findDatasetItem", () => {
     const lookup = createDatasetLookup({ pageSize: 1000, maxTotalIds: 2 });
     await expect(lookup.findDatasetItem("ds123abcde", "9999999999999")).rejects.toThrow(/not found/);
     expect(lookup.stats().cached_ids).toBeLessThanOrEqual(2);
+  });
+
+  it("discards a joined scan whose generation was invalidated while it was suspended", async () => {
+    const id = (n: number) => String(1000000000000 + n);
+    let rows = [id(0), id(1), id(2), id(3)];
+    let releaseOffset2!: () => void;
+    const gate = new Promise<void>((r) => { releaseOffset2 = r; });
+    const fetchMock = vi.fn().mockImplementation(async (input: string) => {
+      const params = new URL(input).searchParams;
+      const offset = Number(params.get("offset"));
+      if (params.get("fields")) {
+        if (offset === 2 && !gateReleased) await gate;
+        const limit = Number(params.get("limit"));
+        return mockFetchResponse(rows.slice(offset, offset + limit).map((v) => ({ ad_archive_id: v })));
+      }
+      return mockFetchResponse(rows[offset] ? [{ ad_archive_id: rows[offset] }] : []);
+    });
+    let gateReleased = false;
+    vi.stubGlobal("fetch", fetchMock);
+    const lookup = createDatasetLookup({ pageSize: 2, maxItems: 100 });
+
+    await lookup.findDatasetItem("ds123abcde", id(0));
+    const suspended = lookup.findDatasetItem("ds123abcde", id(2));
+    await new Promise((r) => setTimeout(r, 5));
+    const waiter = lookup.findDatasetItem("ds123abcde", id(4));
+    await new Promise((r) => setTimeout(r, 5));
+
+    rows = [id(4), id(0), id(2), id(3)];
+    const moved = await lookup.findDatasetItem("ds123abcde", id(0));
+    expect(moved.offset).toBe(1);
+
+    gateReleased = true;
+    releaseOffset2();
+    const [two, four] = await Promise.all([suspended, waiter]);
+    expect(two.offset).toBe(2);
+    expect(four.offset).toBe(0);
+    expect((await lookup.findDatasetItem("ds123abcde", id(4))).offset).toBe(0);
+  });
+
+  it("treats an empty 200 body as an error, never as a complete empty dataset", async () => {
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce({ ok: true, status: 200, headers: new Headers(), text: async () => "" })
+      .mockResolvedValue(mockFetchResponse([{ ad_archive_id: "1000000000001" }])));
+    // No retries here so the empty body surfaces as the error it is (the shared client would retry it).
+    const lookup = createDatasetLookup({ pageSize: 1000, client: new ApifyApiClient({ maxRetries: 0 }) });
+    await expect(lookup.findDatasetItem("ds123abcde", "1000000000001")).rejects.toThrow(/empty|unexpected/i);
+    const found = await lookup.findDatasetItem("ds123abcde", "1000000000001");
+    expect(found.offset).toBe(0);
+  });
+
+  it("rejects a non-array page instead of caching it as complete", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockFetchResponse({ error: "nope" })));
+    const lookup = createDatasetLookup({ pageSize: 1000, client: new ApifyApiClient({ maxRetries: 0 }) });
+    await expect(lookup.findDatasetItem("ds123abcde", "1000000000001")).rejects.toThrow(/unexpected/i);
+    expect(lookup.stats().cached_datasets).toBe(0);
+  });
+
+  it("serves many concurrent lookups over a page-size-1 scan without false negatives", async () => {
+    const ids = Array.from({ length: 70 }, (_, i) => String(1000000000000 + i));
+    vi.stubGlobal("fetch", vi.fn().mockImplementation(async (input: string) => {
+      const params = new URL(input).searchParams;
+      const offset = Number(params.get("offset"));
+      const limit = Number(params.get("limit"));
+      return mockFetchResponse(ids.slice(offset, offset + limit).map((v) => ({ ad_archive_id: v })));
+    }));
+    const lookup = createDatasetLookup({ pageSize: 1, maxItems: 100 });
+    const results = await Promise.all(ids.map((v) => lookup.findDatasetItem("ds123abcde", v)));
+    expect(results.map((r) => r.offset)).toEqual(ids.map((_, i) => i));
+  });
+
+  it("forgets generation state once a dataset has no cache entry and no scan in flight", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockFetchResponse([{ ad_archive_id: "1000000000001" }])));
+    let now = 1_000;
+    const lookup = createDatasetLookup({ pageSize: 1000, ttlMs: 100, now: () => now });
+    await lookup.findDatasetItem("ds123abcde", "1000000000001");
+    // A mismatch invalidates the entry (row 0 now holds another id).
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockFetchResponse([{ ad_archive_id: "2000000000002" }])));
+    await expect(lookup.findDatasetItem("ds123abcde", "1000000000001")).rejects.toThrow(/not found/);
+    now += 1_000;
+    await expect(lookup.findDatasetItem("ds123abcde", "3000000000003")).rejects.toThrow(/not found/);
+    now += 1_000;
+    lookup.stats();
+    expect(lookup.stats().generations).toBe(0);
   });
 
   it("rejects malformed ids before any request", async () => {

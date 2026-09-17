@@ -76,6 +76,17 @@ describe("apify client", () => {
       expect(json).not.toHaveBeenCalled();
     });
 
+    it("treats an empty 200 body as a failed request (retryable), not as null data", async () => {
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, status: 200, headers: new Headers(), text: async () => "   " }));
+      const client = new ApifyApiClient({ maxRetries: 0 });
+      await expect(client.get("/v2/datasets/ds123abcde/items")).rejects.toThrow(/empty/i);
+    });
+
+    it("still returns undefined for a 204", async () => {
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, status: 204, headers: new Headers(), text: async () => "" }));
+      await expect(new ApifyApiClient({ maxRetries: 0 }).delete("/v2/actor-runs/abcdefghij")).resolves.toBeUndefined();
+    });
+
     it("rejects an undeclared body that turns out larger than the cap", async () => {
       vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
         ok: true, status: 200, headers: new Headers(), json: async () => [], text: async () => "x".repeat(33 * 1024 * 1024),

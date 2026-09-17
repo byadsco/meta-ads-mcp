@@ -109,6 +109,8 @@ export const MAX_CARDS = 30;
 export const MAX_MEDIA_ITEMS = 20;
 export const MAX_EXTRA_ITEMS = 20;
 export const MAX_TEXT_CHARS = 4000;
+/** Longer URLs are omitted whole: truncating a signed CDN URL would only produce a broken link. */
+export const MAX_URL_CHARS = 2048;
 const TRUNCATION_MARKER = " [truncated]";
 // Epoch seconds up to year 2100; anything else is not a date the actor would emit.
 const MAX_EPOCH_SECONDS = 4_102_444_800;
@@ -139,19 +141,21 @@ function bool(value: unknown): boolean | null {
  * The actor returns some copy fields as { text } objects and others as plain
  * strings; the legacy format wrapped body in { markup: { __html } }.
  */
-function text(value: unknown): string | null {
+function text(value: unknown, onTruncate?: () => void): string | null {
   if (value && typeof value === "object") {
     const record = value as Record<string, unknown>;
     if ("text" in record) return str(record.text);
     const html = asRecord(record.markup).__html;
-    if (typeof html === "string") return str(stripTags(html));
+    if (typeof html === "string") return str(stripTags(html, onTruncate));
   }
   return str(value);
 }
 
 /** Single linear pass over a bounded prefix: a tag regex backtracks quadratically on unclosed "<". */
-function stripTags(html: string): string {
-  const input = html.length > MAX_TEXT_CHARS * 4 ? html.slice(0, MAX_TEXT_CHARS * 4) : html;
+function stripTags(html: string, onTruncate?: () => void): string {
+  const cut = html.length > MAX_TEXT_CHARS * 4;
+  if (cut) onTruncate?.();
+  const input = cut ? html.slice(0, MAX_TEXT_CHARS * 4) : html;
   let out = "";
   let inTag = false;
   let lastSpace = true;
@@ -160,15 +164,16 @@ function stripTags(html: string): string {
       inTag = true;
       continue;
     }
-    if (ch === ">") {
-      inTag = false;
-      if (!lastSpace) {
-        out += " ";
-        lastSpace = true;
+    if (inTag) {
+      if (ch === ">") {
+        inTag = false;
+        if (!lastSpace) {
+          out += " ";
+          lastSpace = true;
+        }
       }
       continue;
     }
-    if (inTag) continue;
     const isSpace = /\s/.test(ch);
     if (isSpace) {
       if (!lastSpace) {
@@ -218,6 +223,16 @@ function capList<T>(items: T[], max: number, label: string, truncated: string[])
   return items.slice(0, max);
 }
 
+function urlOrNull(value: unknown, label: string, truncated: string[]): string | null {
+  const url = str(value);
+  if (url === null) return null;
+  if (url.length > MAX_URL_CHARS) {
+    truncated.push(label + " (url omitted)");
+    return null;
+  }
+  return url;
+}
+
 function strings(value: unknown): string[] {
   return asArray(value).map(str).filter((s): s is string => s !== null);
 }
@@ -231,16 +246,16 @@ export function isTemplateCopy(value: string | null | undefined): boolean {
   return typeof value === "string" && TEMPLATE_PATTERN.test(value);
 }
 
-function image(record: Record<string, unknown>): LibraryImage | null {
-  const original_url = str(record.original_image_url);
-  const resized_url = str(record.resized_image_url);
+function image(record: Record<string, unknown>, label: string, truncated: string[]): LibraryImage | null {
+  const original_url = urlOrNull(record.original_image_url, label + ".original_image_url", truncated);
+  const resized_url = urlOrNull(record.resized_image_url, label + ".resized_image_url", truncated);
   return original_url || resized_url ? { original_url, resized_url } : null;
 }
 
-function video(record: Record<string, unknown>): LibraryVideo | null {
-  const hd_url = str(record.video_hd_url);
-  const sd_url = str(record.video_sd_url);
-  const preview_image_url = str(record.video_preview_image_url);
+function video(record: Record<string, unknown>, label: string, truncated: string[]): LibraryVideo | null {
+  const hd_url = urlOrNull(record.video_hd_url, label + ".video_hd_url", truncated);
+  const sd_url = urlOrNull(record.video_sd_url, label + ".video_sd_url", truncated);
+  const preview_image_url = urlOrNull(record.video_preview_image_url, label + ".video_preview_image_url", truncated);
   return hd_url || sd_url ? { hd_url, sd_url, preview_image_url } : null;
 }
 
@@ -248,15 +263,15 @@ function card(record: Record<string, unknown>, index: number, truncated: string[
   const label = "cards[" + index + "]";
   return {
     index,
-    body: capText(text(record.body), label + ".body", truncated),
+    body: capText(text(record.body, () => truncated.push(label + ".body")), label + ".body", truncated),
     title: capText(str(record.title), label + ".title", truncated),
     caption: capText(str(record.caption), label + ".caption", truncated),
     link_description: capText(str(record.link_description), label + ".link_description", truncated),
-    link_url: capText(str(record.link_url), label + ".link_url", truncated),
+    link_url: urlOrNull(record.link_url, label + ".link_url", truncated),
     cta_text: capText(str(record.cta_text), label + ".cta_text", truncated),
     cta_type: str(record.cta_type),
-    image: image(record),
-    video: video(record),
+    image: image(record, label, truncated),
+    video: video(record, label, truncated),
   };
 }
 
@@ -315,20 +330,26 @@ function summarize(snapshot: Record<string, unknown>): LibraryMediaSummary {
   };
 }
 
-function collectMedia(snapshot: Record<string, unknown>, truncated: string[]): { images: LibraryImage[]; videos: LibraryVideo[]; cards: LibraryCard[] } {
-  const images = capList(asArray(snapshot.images).filter(isRecord).map(image).filter((i): i is LibraryImage => i !== null), MAX_MEDIA_ITEMS, "images", truncated);
-  const videos = capList(asArray(snapshot.videos).filter(isRecord).map(video).filter((v): v is LibraryVideo => v !== null), MAX_MEDIA_ITEMS, "videos", truncated);
-  const rawCards = asArray(snapshot.cards);
-  const cards: LibraryCard[] = [];
-  for (let index = 0; index < rawCards.length; index++) {
-    const raw = rawCards[index];
-    if (!isRecord(raw)) continue;
-    if (cards.length >= MAX_CARDS) {
-      truncated.push("cards");
+/** Builds at most max items, stopping as soon as one more valid item would exceed the cap. */
+function takeMedia<T>(raw: unknown[], build: (record: Record<string, unknown>, index: number) => T | null, max: number, label: string, truncated: string[]): T[] {
+  const out: T[] = [];
+  for (let index = 0; index < raw.length; index++) {
+    const record = raw[index];
+    if (!isRecord(record)) continue;
+    if (out.length >= max) {
+      truncated.push(label);
       break;
     }
-    cards.push(card(raw, index, truncated));
+    const built = build(record, index);
+    if (built !== null) out.push(built);
   }
+  return out;
+}
+
+function collectMedia(snapshot: Record<string, unknown>, truncated: string[]): { images: LibraryImage[]; videos: LibraryVideo[]; cards: LibraryCard[] } {
+  const images = takeMedia(asArray(snapshot.images), (r, i) => image(r, "images[" + i + "]", truncated), MAX_MEDIA_ITEMS, "images", truncated);
+  const videos = takeMedia(asArray(snapshot.videos), (r, i) => video(r, "videos[" + i + "]", truncated), MAX_MEDIA_ITEMS, "videos", truncated);
+  const cards = takeMedia(asArray(snapshot.cards), (r, i) => card(r, i, truncated), MAX_CARDS, "cards", truncated);
   return { images, videos, cards };
 }
 
@@ -351,7 +372,7 @@ export function normalizeLibraryAd(raw: AdLibraryRawItem, offset: number | null)
     if (UNSAFE_KEYS.has(key)) continue;
     if (key.endsWith("_transparency") && raw[key] !== null) details[key] = raw[key];
   }
-  const body = capText(text(snapshot.body), "copy.body", truncated);
+  const body = capText(text(snapshot.body, () => truncated.push("copy.body")), "copy.body", truncated);
   const title = capText(str(snapshot.title), "copy.title", truncated);
   const linkDescription = capText(str(snapshot.link_description), "copy.link_description", truncated);
 
@@ -362,8 +383,8 @@ export function normalizeLibraryAd(raw: AdLibraryRawItem, offset: number | null)
     page: {
       id: str(raw.page_id) ?? str(snapshot.page_id) ?? str(raw.pageID),
       name: capText(str(raw.page_name) ?? str(snapshot.page_name) ?? str(raw.pageName), "page.name", truncated),
-      profile_uri: str(snapshot.page_profile_uri),
-      profile_picture_url: str(snapshot.page_profile_picture_url),
+      profile_uri: urlOrNull(snapshot.page_profile_uri, "page.profile_uri", truncated),
+      profile_picture_url: urlOrNull(snapshot.page_profile_picture_url, "page.profile_picture_url", truncated),
       categories: strings(snapshot.page_categories),
       like_count: num(snapshot.page_like_count),
       is_deleted: bool(raw.page_is_deleted) ?? bool(snapshot.page_is_deleted),
@@ -380,7 +401,7 @@ export function normalizeLibraryAd(raw: AdLibraryRawItem, offset: number | null)
       link_description: linkDescription,
       cta_text: capText(str(snapshot.cta_text), "copy.cta_text", truncated),
       cta_type: str(snapshot.cta_type),
-      link_url: capText(str(snapshot.link_url), "copy.link_url", truncated),
+      link_url: urlOrNull(snapshot.link_url, "copy.link_url", truncated),
       byline: capText(str(snapshot.byline), "copy.byline", truncated),
       is_template: isTemplateCopy(body) || isTemplateCopy(title) || isTemplateCopy(linkDescription),
     },
@@ -429,25 +450,61 @@ export function libraryImageAssets(ad: LibraryAd, size: "full" | "small"): Libra
   return assets;
 }
 
-/** Video sources for the delivery pipeline: HD as source, SD as the preferred download, preview as thumbnail. */
-export function extractLibraryVideoSources(ad: LibraryAd): VideoSource[] {
-  const pageName = ad.page.name ? " — " + ad.page.name : "";
-  const build = (v: LibraryVideo, index: number): VideoSource => ({
-    key: "library:" + ad.ad_archive_id + ":video:" + index,
-    label: "Video " + index + " of Ad Library ad " + ad.ad_archive_id + pageName,
+function buildLibrarySource(adId: string, pageName: string | null, v: LibraryVideo, index: number): VideoSource {
+  return {
+    key: "library:" + adId + ":video:" + index,
+    label: "Video " + index + " of Ad Library ad " + adId + (pageName ? " — " + pageName : ""),
     origin: "ad_library",
-    ad_archive_id: ad.ad_archive_id,
+    ad_archive_id: adId,
     card_index: index,
     source_url: v.hd_url ?? v.sd_url ?? undefined,
     low_res_url: v.sd_url ?? undefined,
     thumbnail_url: v.preview_image_url ?? undefined,
-  });
-  const sources = ad.videos.map((v, i) => build(v, i));
+  };
+}
+
+/** Video sources for the delivery pipeline: HD as source, SD as the preferred download, preview as thumbnail. */
+export function extractLibraryVideoSources(ad: LibraryAd): VideoSource[] {
+  const sources = ad.videos.map((v, i) => buildLibrarySource(ad.ad_archive_id, ad.page.name, v, i));
   for (const c of ad.cards) {
     if (!c.video) continue;
     // Top-level videos and video cards never coexist in real records; offset the
     // card index only when they do, so keys and resource URIs stay unique.
-    sources.push(build(c.video, ad.videos.length > 0 ? ad.videos.length + c.index : c.index));
+    sources.push(buildLibrarySource(ad.ad_archive_id, ad.page.name, c.video, ad.videos.length > 0 ? ad.videos.length + c.index : c.index));
   }
   return sources;
+}
+
+/**
+ * Addresses the n-th video of a raw record (top-level videos first, then
+ * video cards, in order) without materializing the capped collections, so a
+ * caller can reach videos beyond the presentation caps.
+ */
+export function libraryVideoAt(raw: AdLibraryRawItem, index: number): VideoSource | undefined {
+  const adId = archiveIdOf(raw) ?? "";
+  const snapshot = asRecord(raw.snapshot);
+  const pageName = str(raw.page_name) ?? str(snapshot.page_name) ?? str(raw.pageName);
+  const scratch: string[] = [];
+  let position = 0;
+  const videos = asArray(snapshot.videos);
+  for (let i = 0; i < videos.length; i++) {
+    const record = videos[i];
+    if (!isRecord(record)) continue;
+    const v = video(record, "videos[" + i + "]", scratch);
+    if (!v) continue;
+    if (position === index) return buildLibrarySource(adId, pageName, v, position);
+    position += 1;
+  }
+  const topLevel = position;
+  const cards = asArray(snapshot.cards);
+  for (let i = 0; i < cards.length; i++) {
+    const record = cards[i];
+    if (!isRecord(record)) continue;
+    const v = video(record, "cards[" + i + "]", scratch);
+    if (!v) continue;
+    const cardIndex = topLevel > 0 ? topLevel + i : i;
+    if (position === index) return buildLibrarySource(adId, pageName, v, cardIndex);
+    position += 1;
+  }
+  return undefined;
 }

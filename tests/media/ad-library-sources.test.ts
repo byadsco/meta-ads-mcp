@@ -45,6 +45,18 @@ describe("resolveAdLibraryVideoSources", () => {
     expect(new Set(sources.map((s) => s.key)).size).toBe(sources.length);
   });
 
+  it("video_index addresses a video beyond the presentation caps", async () => {
+    const raw = {
+      ad_archive_id: "1178344137830897",
+      page_name: "P",
+      snapshot: { videos: Array.from({ length: 25 }, (_, i) => ({ video_sd_url: "https://video.xx.fbcdn.net/" + i + ".mp4" })) },
+    };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(mockFetchResponse([raw])));
+    const sources = await resolveAdLibraryVideoSources({ dataset_id: "ds123abcde", ad_archive_id: "1178344137830897", hint_offset: 0, video_index: 22 });
+    expect(sources).toHaveLength(1);
+    expect(sources[0]).toMatchObject({ card_index: 22, low_res_url: "https://video.xx.fbcdn.net/22.mp4" });
+  });
+
   it("rejects an actor error record instead of returning empty sources", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockFetchResponse([ERROR_ITEM])));
     await expect(

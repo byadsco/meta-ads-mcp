@@ -48,7 +48,7 @@ export interface FoundDatasetItem {
 
 export interface DatasetLookup {
   findDatasetItem(datasetId: string, adArchiveId: string, options?: { hintOffset?: number }): Promise<FoundDatasetItem>;
-  stats(): { cached_datasets: number; cached_ids: number; in_flight: number };
+  stats(): { cached_datasets: number; cached_ids: number; in_flight: number; generations: number };
 }
 
 interface CacheEntry {
@@ -83,25 +83,32 @@ export function createDatasetLookup(config: DatasetLookupConfig = {}): DatasetLo
   const tenantId = config.tenantId ?? resolveApifyTenantId;
   const cache = new Map<string, CacheEntry>();
   const inFlight = new Map<string, { generation: number; promise: Promise<CacheEntry> }>();
-  // Bumped on invalidation so a scan started before it can neither be reused nor published.
+  // Scans still running per key, including ones already superseded by a newer scan.
+  const activeScans = new Map<string, number>();
+  // A global counter, bumped on invalidation: a scan started earlier can never
+  // match a later generation, even after the key state has been forgotten.
+  let generationCounter = 0;
   const generations = new Map<string, number>();
   const generationOf = (key: string) => generations.get(key) ?? 0;
   const invalidate = (key: string) => {
     cache.delete(key);
-    generations.set(key, generationOf(key) + 1);
+    generations.set(key, ++generationCounter);
+  };
+  const maybeForget = (key: string) => {
+    if (!cache.has(key) && (activeScans.get(key) ?? 0) === 0) generations.delete(key);
   };
 
   const itemsPath = (datasetId: string) => "/v2/datasets/" + datasetId + "/items";
   const cacheKey = (datasetId: string) => tenantId() + ":" + datasetId;
 
   const fetchOne = async (datasetId: string, offset: number): Promise<AdLibraryRawItem | undefined> => {
-    const items = await client.get<AdLibraryRawItem[]>(itemsPath(datasetId), {
+    const items = asPage(await client.get<unknown>(itemsPath(datasetId), {
       offset,
       limit: 1,
       skipHidden: true,
       format: "json",
-    });
-    return Array.isArray(items) ? items[0] : undefined;
+    }));
+    return items[0];
   };
 
   const wellFormedId = (item: AdLibraryRawItem | undefined): string | null => {
@@ -118,7 +125,10 @@ export function createDatasetLookup(config: DatasetLookupConfig = {}): DatasetLo
   const purgeExpired = (): void => {
     const current = now();
     for (const [key, entry] of cache) {
-      if (current - entry.at > ttlMs) cache.delete(key);
+      if (current - entry.at > ttlMs) {
+        cache.delete(key);
+        maybeForget(key);
+      }
     }
   };
 
@@ -136,7 +146,15 @@ export function createDatasetLookup(config: DatasetLookupConfig = {}): DatasetLo
       const oldest = cache.keys().next().value;
       if (oldest === undefined) break;
       cache.delete(oldest);
+      maybeForget(oldest);
     }
+  };
+
+  const asPage = (page: unknown): AdLibraryRawItem[] => {
+    if (!Array.isArray(page)) {
+      throw new McpError(ErrorCode.InternalError, "Unexpected dataset response from Apify (not an array of items).");
+    }
+    return page as AdLibraryRawItem[];
   };
 
   /** Scans from where a previous partial scan stopped, until the id shows up, the dataset ends, or the cap is hit. */
@@ -146,14 +164,13 @@ export function createDatasetLookup(config: DatasetLookupConfig = {}): DatasetLo
     let complete = previous?.complete ?? false;
     while (!complete && scanned < maxItems) {
       const limit = Math.min(pageSize, maxItems - scanned);
-      const page = await client.get<AdLibraryRawItem[]>(itemsPath(datasetId), {
+      const items = asPage(await client.get<unknown>(itemsPath(datasetId), {
         offset: scanned,
         limit,
         fields: "ad_archive_id,adArchiveID",
         skipHidden: true,
         format: "json",
-      });
-      const items = Array.isArray(page) ? page : [];
+      }));
       items.forEach((item, i) => {
         const id = wellFormedId(item);
         if (id && !offsets.has(id)) offsets.set(id, scanned + i);
@@ -169,6 +186,7 @@ export function createDatasetLookup(config: DatasetLookupConfig = {}): DatasetLo
     const generation = generationOf(key);
     const running = inFlight.get(key);
     if (running && running.generation === generation) return running.promise;
+    activeScans.set(key, (activeScans.get(key) ?? 0) + 1);
     const promise = scanFrom(datasetId, adArchiveId, previous)
       .then((entry) => {
         if (generationOf(key) === generation) putCache(key, entry);
@@ -176,6 +194,10 @@ export function createDatasetLookup(config: DatasetLookupConfig = {}): DatasetLo
       })
       .finally(() => {
         if (inFlight.get(key)?.promise === promise) inFlight.delete(key);
+        const remaining = (activeScans.get(key) ?? 1) - 1;
+        if (remaining <= 0) activeScans.delete(key);
+        else activeScans.set(key, remaining);
+        maybeForget(key);
       });
     inFlight.set(key, { generation, promise });
     return promise;
@@ -184,16 +206,30 @@ export function createDatasetLookup(config: DatasetLookupConfig = {}): DatasetLo
   const isExhausted = (entry: CacheEntry | undefined): boolean =>
     entry !== undefined && (entry.complete || entry.scanned >= maxItems);
 
-  /** Scans (or joins a running scan) until the id shows up or the dataset is exhausted. */
+  /**
+   * Scans (or joins a running scan) until the id shows up or the dataset is
+   * exhausted. Terminates on progress, not on a round count: a shared scan may
+   * stop at another caller target, so the loop continues from where it ended,
+   * and a generation change (invalidation while waiting) restarts from the
+   * current cache instead of carrying a stale map forward.
+   */
   const locate = async (key: string, datasetId: string, adArchiveId: string): Promise<{ offset: number | undefined; entry: CacheEntry }> => {
-    let entry = getCache(key);
-    let offset = entry?.offsets.get(adArchiveId);
-    // A shared scan may have stopped at another caller target; keep going from where it ended.
-    for (let rounds = 0; offset === undefined && !isExhausted(entry) && rounds < 64; rounds++) {
-      entry = await scan(key, datasetId, adArchiveId, entry);
-      offset = entry.offsets.get(adArchiveId);
+    for (;;) {
+      const generation = generationOf(key);
+      const entry = getCache(key);
+      const offset = entry?.offsets.get(adArchiveId);
+      if (offset !== undefined) return { offset, entry: entry as CacheEntry };
+      if (isExhausted(entry)) return { offset: undefined, entry: entry as CacheEntry };
+      const before = entry?.scanned ?? 0;
+      const result = await scan(key, datasetId, adArchiveId, entry);
+      if (generationOf(key) !== generation) continue;
+      const found = result.offsets.get(adArchiveId);
+      if (found !== undefined) return { offset: found, entry: result };
+      if (isExhausted(result)) return { offset: undefined, entry: result };
+      if (result.scanned <= before) {
+        throw new McpError(ErrorCode.InternalError, "Dataset scan made no progress; Apify returned an inconsistent page. Retry, or pass hint_offset.");
+      }
     }
-    return { offset, entry: entry ?? { at: now(), offsets: new Map(), scanned: 0, complete: true } };
   };
 
   return {
@@ -224,7 +260,8 @@ export function createDatasetLookup(config: DatasetLookupConfig = {}): DatasetLo
       throw new DatasetItemNotFoundError(adArchiveId, datasetId, second.entry.scanned, !second.entry.complete);
     },
     stats() {
-      return { cached_datasets: cache.size, cached_ids: totalIds(), in_flight: inFlight.size };
+      purgeExpired();
+      return { cached_datasets: cache.size, cached_ids: totalIds(), in_flight: inFlight.size, generations: generations.size };
     },
   };
 }

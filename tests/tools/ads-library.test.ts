@@ -785,11 +785,47 @@ describe("ads_library_* tools", () => {
       const last = result.content[result.content.length - 1].text;
       expect(last.length).toBeLessThanOrEqual(50_000);
       const json = JSON.parse(last) as Record<string, unknown>;
-      const images = json.images as Block[];
-      expect(images[0].source_url).toBeUndefined();
-      expect(String(images[0].error ?? "")).toMatch(/too long|omitted/i);
+      // The overlong URL is dropped at normalization time, so no image asset (and no download) exists for it.
+      expect(json.images).toEqual([]);
+      expect((json.ad as Record<string, unknown>).truncated).toEqual(expect.arrayContaining([expect.stringMatching(/url omitted/)]));
       expect(downloadImage).not.toHaveBeenCalled();
       expect(result.content[0].text.length).toBeLessThan(25_000);
+    });
+
+    it("bounds the work spent on a record with hundreds of thousands of delivery-data keys", async () => {
+      const hostile = JSON.parse(JSON.stringify(FIX_IMAGE)) as Record<string, unknown>;
+      hostile.spend = "__WIDE__";
+      const wide = "{" + Array.from({ length: 300_000 }, (_, i) => "\"k" + i + "\":{}").join(",") + "}";
+      const wire = JSON.stringify([hostile]).replace("\"__WIDE__\"", wide);
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce({ ok: true, status: 200, headers: new Headers(), text: async () => wire }));
+
+      const started = Date.now();
+      const result = await setup({ deliverVideos: fakeDeliver(), downloadImage: fakeImage() }).byName("ads_library_get_ad_details")({
+        dataset_id: "ds123abcde", ad_archive_id: "841513952022622", hint_offset: 0,
+        include_images: false, max_images: 8, image_size: "full", video_delivery: "thumbnail", frame_count: 6, include_raw: false,
+      });
+      // Parsing the 6 MB wire text is unavoidable; the handler itself must not add seconds on top.
+      expect(Date.now() - started).toBeLessThan(2_500);
+      const last = result.content[result.content.length - 1].text;
+      expect(last.length).toBeLessThanOrEqual(50_000);
+      const json = JSON.parse(last) as Record<string, unknown>;
+      const spend = (json.ad as Record<string, unknown>).spend as Record<string, unknown>;
+      expect(Object.keys(spend).length).toBeLessThanOrEqual(201);
+    });
+
+    it("never publishes an overlong video url in the metadata", async () => {
+      const hostile = JSON.parse(JSON.stringify(FIX_VIDEO)) as Record<string, unknown>;
+      const snap = hostile.snapshot as Record<string, unknown>;
+      (snap.videos as Array<Record<string, unknown>>)[0].video_sd_url = "https://video.xx.fbcdn.net/" + "s".repeat(100_000);
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(mockFetchResponse([hostile])));
+
+      const result = await setup({ deliverVideos: fakeDeliver(), downloadImage: fakeImage() }).byName("ads_library_get_ad_details")({
+        dataset_id: "ds123abcde", ad_archive_id: "1178344137830897", hint_offset: 1,
+        include_images: false, max_images: 8, image_size: "full", video_delivery: "thumbnail", frame_count: 6, include_raw: false,
+      });
+      const last = result.content[result.content.length - 1].text;
+      expect(last).not.toContain("s".repeat(200));
+      expect(last.length).toBeLessThanOrEqual(50_000);
     });
 
     it("include_raw returns the untouched actor record alongside the normalized ad", async () => {

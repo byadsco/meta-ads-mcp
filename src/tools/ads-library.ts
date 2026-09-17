@@ -58,6 +58,7 @@ const MAX_URL_CHARS = 2048;
 const JSON_MAX_DEPTH = 8;
 const JSON_MAX_NODES = 4000;
 const JSON_MAX_STRING = 4000;
+const JSON_MAX_KEYS = 200;
 
 export interface AdLibraryToolDeps extends VideoDeliveryDeps {
   deliverVideos?: typeof defaultDeliverVideos;
@@ -909,25 +910,40 @@ interface DetailsMetadata {
 }
 
 /**
- * JSON-safe copy with depth, node and string budgets, so tenant-controlled
- * records (7000-level nesting, 200 KB strings) can neither overflow the stack
- * in JSON.stringify nor dominate the response. Omitted parts are marked.
+ * JSON-safe copy under depth, node, key and string budgets. Every visited
+ * value spends one node; enumeration stops as soon as the budget or the key
+ * cap is hit (no Object.entries over a 300k-key object), so tenant-controlled
+ * records can neither overflow the stack nor dominate CPU, memory or output.
  */
-export function boundedClone(value: unknown, maxDepth = JSON_MAX_DEPTH, maxNodes = JSON_MAX_NODES, maxString = JSON_MAX_STRING): unknown {
-  let nodes = 0;
+export function boundedClone(value: unknown, maxDepth = JSON_MAX_DEPTH, maxNodes = JSON_MAX_NODES, maxString = JSON_MAX_STRING, maxKeys = JSON_MAX_KEYS): unknown {
+  let budget = maxNodes;
   const visit = (v: unknown, depth: number): unknown => {
-    // undefined stays undefined so JSON.stringify drops the key instead of emitting null.
     if (v === undefined || v === null) return v;
+    if (budget-- <= 0) return "[omitted: budget]";
     if (typeof v === "string") return v.length > maxString ? v.slice(0, maxString) + " [truncated]" : v;
     if (typeof v === "number" || typeof v === "boolean") return v;
     if (typeof v !== "object") return String(v);
-    if (nodes++ > maxNodes) return "[omitted: node budget]";
-    if (depth >= maxDepth) return Array.isArray(v) ? "[omitted: array too deep]" : "[omitted: object too deep]";
-    if (Array.isArray(v)) return v.slice(0, 200).map((item) => visit(item, depth + 1));
+    if (depth >= maxDepth) return "[omitted: too deep]";
+    if (Array.isArray(v)) {
+      const out: unknown[] = [];
+      for (let i = 0; i < v.length; i++) {
+        if (i >= maxKeys || budget <= 0) {
+          out.push("[omitted: " + (v.length - i) + " more]");
+          break;
+        }
+        out.push(visit(v[i], depth + 1));
+      }
+      return out;
+    }
     const out: Record<string, unknown> = {};
-    for (const [k, item] of Object.entries(v as Record<string, unknown>)) {
-      if (k === "__proto__" || k === "constructor" || k === "prototype") continue;
-      out[k] = visit(item, depth + 1);
+    let n = 0;
+    for (const k in v as Record<string, unknown>) {
+      if (!Object.prototype.hasOwnProperty.call(v, k) || k === "__proto__" || k === "constructor" || k === "prototype") continue;
+      if (n++ >= maxKeys || budget <= 0) {
+        out["[omitted]"] = "more keys";
+        break;
+      }
+      out[k] = visit((v as Record<string, unknown>)[k], depth + 1);
     }
     return out;
   };

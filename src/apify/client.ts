@@ -52,8 +52,11 @@ async function readBoundedBody(response: Response, maxBytes: number): Promise<st
   return text;
 }
 
+/** Empty bodies are failures where JSON is expected (204 is handled before this): a null page would be cached as an empty dataset. */
 function parseJsonBody(text: string): unknown {
-  if (text.trim().length === 0) return null;
+  if (text.trim().length === 0) {
+    throw new McpError(ErrorCode.InternalError, "Apify returned an empty body where JSON was expected.");
+  }
   return JSON.parse(text);
 }
 
@@ -289,10 +292,12 @@ export class ApifyApiClient {
         // send headers and then stall mid-body forever; clearing the timeout
         // at header time would hang the call and hold the connection open.
         if (!response.ok) {
-          const errorBody = await readBoundedBody(response, MAX_RESPONSE_BYTES).then(parseJsonBody).catch((err: unknown) => {
-            if (err instanceof McpError && /too large/.test(err.message)) throw err;
-            return null;
-          });
+          const errorBody = await readBoundedBody(response, MAX_RESPONSE_BYTES)
+            .then((text) => (text.trim().length === 0 ? null : (JSON.parse(text) as unknown)))
+            .catch((err: unknown) => {
+              if (err instanceof McpError && /too large/.test(err.message)) throw err;
+              return null;
+            });
 
           if (response.status >= 500 && canRetry && attempt < this.maxRetries) {
             lastError = toMcpError(response.status, errorBody, null, token);
