@@ -149,3 +149,31 @@ describe("round-5 review fixes", () => {
     expect(elapsed).toBeLessThan(1000);
   });
 });
+
+describe("round-6 review fixes", () => {
+  it("keeps a fragment whose words merely contain a credential name", () => {
+    for (const url of [
+      "https://shop.example/#/products/author-kit",
+      "https://shop.example/#/tokenized-offers",
+      "https://shop.example/#/secretariat",
+      "https://shop.example/#section-2",
+    ]) {
+      expect(scrubUrlCredentials(url), url).toBe(url);
+    }
+  });
+
+  it("still drops a fragment that names a credential across segments", () => {
+    for (const url of [
+      "https://x.test/a#access_token=SECRET123",
+      "https://x.test/a#access+token=SECRET123",
+      "https://x.test/a#/client-secret/SECRET123",
+    ]) {
+      expect(scrubUrlCredentials(url), url).toBe("https://x.test/a");
+    }
+  });
+
+  it("leaves an ordinary warning about auth modes alone", () => {
+    const warning = "Invalid auth=oauth mode; expected auth=bearer.";
+    expect(scrubCredentials(warning)).toBe(warning);
+  });
+});

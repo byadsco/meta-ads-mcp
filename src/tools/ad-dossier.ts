@@ -593,6 +593,9 @@ export function registerAdDossierTools(server: McpServer, deps: AdDossierDeps = 
           }
 
           const sources: VideoSource[] = [];
+          // Which poster belongs to which video: a lookup by role alone would
+          // hand the first one to every video in the creative.
+          const posterByVideo = new Map<string, DossierImage>();
           // Videos that cannot be delivered are reported alongside the ones
           // that can, so a mixed creative does not hide half its media.
           const undeliverable: DeliveredVideo[] = [];
@@ -604,10 +607,15 @@ export function registerAdDossierTools(server: McpServer, deps: AdDossierDeps = 
               warnings.push(`Video ${singleLine(ref.videoId, 40)} could not be read: ${singleLine(err instanceof Error ? err.message : String(err), 200)}`);
             }
             const thumbnail = (video ? pickVideoThumbnailUrl(video, image_size) : undefined) ?? pickUrl(ref.specThumbnailUrl, fromHash(ref.specThumbnailHash));
-            if (thumbnail) images.push({ role: "video_thumbnail", source_url: thumbnail, downloaded: false });
+            if (thumbnail) {
+              const poster: DossierImage = { role: "video_thumbnail", source_url: thumbnail, downloaded: false };
+              images.push(poster);
+              posterByVideo.set(video?.id ?? ref.videoId, poster);
+            }
             if (!video?.source) {
               // Still reported: the ad has a video, and the reason it could not
-              // be delivered is what the reader needs.
+              // be delivered is what the reader needs. Its poster, if one was
+              // attached, is still worth looking at.
               undeliverable.push({
                 key: `meta:video:${ref.videoId}`,
                 label: `Video ${ref.videoId}`,
@@ -652,6 +660,15 @@ export function registerAdDossierTools(server: McpServer, deps: AdDossierDeps = 
             if (image.downloaded && image.block_index !== undefined) image.block_index += 1;
           }
 
+          for (const record of undeliverable) {
+            const own = record.video_id ? posterByVideo.get(record.video_id) : undefined;
+            if (own?.downloaded && own.block_index !== undefined) {
+              record.delivered = { mode: "thumbnail", block_indexes: [own.block_index] };
+              record.error = record.error
+                ? `${record.error} Its poster image is attached.`
+                : undefined;
+            }
+          }
           // Published before the delivery call, which can throw: a video that
           // could not be delivered is reported either way.
           deliveredVideos = [...undeliverable];
@@ -672,8 +689,9 @@ export function registerAdDossierTools(server: McpServer, deps: AdDossierDeps = 
             warnings.push(...delivery.warnings);
           } else {
             deliveredVideos = [...undeliverable, ...sources.map((source): DeliveredVideo => {
-              // "thumbnail" is only true when a poster actually became a block.
-              const poster = images.find((image) => image.role === "video_thumbnail" && image.downloaded);
+              // "thumbnail" is only true when this video's own poster became a block.
+              const own = source.video_id ? posterByVideo.get(source.video_id) : undefined;
+              const poster = own?.downloaded ? own : undefined;
               return {
               key: source.key,
               label: source.label,

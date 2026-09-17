@@ -716,3 +716,68 @@ describe("round-5 review fixes", () => {
     expect(media.videos[0].delivered.block_indexes).toEqual([1]);
   });
 });
+
+describe("round-6 review fixes", () => {
+  it("gives each video its own poster, never the first one it finds", async () => {
+    const threeVideos = {
+      ...CREATIVE,
+      object_story_spec: undefined,
+      asset_feed_spec: { videos: [{ video_id: "1000" }, { video_id: "2000" }, { video_id: "3000" }] },
+    };
+    vi.stubGlobal(
+      "fetch",
+      routeFetch({
+        ...ROUTES,
+        "/5001": threeVideos,
+        "/1000": { id: "1000", source: "https://video.xx.fbcdn.net/a.mp4", length: 10, picture: "https://scontent.xx.fbcdn.net/poster-a.jpg" },
+        "/2000": { id: "2000", source: "https://video.xx.fbcdn.net/b.mp4", length: 11, picture: "https://scontent.xx.fbcdn.net/poster-b.jpg" },
+        "/3000": { id: "3000", source: "https://video.xx.fbcdn.net/c.mp4", length: 12 },
+      }),
+    );
+    const fetchImages = vi.fn(async (assets: Array<{ source_url?: string; downloaded: boolean; block_index?: number }>) => {
+      let next = 0;
+      for (const asset of assets) {
+        if (!asset.source_url) continue;
+        asset.downloaded = true;
+        asset.block_index = next++;
+      }
+      return { blocks: assets.filter((a) => a.downloaded).map(() => ({ type: "image", data: "aW1n", mimeType: "image/jpeg" })), bytes: 6 };
+    });
+    const { call } = setup({ fetchImages: fetchImages as never });
+
+    const result = await call({ include_media: true, video_delivery: "thumbnail", max_images: 10 });
+
+    const media = lastJson(result).media as {
+      images: Array<{ source_url?: string; block_index?: number }>;
+      videos: Array<{ video_id?: string; delivered: { mode: string; block_indexes: number[] }; thumbnail_url?: string }>;
+    };
+    const byId = new Map(media.videos.map((v) => [v.video_id, v]));
+    expect(byId.get("1000")!.thumbnail_url).toContain("poster-a.jpg");
+    expect(byId.get("2000")!.thumbnail_url).toContain("poster-b.jpg");
+    // Distinct blocks, not the same one reported three times.
+    expect(byId.get("1000")!.delivered.block_indexes).not.toEqual(byId.get("2000")!.delivered.block_indexes);
+    // The third video has no poster at all.
+    expect(byId.get("3000")!.delivered.mode).toBe("none");
+    expect(byId.get("3000")!.delivered.block_indexes).toEqual([]);
+  });
+
+  it("attaches the poster of a video whose source is missing", async () => {
+    const withVideo = { ...CREATIVE, object_story_spec: undefined, asset_feed_spec: { videos: [{ video_id: "1000" }] } };
+    vi.stubGlobal("fetch", routeFetch({ ...ROUTES, "/5001": withVideo, "/1000": { id: "1000", picture: "https://scontent.xx.fbcdn.net/poster.jpg" } }));
+    const fetchImages = vi.fn(async (assets: Array<{ source_url?: string; downloaded: boolean; block_index?: number }>) => {
+      const poster = assets.find((a) => a.source_url);
+      if (poster) {
+        poster.downloaded = true;
+        poster.block_index = 0;
+      }
+      return { blocks: [{ type: "image", data: "aW1n", mimeType: "image/jpeg" }], bytes: 3 };
+    });
+    const { call } = setup({ fetchImages: fetchImages as never });
+
+    const result = await call({ include_media: true, video_delivery: "thumbnail" });
+
+    const media = lastJson(result).media as { videos: Array<{ delivered: { mode: string; block_indexes: number[] } }> };
+    expect(media.videos[0].delivered.mode).toBe("thumbnail");
+    expect(media.videos[0].delivered.block_indexes).toEqual([1]);
+  });
+});

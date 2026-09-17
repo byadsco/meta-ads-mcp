@@ -23,7 +23,7 @@ const CREDENTIAL_NAMES = [
   "refresh_token",
   "id_token",
   "api_key",
-  "auth",
+  // Not a bare "auth": it is a substring of ordinary words like "author".
   "authorization",
   "token",
   "password",
@@ -38,9 +38,11 @@ const CREDENTIAL_NAMES = [
  * lowercased. A legitimate name never needs this, and a name that does is
  * exactly the one trying to hide.
  */
-function normalizeName(raw: string): string {
+function decodeRepeatedly(raw: string): string {
   let value = raw;
-  for (let i = 0; i < 4 && value.includes("%"); i++) {
+  // Eight rounds: each one shrinks the text, and a name nested more deeply
+  // than this is out of the documented scope.
+  for (let i = 0; i < 8 && value.includes("%"); i++) {
     let decoded: string;
     try {
       decoded = decodeURIComponent(value);
@@ -51,7 +53,11 @@ function normalizeName(raw: string): string {
     if (decoded === value) break;
     value = decoded;
   }
-  return value.replace(/[^a-zA-Z0-9]/g, "").toLowerCase();
+  return value;
+}
+
+function normalizeName(raw: string): string {
+  return decodeRepeatedly(raw).replace(/[^a-zA-Z0-9]/g, "").toLowerCase();
 }
 
 const CREDENTIAL_KEYS = new Set(CREDENTIAL_NAMES.map(normalizeName));
@@ -69,9 +75,16 @@ const REDACTED = "[REDACTED]";
  * name does not matter.
  */
 export function mentionsCredential(text: string): boolean {
-  const normalized = normalizeName(text);
-  for (const key of CREDENTIAL_KEYS) {
-    if (normalized.includes(key)) return true;
+  // Whole segments, and pairs of adjacent ones, rather than a substring scan:
+  // "author-kit" must not read as "auth", while "access_token" must read as
+  // "token" even though the name is split across two segments.
+  const segments = decodeRepeatedly(text)
+    .split(/[^a-zA-Z0-9]+/)
+    .filter(Boolean)
+    .map((segment) => segment.toLowerCase());
+  for (let i = 0; i < segments.length; i++) {
+    if (CREDENTIAL_KEYS.has(segments[i])) return true;
+    if (i + 1 < segments.length && CREDENTIAL_KEYS.has(segments[i] + segments[i + 1])) return true;
   }
   return false;
 }

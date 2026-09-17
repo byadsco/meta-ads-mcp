@@ -44,7 +44,8 @@ Media is expensive in context, not in money. An image block or a video frame cos
 ## ID and permission rules
 
 - Ad account: `act_<digits>` or bare digits.
-- Campaign, ad set, ad, creative, video, image hash, pixel: numeric ids of their own kind, not interchangeable. The server validates the kind before calling Meta.
+- Campaign, ad set, ad, creative, video, pixel: numeric ids of their own kind, not interchangeable. The server validates the kind before calling Meta.
+- Image hashes are opaque strings, not numeric ids, and only resolve within the account that uploaded them.
 - Ad Library `ad_archive_id`: 5 to 25 digits, and only meaningful together with the `dataset_id` it was scraped into.
 - WhatsApp tools need `whatsapp_business_management` and the WhatsApp product on the Meta app. A token issued before that scope existed must be re-authorized.
 - Sharing an audience needs both accounts in the same Business Manager.
