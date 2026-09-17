@@ -84,14 +84,19 @@ export function redirectTarget(res: IncomingMessage, base: URL): URL {
 
 export type RedirectOrResult<T> = T | { redirectUrl: URL };
 
-/** DNS lookups have no cancellation hook, so the wait itself is made abortable. */
-function abortable<T>(promise: Promise<T>, signal: AbortSignal | undefined, what: string): Promise<T> {
-  if (!signal) return promise;
+/**
+ * DNS lookups have no cancellation hook, so the wait itself is made abortable.
+ * The operation is started lazily: with an already-aborted signal it never
+ * runs, and once it has started its eventual settlement is always observed so
+ * a late failure cannot surface as an unhandled rejection.
+ */
+function abortable<T>(start: () => Promise<T>, signal: AbortSignal | undefined, what: string): Promise<T> {
+  if (!signal) return start();
   if (signal.aborted) return Promise.reject(new UnsafeUrlError(`${what} download aborted`));
   return new Promise<T>((resolve, reject) => {
     const onAbort = () => reject(new UnsafeUrlError(`${what} download aborted`));
     signal.addEventListener("abort", onAbort, { once: true });
-    promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
+    start().then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
   });
 }
 
@@ -119,7 +124,7 @@ export async function followSafeRedirects<T extends object>(
   perform: (resolved: ResolvedSafePublicUrl) => Promise<RedirectOrResult<T>>,
 ): Promise<T> {
   const what = options.what ?? "resource";
-  const resolveHop = (url: string) => abortable(resolveSafePublicUrl(url, { resolve: options.resolve }), options.signal, what);
+  const resolveHop = (url: string) => abortable(() => resolveSafePublicUrl(url, { resolve: options.resolve }), options.signal, what);
   let resolved = await resolveHop(rawUrl);
   options.validateHop?.(resolved.url);
   for (let redirects = 0; redirects <= options.maxRedirects; redirects++) {

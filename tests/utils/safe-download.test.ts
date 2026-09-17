@@ -218,6 +218,44 @@ describe("downloadSafePublicImage", () => {
     expect(calls[0].req.destroy).toHaveBeenCalled();
   });
 
+  it("aborts while DNS resolution is still pending", async () => {
+    const controller = new AbortController();
+    const { request, calls } = makeRequest([]);
+    const neverResolves = () => new Promise<Array<{ address: string }>>(() => undefined);
+
+    const pending = downloadSafePublicImage("https://cdn.example.com/image.jpg", {
+      request, resolve: neverResolves, signal: controller.signal,
+    });
+    await new Promise((r) => setTimeout(r, 5));
+    controller.abort();
+
+    await expect(pending).rejects.toThrow(/abort/i);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("with a pre-aborted signal, a DNS failure that lands later is never left unhandled", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const { request } = makeRequest([]);
+    let failDns!: (err: Error) => void;
+    const lateFailure = () => new Promise<Array<{ address: string }>>((_resolve, reject) => { failDns = reject; });
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", onUnhandled);
+
+    try {
+      await expect(
+        downloadSafePublicImage("https://cdn.example.com/image.jpg", { request, resolve: lateFailure, signal: controller.signal }),
+      ).rejects.toThrow(/abort/i);
+      // DNS was never started, or if it was, its failure must be swallowed.
+      failDns?.(new Error("late DNS failure"));
+      await new Promise((r) => setTimeout(r, 10));
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
+
   it("rejects images whose Content-Length exceeds the limit", async () => {
     const { request } = makeRequest([
       {

@@ -173,7 +173,7 @@ export async function downloadSafePublicImage(
 
   return followSafeRedirects(
     rawUrl,
-    { maxRedirects, resolve: options.resolve, what: "image" },
+    { maxRedirects, resolve: options.resolve, signal: options.signal, what: "image" },
     (resolved) => requestImage(resolved, { request, maxBytes, timeoutMs, signal: options.signal }),
   );
 }
