@@ -48,6 +48,7 @@ import {
 } from "../media/video-delivery.js";
 import { describeDelivered } from "./video-media.js";
 import { boundedClone } from "../utils/bounded-json.js";
+import { singleLine } from "../utils/single-line.js";
 
 export { boundedClone };
 import { APIFY_WRITE_WARNING, DELETE, READ, TOKEN, TOGGLE, CREATE } from "./_register.js";
@@ -837,21 +838,8 @@ interface LibraryImageMeta {
   skipped?: "max_images" | "size_budget";
 }
 
-/** One line, control characters collapsed, bounded: advertiser text is data for the agent, never framing. */
-const CONTROL_CHARS = new RegExp("[\x00-\x1f\x7f]+", "g");
-const LINE_SEPARATORS = new RegExp("[" + String.fromCharCode(0x2028, 0x2029) + "]", "g");
-
-function line(value: string | null | undefined, max: number): string {
-  if (!value) return "";
-  // Sanitize a bounded prefix only: each replace over a multi-megabyte string
-  // would allocate another copy of it just for the slice below to discard.
-  const cut = value.length > max * 4;
-  const head = cut ? value.slice(0, max * 4) : value;
-  const flat = head.replace(CONTROL_CHARS, " ").replace(LINE_SEPARATORS, " ").replace(/\s+/g, " ").trim();
-  if (flat.length > max) return flat.slice(0, max) + "…";
-  // The prefix may have been all whitespace; say so rather than render an empty field.
-  return cut ? flat + "…" : flat;
-}
+/** Advertiser text is data for the agent, never framing: one bounded, control-character-free line. */
+const line = singleLine;
 
 function renderLibraryAdCard(ad: LibraryAd, images: LibraryImageMeta[], videos: DeliveredVideo[], videoDelivery: string, warnings: string[]): string {
   const lines: string[] = [];
