@@ -16,7 +16,7 @@ export interface DownloadableImage {
   mime_type?: string;
   bytes?: number;
   error?: string;
-  skipped?: "max_images" | "size_budget";
+  skipped?: "max_images" | "size_budget" | "aborted";
   /** Only used for the log line, never for the response. */
   role?: string;
 }
@@ -56,7 +56,7 @@ export async function fetchCreativeImageBlocks(
   for (const asset of assets) {
     if (!asset.source_url) continue;
     if (options.signal?.aborted) {
-      asset.skipped = "size_budget";
+      asset.skipped = "aborted";
       continue;
     }
     if (blocks.length >= options.maxImages) {

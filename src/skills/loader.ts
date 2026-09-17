@@ -17,6 +17,8 @@ export interface SkillDocument {
 
 const MAX_FILE_BYTES = 256 * 1024;
 const MAX_FILES = 64;
+// Entries visited while walking, so a huge or hostile tree cannot be enumerated.
+const MAX_ENTRIES_SCANNED = 256;
 const URI_PREFIX = "meta-ads://skills/";
 
 /** Resolves from src/ in development and from dist/ in the published package. */
@@ -52,33 +54,48 @@ function readMarkdown(fullPath: string): string | null {
   return readFileSync(fullPath, "utf8");
 }
 
+/** Directories are walked only when they are real directories, never symlinks. */
+function isRealDirectory(fullPath: string): boolean {
+  try {
+    return lstatSync(fullPath).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
 function loadSkills(): SkillDocument[] {
   const root = skillsRoot();
   const documents: SkillDocument[] = [];
+  if (!isRealDirectory(root)) {
+    logger.warn({ event: "skills_unavailable" }, "No skills directory found; MCP resources will be empty");
+    return [];
+  }
   let entries: string[];
   try {
-    entries = readdirSync(root);
+    entries = readdirSync(root).sort().slice(0, MAX_ENTRIES_SCANNED);
   } catch {
     logger.warn({ event: "skills_unavailable" }, "No skills directory found; MCP resources will be empty");
     return [];
   }
 
-  for (const skill of entries.sort()) {
+  for (const skill of entries) {
+    if (documents.length >= MAX_FILES) break;
     if (!/^[a-z0-9-]{1,64}$/.test(skill)) continue;
     const skillDir = path.join(root, skill);
-    try {
-      if (!lstatSync(skillDir).isDirectory()) continue;
-    } catch {
-      continue;
-    }
+    if (!isRealDirectory(skillDir)) continue;
 
     const files: string[] = ["SKILL.md"];
-    try {
-      for (const reference of readdirSync(path.join(skillDir, "references")).sort()) {
-        if (/^[a-z0-9._-]{1,64}\.md$/.test(reference)) files.push(`references/${reference}`);
+    const referencesDir = path.join(skillDir, "references");
+    // lstat here too: a symlinked references/ would otherwise publish files
+    // from anywhere the process can read.
+    if (isRealDirectory(referencesDir)) {
+      try {
+        for (const reference of readdirSync(referencesDir).sort().slice(0, MAX_ENTRIES_SCANNED)) {
+          if (/^[a-z0-9._-]{1,64}\.md$/.test(reference)) files.push(`references/${reference}`);
+        }
+      } catch {
+        // A skill whose references cannot be listed still has its SKILL.md.
       }
-    } catch {
-      // A skill without references is fine.
     }
 
     for (const file of files) {

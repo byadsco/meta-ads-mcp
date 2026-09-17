@@ -192,7 +192,7 @@ export function pickVideoThumbnailUrl(video: AdVideo, size: "full" | "small"): s
   return size === "small" ? video.picture ?? largest?.uri : largest?.uri ?? video.picture;
 }
 
-async function resolveImageHashes(accountId: string, hashes: string[]): Promise<Map<string, AdImage>> {
+export async function resolveImageHashes(accountId: string, hashes: string[]): Promise<Map<string, AdImage>> {
   const response = await metaApiClient.get<MetaApiResponse<AdImage>>(
     `/${accountId}/adimages`,
     {

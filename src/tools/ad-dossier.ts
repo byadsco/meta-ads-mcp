@@ -9,7 +9,7 @@ import { CAMPAIGN_DEFAULT_FIELDS } from "../meta/types/campaign.js";
 import { CREATIVE_DEFAULT_FIELDS } from "../meta/types/creative.js";
 import { INSIGHTS_DEFAULT_FIELDS, RANKING_INSIGHTS_FIELDS, VIDEO_INSIGHTS_FIELDS } from "../meta/types/insights.js";
 import { VIDEO_DETAIL_FIELDS } from "../meta/types/video.js";
-import type { AdCreative, AdVideo, MetaApiResponse } from "../meta/types/index.js";
+import type { AdCreative, AdImage, AdVideo, MetaApiResponse } from "../meta/types/index.js";
 import { fetchCreativeImageBlocks as defaultFetchImages, type DownloadableImage } from "../media/creative-images.js";
 import { sanitizeMetadataUrl, textBlock, type ContentBlock } from "../media/content-blocks.js";
 import {
@@ -20,9 +20,9 @@ import {
 } from "../media/video-delivery.js";
 import type { VideoSource } from "../media/video-sources.js";
 import { boundedClone } from "../utils/bounded-json.js";
-import { validateMetaId } from "../utils/format.js";
+import { normalizeAccountId, validateMetaId } from "../utils/format.js";
 import { singleLine } from "../utils/single-line.js";
-import { collectCreativeMedia, pickVideoThumbnailUrl } from "./creative-media.js";
+import { collectCreativeMedia, pickVideoThumbnailUrl, resolveImageHashes } from "./creative-media.js";
 import { withDerivedEffectiveLinkUrl } from "./creatives.js";
 import { applyAttributionDefault, enforceInsightsGuardrails } from "./insights-guardrails.js";
 import { describeRankings, renderRankings } from "./rankings.js";
@@ -43,6 +43,7 @@ const datePresetEnum = z.enum([
 export interface AdDossierDeps extends VideoDeliveryDeps {
   deliverVideos?: typeof defaultDeliverVideos;
   fetchImages?: typeof defaultFetchImages;
+  resolveTenantId?: () => string;
 }
 
 interface DossierAd {
@@ -60,6 +61,14 @@ interface DossierAd {
 }
 
 type Section = "creative" | "ad_set" | "campaign" | "targeting" | "insights" | "media";
+
+interface DossierImage extends DownloadableImage {
+  image_hash?: string;
+  width?: number;
+  height?: number;
+}
+
+const MISSING_ACCOUNT_HINT = "Image is referenced by hash and the ad carries no account id, so the URL could not be resolved.";
 
 /** Every section but the ad itself is optional: one failure must not lose the rest. */
 async function section<T>(name: Section, failed: Section[], work: () => Promise<T>): Promise<T | null> {
@@ -97,10 +106,32 @@ function count(value: unknown): string {
   return parsed === undefined ? "n/a" : parsed.toLocaleString("en-US");
 }
 
-/** Minor units: Meta budgets are integers in the account currency's smallest unit. */
-function budget(value: unknown): string {
+/**
+ * Meta returns budgets as integers in the account currency's smallest unit,
+ * and how many of those make a unit depends on the currency: 50000 is 500.00
+ * EUR but 50,000 JPY. Intl knows the decimals; without a currency the raw
+ * value is reported as what it is rather than silently divided by 100.
+ */
+function budget(value: unknown, currency?: string): string {
   const parsed = num(value);
-  return parsed === undefined ? "n/a" : (parsed / 100).toLocaleString("en-US", { maximumFractionDigits: 2 });
+  if (parsed === undefined) return "n/a";
+  if (!currency || !/^[A-Z]{3}$/.test(currency)) return `${parsed.toLocaleString("en-US")} (minor units)`;
+  try {
+    const format = new Intl.NumberFormat("en-US", { style: "currency", currency });
+    const digits = format.resolvedOptions().maximumFractionDigits ?? 2;
+    return format.format(parsed / 10 ** digits);
+  } catch {
+    return `${parsed.toLocaleString("en-US")} (minor units)`;
+  }
+}
+
+/** Only a positive budget is the one in force: Meta sends "0" for the other kind. */
+function activeBudget(record: Record<string, unknown>, currency?: string): string {
+  const daily = num(record.daily_budget);
+  if (daily !== undefined && daily > 0) return ` · daily budget ${budget(record.daily_budget, currency)}`;
+  const lifetime = num(record.lifetime_budget);
+  if (lifetime !== undefined && lifetime > 0) return ` · lifetime budget ${budget(record.lifetime_budget, currency)}`;
+  return "";
 }
 
 interface FunnelStep {
@@ -214,19 +245,20 @@ function renderDossier(input: {
   warnings: string[];
 }): string {
   const { ad, creative, adSet, campaign, insights } = input;
+  const currency = typeof insights?.account_currency === "string" ? insights.account_currency : undefined;
   const lines: string[] = [];
 
   lines.push(`Ad ${ad.id} — ${singleLine(ad.name, 160) || "unnamed"} (${ad.effective_status ?? ad.status ?? "status unknown"})`);
   if (campaign) {
     lines.push(
       `Campaign ${campaign.id as string} — ${singleLine(campaign.name as string, 120)} · objective ${String(campaign.objective ?? "unknown")}` +
-        (campaign.daily_budget ? ` · daily budget ${budget(campaign.daily_budget)}` : campaign.lifetime_budget ? ` · lifetime budget ${budget(campaign.lifetime_budget)}` : ""),
+        activeBudget(campaign, currency),
     );
   }
   if (adSet) {
     lines.push(
       `Ad set ${adSet.id as string} — ${singleLine(adSet.name as string, 120)} · optimizing for ${String(adSet.optimization_goal ?? "unknown")}` +
-        (adSet.daily_budget ? ` · daily budget ${budget(adSet.daily_budget)}` : adSet.lifetime_budget ? ` · lifetime budget ${budget(adSet.lifetime_budget)}` : "") +
+        activeBudget(adSet, currency) +
         (adSet.bid_strategy ? ` · ${String(adSet.bid_strategy)}` : ""),
     );
   }
@@ -254,7 +286,6 @@ function renderDossier(input: {
   }
 
   if (insights) {
-    const currency = typeof insights.account_currency === "string" ? insights.account_currency : undefined;
     lines.push("", `Performance (${input.datePreset}, ${String(insights.date_start ?? "?")} → ${String(insights.date_stop ?? "?")}):`);
     lines.push(
       `Spend ${money(insights.spend, currency)} · ${count(insights.impressions)} impressions · ${count(insights.reach)} reach · frequency ${num(insights.frequency)?.toFixed(2) ?? "n/a"}`,
@@ -279,7 +310,7 @@ function renderDossier(input: {
 
   const attached = input.images.filter((i) => i.downloaded);
   if (attached.length > 0) {
-    lines.push("", `${attached.length} creative image(s) attached as content block(s) ${attached.map((i) => (i.block_index ?? 0) + 1).join(", ")}.`);
+    lines.push("", `${attached.length} creative image(s) attached as content block(s) ${attached.map((i) => i.block_index).join(", ")}.`);
   }
   for (const video of input.videos) {
     lines.push(`• ${describeDelivered(video)}`);
@@ -291,6 +322,29 @@ function renderDossier(input: {
   for (const warning of input.warnings) lines.push(`⚠ ${singleLine(warning, 300)}`);
 
   return joinBounded(lines);
+}
+
+const URL_KEY = /(^|_)(url|uri|link|permalink)s?($|_)/i;
+
+/**
+ * Meta echoes some URLs with an access_token attached. boundedClone bounds
+ * size but keeps strings as they are, so every URL-shaped field in the
+ * envelope is sanitized before it reaches the client, keeping the CDN
+ * signature the link needs.
+ */
+function sanitizeUrls(value: unknown, depth = 0): unknown {
+  if (depth > 8) return value;
+  if (Array.isArray(value)) return value.map((item) => sanitizeUrls(item, depth + 1));
+  if (!value || typeof value !== "object") return value;
+  const out: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof child === "string" && URL_KEY.test(key) && /^https?:\/\//i.test(child)) {
+      out[key] = sanitizeMetadataUrl(child) ?? "[url omitted]";
+      continue;
+    }
+    out[key] = sanitizeUrls(child, depth + 1);
+  }
+  return out;
 }
 
 /** Cut by whole lines, and never inside the fenced advertiser content. */
@@ -332,6 +386,7 @@ function serializeDossier(envelope: Record<string, unknown>): string {
 export function registerAdDossierTools(server: McpServer, deps: AdDossierDeps = {}): void {
   const deliverVideos = deps.deliverVideos ?? defaultDeliverVideos;
   const fetchImages = deps.fetchImages ?? defaultFetchImages;
+  const resolveVideoTenant = deps.resolveTenantId ?? (() => resolveTenantId({ feature: "video" }));
 
   server.registerTool(
     "ads_get_ad_dossier",
@@ -371,7 +426,9 @@ export function registerAdDossierTools(server: McpServer, deps: AdDossierDeps = 
 
       // The only call that may fail the tool: without the ad there is no dossier.
       const ad = await metaApiClient.get<DossierAd>(`/${adId}`, {
-        fields: [...AD_DEFAULT_FIELDS, "account_id", "issues_info", "recommendations", "effective_object_story_id", "bid_amount", "tracking_specs"].join(","),
+        // effective_object_story_id belongs to AdCreative, not to Ad; asking the
+        // Ad for it would fail the one call that is allowed to fail the tool.
+        fields: [...AD_DEFAULT_FIELDS, "account_id", "issues_info", "recommendations", "bid_amount", "tracking_specs"].join(","),
       });
 
       const creativeId = ad.creative?.id;
@@ -435,71 +492,124 @@ export function registerAdDossierTools(server: McpServer, deps: AdDossierDeps = 
         insightsPromise,
       ]);
 
-      const images: DownloadableImage[] = [];
+      const images: DossierImage[] = [];
       const blocks: ContentBlock[] = [];
       let deliveredVideos: DeliveredVideo[] = [];
 
       if (include_media && creative) {
-        const media = collectCreativeMedia(creative);
-        for (const ref of media.images) {
-          if (ref.url) images.push({ role: ref.role, source_url: ref.url, downloaded: false });
-        }
+        // One section for the whole media step: resolving the tenant, fetching a
+        // video or delivering it must not lose the Graph sections above.
+        await section("media", sectionsFailed, async () => {
+          const media = collectCreativeMedia(creative);
+          const accountId = ad.account_id
+            ? normalizeAccountId(ad.account_id)
+            : typeof (creative as { account_id?: unknown }).account_id === "string"
+              ? normalizeAccountId((creative as { account_id: string }).account_id)
+              : undefined;
+          const wantSmall = image_size === "small";
 
-        const sources: VideoSource[] = [];
-        for (const ref of media.videos) {
-          const video = await section("media", sectionsFailed, () =>
-            metaApiClient.get<AdVideo>(`/${validateMetaId(ref.videoId, "video")}`, { fields: VIDEO_DETAIL_FIELDS.join(",") }),
-          );
-          const thumbnail = video ? pickVideoThumbnailUrl(video, image_size) ?? ref.specThumbnailUrl : ref.specThumbnailUrl;
-          if (thumbnail) images.push({ role: "video_thumbnail", source_url: thumbnail, downloaded: false });
-          if (video?.source) {
-            sources.push({
-              key: `meta:video:${video.id}`,
-              label: `Video ${video.id}${video.title ? ` "${video.title}"` : ""}`,
-              origin: "meta",
-              video_id: video.id,
-              source_url: video.source,
-              // The poster is attached with the images; the pipeline must not fetch it twice.
-              thumbnail_url: undefined,
-              duration_seconds: video.length,
-              permalink_url: video.permalink_url,
-              title: video.title,
+          // A creative may reference an image only by hash, and "small" needs the
+          // adimages lookup even when a full-size URL is already known.
+          const hashes = new Set<string>();
+          for (const ref of media.images) {
+            if (ref.hash && (!ref.url || wantSmall)) hashes.add(ref.hash);
+          }
+          for (const ref of media.videos) {
+            if (ref.specThumbnailHash && (!ref.specThumbnailUrl || wantSmall)) hashes.add(ref.specThumbnailHash);
+          }
+          let hashMap = new Map<string, AdImage>();
+          if (hashes.size > 0 && accountId) {
+            try {
+              hashMap = await resolveImageHashes(accountId, [...hashes]);
+            } catch (err) {
+              warnings.push(`Image hash lookup failed: ${singleLine(err instanceof Error ? err.message : String(err), 200)}`);
+            }
+          }
+          const fromHash = (hash?: string): AdImage | undefined => (hash ? hashMap.get(hash) : undefined);
+          const pickUrl = (url: string | undefined, resolved: AdImage | undefined): string | undefined =>
+            wantSmall ? resolved?.url_128 ?? resolved?.url ?? url : url ?? resolved?.url;
+
+          for (const ref of media.images) {
+            const resolved = fromHash(ref.hash);
+            const sourceUrl = pickUrl(ref.url, resolved);
+            images.push({
+              role: ref.role,
+              image_hash: ref.hash,
+              width: resolved?.width,
+              height: resolved?.height,
+              source_url: sourceUrl,
+              downloaded: false,
+              error: sourceUrl ? undefined : accountId ? "No downloadable URL found for this image." : MISSING_ACCOUNT_HINT,
             });
           }
-        }
 
-        const imageResult = await fetchImages(images, {
-          maxImages: max_images,
-          totalBytesBudget: MAX_IMAGE_BYTES_BUDGET,
-          signal,
+          const sources: VideoSource[] = [];
+          for (const ref of media.videos) {
+            let video: AdVideo | null = null;
+            try {
+              video = await metaApiClient.get<AdVideo>(`/${validateMetaId(ref.videoId, "video")}`, { fields: VIDEO_DETAIL_FIELDS.join(",") });
+            } catch (err) {
+              warnings.push(`Video ${singleLine(ref.videoId, 40)} could not be read: ${singleLine(err instanceof Error ? err.message : String(err), 200)}`);
+            }
+            const thumbnail = (video ? pickVideoThumbnailUrl(video, image_size) : undefined) ?? pickUrl(ref.specThumbnailUrl, fromHash(ref.specThumbnailHash));
+            if (thumbnail) images.push({ role: "video_thumbnail", source_url: thumbnail, downloaded: false });
+            if (video?.source) {
+              sources.push({
+                key: `meta:video:${video.id}`,
+                // The label is printed outside the untrusted fence, so it carries
+                // no advertiser text; the title is reported inside it instead.
+                label: `Video ${video.id}`,
+                origin: "meta",
+                video_id: video.id,
+                source_url: video.source,
+                // The poster is attached with the images; the pipeline must not fetch it twice.
+                thumbnail_url: undefined,
+                duration_seconds: video.length,
+                permalink_url: video.permalink_url,
+                title: singleLine(video.title, 120) || undefined,
+              });
+            }
+          }
+
+          const imageResult = await fetchImages(images, {
+            maxImages: max_images,
+            totalBytesBudget: MAX_IMAGE_BYTES_BUDGET,
+            signal,
+          });
+          blocks.push(...imageResult.blocks);
+          // Block 0 of the result is the brief, so every index shifts once, here,
+          // and both the brief and the JSON read the shifted value.
+          for (const image of images) {
+            if (image.downloaded && image.block_index !== undefined) image.block_index += 1;
+          }
+
+          if (sources.length > 0 && video_delivery !== "thumbnail") {
+            const delivery = await deliverVideos(
+              sources,
+              { delivery: video_delivery, frame_count, frame_layout: "grid" },
+              deps,
+              { tenantId: resolveVideoTenant(), signal },
+              { totalBytesBudget: Math.max(0, DEFAULT_VIDEO_TOTAL_BYTES_BUDGET - imageResult.bytes) },
+            );
+            const offset = blocks.length + 1;
+            blocks.push(...delivery.blocks);
+            deliveredVideos = delivery.videos.map((v) => ({ ...v, delivered: { ...v.delivered, block_indexes: v.delivered.block_indexes.map((i) => i + offset) } }));
+            warnings.push(...delivery.warnings);
+          } else if (sources.length > 0) {
+            deliveredVideos = sources.map((source) => ({
+              key: source.key,
+              label: source.label,
+              origin: source.origin,
+              video_id: source.video_id,
+              title: source.title,
+              duration_seconds: source.duration_seconds,
+              delivered: { mode: "thumbnail", block_indexes: [] },
+              source_url: sanitizeMetadataUrl(source.source_url),
+              permalink_url: sanitizeMetadataUrl(source.permalink_url),
+            }));
+          }
+          return true;
         });
-        blocks.push(...imageResult.blocks);
-
-        if (sources.length > 0 && video_delivery !== "thumbnail") {
-          const delivery = await deliverVideos(
-            sources,
-            { delivery: video_delivery, frame_count, frame_layout: "grid" },
-            deps,
-            { tenantId: resolveTenantId({ feature: "video" }), signal },
-            { totalBytesBudget: Math.max(0, DEFAULT_VIDEO_TOTAL_BYTES_BUDGET - imageResult.bytes) },
-          );
-          // Block indexes are reported relative to the whole result, whose first block is the brief.
-          const offset = blocks.length + 1;
-          blocks.push(...delivery.blocks);
-          deliveredVideos = delivery.videos.map((v) => ({ ...v, delivered: { ...v.delivered, block_indexes: v.delivered.block_indexes.map((i) => i + offset) } }));
-          warnings.push(...delivery.warnings);
-        } else if (sources.length > 0) {
-          deliveredVideos = sources.map((s) => ({
-            key: s.key,
-            label: s.label,
-            origin: s.origin,
-            video_id: s.video_id,
-            duration_seconds: s.duration_seconds,
-            delivered: { mode: "thumbnail", block_indexes: [] },
-            source_url: sanitizeMetadataUrl(s.source_url),
-            permalink_url: sanitizeMetadataUrl(s.permalink_url),
-          }));
-        }
       }
 
       const targeting = targetingLines(targetingRaw);
@@ -511,27 +621,24 @@ export function registerAdDossierTools(server: McpServer, deps: AdDossierDeps = 
         targeting,
         insights,
         videos: deliveredVideos,
-        images: images.map((i, index) => ({ ...i, block_index: i.downloaded ? index : i.block_index })),
+        images,
         datePreset: date_preset,
         sectionsFailed,
         warnings,
       });
 
-      const envelope = {
+      const envelope = sanitizeUrls({
         ad: boundedClone(ad, JSON_BOUNDS) as DossierAd,
         creative: creative ? (boundedClone(creative, JSON_BOUNDS) as AdCreative) : null,
         ad_set: adSet ? (boundedClone(adSet, JSON_BOUNDS) as Record<string, unknown>) : null,
         campaign: campaign ? (boundedClone(campaign, JSON_BOUNDS) as Record<string, unknown>) : null,
         targeting_sentences: targeting,
         insights: insights ? (boundedClone(insights, JSON_BOUNDS) as Record<string, unknown>) : null,
-        media: {
-          images: images.map((i) => ({ ...i, source_url: sanitizeMetadataUrl(i.source_url) })),
-          videos: deliveredVideos,
-        },
+        media: { images, videos: deliveredVideos },
         date_preset,
         sections_failed: sectionsFailed,
         warnings,
-      };
+      }) as Record<string, unknown>;
 
       const content: CallToolResult["content"] = [textBlock(brief), ...blocks, textBlock(serializeDossier(envelope))];
       return { content };

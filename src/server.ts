@@ -11,16 +11,23 @@ import { logger } from "./utils/logger.js";
  * drifted. `rootDir: src` rules out importing the file, so it is read at
  * startup, once, and a failure falls back rather than taking the server down.
  */
+let cachedVersion: string | undefined;
+
 function serverVersion(): string {
+  if (cachedVersion) return cachedVersion;
   try {
     const raw = readFileSync(new URL("../package.json", import.meta.url), "utf8");
     const version = (JSON.parse(raw) as { version?: unknown }).version;
-    if (typeof version === "string" && /^\d+\.\d+\.\d+/.test(version)) return version;
+    if (typeof version === "string" && /^\d+\.\d+\.\d+/.test(version)) {
+      cachedVersion = version;
+      return version;
+    }
   } catch {
     // fall through
   }
   logger.warn({ event: "server_version_unknown" }, "Could not read the version from package.json");
-  return "0.0.0";
+  cachedVersion = "0.0.0";
+  return cachedVersion;
 }
 
 /**
