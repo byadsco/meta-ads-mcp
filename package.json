@@ -23,6 +23,7 @@
   },
   "files": [
     "dist",
+    "skills",
     "README.md",
     "LICENSE",
     "SECURITY.md"

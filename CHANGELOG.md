@@ -9,6 +9,29 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
+- **One ad in full — `ads_get_ad_dossier` (141 → 142 tools).** A creative
+  review needs the ad, its ad set and campaign, the creative with its copy,
+  effective landing URL and UTM tags, the targeting in Meta's own words, the
+  performance for the period with the video retention funnel and the auction
+  rankings, and the creative media itself. Asking for each separately costs a
+  dozen calls. Only the first call, for the ad, can fail the tool; every other
+  section is fetched in parallel and a section that fails is named in
+  `sections_failed` rather than losing the rest. The retention funnel is
+  reported as shares of plays, guarded against zero plays, and a below-average
+  ranking carries Meta's own hypothesis about what to change.
+- **Four skills, shipped with the server and exposed over MCP.**
+  `meta-ads-mcp-guide` (which tool answers which question, what writes cost,
+  the ID and permission rules that make calls fail, plus a map of all 142
+  tools, the recurring workflows and a safety-and-costs reference),
+  `meta-ads-creative-analysis`, `meta-ads-video-analysis` and
+  `meta-ads-competitor-research`. They are published as MCP **resources** under
+  `meta-ads://skills/`, wrapped in six MCP **prompts** that start a job with
+  the relevant skill already in hand (`analyze_ad`, `analyze_ad_video`,
+  `competitor_creative_research`, `ad_library_ad_deep_dive`,
+  `creative_performance_review`, `account_health_check`), and summarized in the
+  server's `instructions`, which a client receives before its first tool call.
+  The directories can also be installed locally with
+  `cp -r skills/* ~/.claude/skills/`.
 - **Server-side video analysis with Gemini — `ads_analyze_video` plus per-tenant
   key management (137 → 141 tools).** For agents whose own model cannot ingest
   video at all: the server downloads the video through the existing hardened
@@ -79,6 +102,19 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   Meta's header text only.
 
 ### Changed
+
+- The server's version now comes from `package.json` rather than a constant
+  that had already drifted (it reported 3.0.0 while the package was at 3.6.0).
+- The image download loop moved out of `ads_get_creative_media` into
+  `src/media/creative-images.ts`, and the auction-ranking reading into
+  `src/tools/rankings.ts`, so the dossier and the existing tools share one
+  implementation. `withDerivedEffectiveLinkUrl` is exported, and
+  `VIDEO_INSIGHTS_FIELDS` and `RANKING_INSIGHTS_FIELDS` join the insights
+  types.
+- `skills/` is part of the published package and of the runtime image, with an
+  explicit `.dockerignore` negation so the blanket `*.md` rule cannot swallow
+  it. Verified by building the image and loading the skills from `dist/` inside
+  it.
 
 
 - `/auth/connections` and the OAuth consent page gained a Gemini section next to
@@ -189,6 +225,20 @@ no code here but change delivery:
   new warning log only confirms that a bump is already overdue.
 
 ### Security
+
+- The advertiser's own ad copy in the dossier is delimited as untrusted content
+  and flattened to single lines with hyphen runs neutralized, like the Ad
+  Library card and the Gemini analysis before it. The brief is cut by whole
+  lines and never inside that fence, and the JSON block is reduced field by
+  field rather than truncated as a string, which would leave it unparseable.
+- The skill loader reads only `skills/<name>/SKILL.md` and
+  `skills/<name>/references/*.md`, with both path segments pattern-checked, a
+  256 KB per-file cap, a file-count cap, and `lstat` rather than `stat` so a
+  symlink planted in `skills/` cannot read anything else the process can.
+  Resources are registered under static URIs, so there is no path variable for
+  a traversal to hide in.
+- Prompt arguments are flattened to one bounded line before they reach the
+  message text, so an argument cannot forge structure around itself.
 
 
 - Gemini keys are stored encrypted at rest (AES-256-GCM) under their own AAD

@@ -4,6 +4,8 @@ dist
 .github
 .env*
 *.md
+# ...but the skills are part of the server, and are published as MCP resources.
+!skills/**/*.md
 tests
 .claude
 scripts

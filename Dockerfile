@@ -19,6 +19,8 @@ RUN apk add --no-cache ffmpeg
 COPY --from=builder /app/dist/ dist/
 COPY --from=builder /app/node_modules/ node_modules/
 COPY package.json ./
+# The skills ship with the server: they are published as MCP resources at runtime.
+COPY skills/ skills/
 
 EXPOSE 3000
 

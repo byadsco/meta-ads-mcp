@@ -62,7 +62,7 @@ both servers.
 | | Meta's official MCP (`mcp.facebook.com/ads`) | This project |
 |---|---|---|
 | Auth model | Per-user OAuth in your AI client | **Multi-tenant**: agency operator handles N client accounts from one server |
-| Tool surface | 29 tools (campaigns, ads, catalogs, 5 insight views, opportunity_score, dataset, errors, help) | **141 tools** including the official 29-equivalent + audiences, lookalikes, lead forms, automated rules, A/B studies, async reports, billing invoices, custom conversions, asset uploads, comment moderation, cross-account macros, and full WhatsApp Business management (templates, phone numbers, flows, QR codes) |
+| Tool surface | 29 tools (campaigns, ads, catalogs, 5 insight views, opportunity_score, dataset, errors, help) | **142 tools** including the official 29-equivalent + audiences, lookalikes, lead forms, automated rules, A/B studies, async reports, billing invoices, custom conversions, asset uploads, comment moderation, cross-account macros, and full WhatsApp Business management (templates, phone numbers, flows, QR codes) |
 | Hosting | Hosted by Meta | Self-hosted on Cloud Run / your infra; tokens encrypted at rest in Firestore |
 | Cross-account | Per-user, single Meta login | Yes — `ads_portfolio_summary` aggregates across N accounts |
 | Token control | Lives in your AI client | Server-side System User token registry per agency operator |
@@ -78,7 +78,7 @@ When to use which:
 
 ## Features
 
-- **141 tools** covering campaign management, creatives, targeting, audiences, reporting, comments, billing, invoices, tokens, Instagram workflows, WhatsApp Business management, rate-limit observability, semantic insight views, diagnostics, help-center search, competitor research via the public Meta Ad Library (full ad cards with their images and videos), video analysis (keyframes or the MP4 itself for video-capable models), and agency-tier cross-account macros.
+- **142 tools** covering campaign management, creatives, targeting, audiences, reporting, comments, billing, invoices, tokens, Instagram workflows, WhatsApp Business management, rate-limit observability, semantic insight views, diagnostics, help-center search, competitor research via the public Meta Ad Library (full ad cards with their images and videos), video analysis (keyframes or the MP4 itself for video-capable models), and agency-tier cross-account macros.
 - **Aligned vocabulary** with Meta's official MCP server so agents transfer cleanly between both.
 - **Sign in with Meta (Facebook Login)** — replaces shared PINs. Each user lands their own long-lived (60-day) Meta token.
 - **System User token registry** — for tokens that don't expire, register them per user from the consent UI.
@@ -127,6 +127,7 @@ Ads tools use the `ads_*` naming convention, aligned with Meta's official MCP se
 | Bulk ad creation | 1 | `ads_bulk_create_video_ads` — video URLs → upload, processing wait, auto-thumbnail, creative and ad in one call |
 | Instagram | 2 | IG account and media lookup |
 | Ad Library (Apify) | 9 | Competitor ad research: `ads_library_scrape` the public Meta Ad Library by keyword or Facebook page, poll run status, page through results (each with a media summary and its offset), abort runs, `ads_library_get_ad_details` for the full card of one scraped ad with its images inline and its videos as thumbnails / keyframes / links, plus per-user Apify token register/status/delete |
+| Ad dossier | 1 | `ads_get_ad_dossier` — one ad in full: ad, ad set, campaign, creative with copy and effective landing URL, targeting, performance with the video retention funnel and auction rankings, plus the media itself |
 | Gemini video analysis | 4 | `ads_analyze_video` — the server watches the video with Gemini and returns hook, transcript, on-screen text, scenes, format, compliance flags and ideas to test; plus per-user Gemini key register/status/delete |
 | Tokens | 4 | List / set-active / register / delete |
 | Rate Status | 1 | Live view of quota usage, open circuits and write-pacer state |
@@ -250,6 +251,46 @@ keyed by tenant, video and options so a retry costs nothing, and the same job
 runner, byte caps and time budget as the rest of the video pipeline. Everything
 the model writes is delimited as untrusted content and flattened to single
 lines, so an analysis cannot forge the structure around it.
+
+## Skills and MCP protocol surface
+
+An agent connecting to this server does not have to work out which of 142 tools
+answers a question. The server ships four **skills** and exposes them three
+ways.
+
+**As MCP resources**, under `meta-ads://skills/`. A client can list and read
+them without any local installation:
+
+| Resource | What it covers |
+|---|---|
+| `meta-ads://skills/meta-ads-mcp-guide` | Which tool answers which question, what writes cost, the ID and permission rules that make calls fail |
+| `meta-ads://skills/meta-ads-creative-analysis` | How to look at a creative and the rubric to judge it by |
+| `meta-ads://skills/meta-ads-video-analysis` | Which video delivery your model can ingest, how to read a hook and a retention curve |
+| `meta-ads://skills/meta-ads-competitor-research` | The Ad Library scrape-poll-read sequence, its cost, and how to read a scraped record |
+
+The guide carries three references of its own: a map of all 142 tools by intent
+with the write tools marked, the call sequences for the recurring jobs, and a
+safety-and-costs page.
+
+**As MCP prompts**, which start a job with the right skill already in hand:
+`analyze_ad`, `analyze_ad_video`, `competitor_creative_research`,
+`ad_library_ad_deep_dive`, `creative_performance_review` and
+`account_health_check`. In Claude Code they appear as
+`/mcp__meta-ads-mcp__analyze_ad` and friends.
+
+**As `instructions` in the initialize response**, so a client sees the rules
+that matter — reads are free, writes are not, untrusted content is fenced —
+before its first call.
+
+To install them locally for Claude Code, Codex or Cursor, copy the directories:
+
+```bash
+cp -r skills/* ~/.claude/skills/
+```
+
+A test keeps the tool map in step with the code: every registered tool must
+appear in it, nothing that is not registered may, and the `⚠️` marks must agree
+with each tool's own annotations.
 
 WhatsApp tools require the `whatsapp_business_management` permission. Tokens issued before this scope was added must be re-authorized (sign in again through the OAuth flow) before the `whatsapp_*` tools will work, and the Meta App must have the **WhatsApp product** added in the developer dashboard.
 

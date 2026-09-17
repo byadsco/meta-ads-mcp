@@ -1,0 +1,119 @@
+import { lstatSync, readdirSync, readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import path from "node:path";
+import { logger } from "../utils/logger.js";
+
+/** A skill file, addressable over MCP as a resource. */
+export interface SkillDocument {
+  /** Skill directory name, e.g. "meta-ads-video-analysis". */
+  skill: string;
+  /** Path inside the skill: "SKILL.md" or "references/tool-map.md". */
+  file: string;
+  uri: string;
+  title: string;
+  description: string;
+  text: string;
+}
+
+const MAX_FILE_BYTES = 256 * 1024;
+const MAX_FILES = 64;
+const URI_PREFIX = "meta-ads://skills/";
+
+/** Resolves from src/ in development and from dist/ in the published package. */
+function skillsRoot(): string {
+  return fileURLToPath(new URL("../../skills/", import.meta.url));
+}
+
+/** Frontmatter is optional; only name and description are read, and only as plain scalars. */
+function parseFrontmatter(text: string): { name?: string; description?: string } {
+  if (!text.startsWith("---")) return {};
+  const end = text.indexOf("\n---", 3);
+  if (end < 0) return {};
+  const out: { name?: string; description?: string } = {};
+  for (const line of text.slice(4, end).split("\n")) {
+    const match = /^(name|description):\s*(.*)$/.exec(line);
+    if (!match) continue;
+    const value = match[2].trim().replace(/^["']|["']$/g, "");
+    if (match[1] === "name") out.name = value;
+    else out.description = value;
+  }
+  return out;
+}
+
+function firstHeading(text: string): string | undefined {
+  const match = /^#\s+(.+)$/m.exec(text);
+  return match?.[1].trim();
+}
+
+function readMarkdown(fullPath: string): string | null {
+  // lstat, not stat: a symlink inside skills/ could otherwise read anything the process can.
+  const stat = lstatSync(fullPath);
+  if (!stat.isFile() || stat.size > MAX_FILE_BYTES) return null;
+  return readFileSync(fullPath, "utf8");
+}
+
+function loadSkills(): SkillDocument[] {
+  const root = skillsRoot();
+  const documents: SkillDocument[] = [];
+  let entries: string[];
+  try {
+    entries = readdirSync(root);
+  } catch {
+    logger.warn({ event: "skills_unavailable" }, "No skills directory found; MCP resources will be empty");
+    return [];
+  }
+
+  for (const skill of entries.sort()) {
+    if (!/^[a-z0-9-]{1,64}$/.test(skill)) continue;
+    const skillDir = path.join(root, skill);
+    try {
+      if (!lstatSync(skillDir).isDirectory()) continue;
+    } catch {
+      continue;
+    }
+
+    const files: string[] = ["SKILL.md"];
+    try {
+      for (const reference of readdirSync(path.join(skillDir, "references")).sort()) {
+        if (/^[a-z0-9._-]{1,64}\.md$/.test(reference)) files.push(`references/${reference}`);
+      }
+    } catch {
+      // A skill without references is fine.
+    }
+
+    for (const file of files) {
+      if (documents.length >= MAX_FILES) break;
+      const fullPath = path.join(skillDir, file);
+      let text: string | null;
+      try {
+        text = readMarkdown(fullPath);
+      } catch {
+        continue;
+      }
+      if (text === null) continue;
+      const front = parseFrontmatter(text);
+      documents.push({
+        skill,
+        file,
+        uri: `${URI_PREFIX}${skill}${file === "SKILL.md" ? "" : `/${file}`}`,
+        title: front.name ?? firstHeading(text) ?? `${skill}/${file}`,
+        description: front.description ?? `Reference for the ${skill} skill.`,
+        text,
+      });
+    }
+  }
+
+  return documents;
+}
+
+let cached: SkillDocument[] | undefined;
+
+/** Loaded once per process: the files ship with the server and never change at runtime. */
+export function getSkillDocuments(): SkillDocument[] {
+  if (!cached) cached = loadSkills();
+  return cached;
+}
+
+export function resetSkillCacheForTests(): void {
+  cached = undefined;
+}
