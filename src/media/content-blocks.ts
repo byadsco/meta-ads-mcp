@@ -1,3 +1,4 @@
+import { scrubUrlCredentials } from "../utils/scrub-credentials.js";
 import type { ContentBlock } from "@modelcontextprotocol/sdk/types.js";
 
 export type { ContentBlock };
@@ -29,20 +30,10 @@ export function resourceLinkBlock(uri: string, name: string, options: { mimeType
 // signatures. CDN signing params (oh/oe) always stay.
 export function sanitizeMetadataUrl(url: string | undefined): string | undefined {
   if (!url) return undefined;
-  try {
-    const parsed = new URL(url);
-    const hasUserinfo = parsed.username !== "" || parsed.password !== "";
-    const hasTokenParam = parsed.searchParams.has("access_token");
-    const hasTokenFragment = parsed.hash.toLowerCase().includes("access_token");
-    if (!hasUserinfo && !hasTokenParam && !hasTokenFragment) return url;
-    parsed.username = "";
-    parsed.password = "";
-    parsed.searchParams.delete("access_token");
-    if (hasTokenFragment) parsed.hash = "";
-    return parsed.toString();
-  } catch {
-    return undefined;
-  }
+  // Credential-shaped parameters, userinfo and credential-carrying fragments
+  // are removed by the shared scrubber, which normalizes encoded parameter
+  // names; a url with nothing to strip comes back unchanged.
+  return scrubUrlCredentials(url);
 }
 
 export function safeHostname(url: string | undefined): string | undefined {

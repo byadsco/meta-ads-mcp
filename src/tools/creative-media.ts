@@ -7,9 +7,8 @@ import { IMAGE_DEFAULT_FIELDS } from "../meta/types/image.js";
 import { VIDEO_DETAIL_FIELDS } from "../meta/types/video.js";
 import type { AdCreative, AdImage, AdVideo, MetaApiResponse } from "../meta/types/index.js";
 import { downloadSafePublicImage } from "../utils/safe-download.js";
-import { logger } from "../utils/logger.js";
 import { resolveTenantId } from "../auth/tenant.js";
-import { safeHostname, sanitizeMetadataUrl, textBlock, type ContentBlock } from "../media/content-blocks.js";
+import { sanitizeMetadataUrl, textBlock, type ContentBlock } from "../media/content-blocks.js";
 import {
   deliverVideos as defaultDeliverVideos,
   DEFAULT_VIDEO_TOTAL_BYTES_BUDGET,
@@ -18,10 +17,10 @@ import {
   type VideoDeliveryDeps,
 } from "../media/video-delivery.js";
 import type { VideoSource } from "../media/video-sources.js";
+import { fetchCreativeImageBlocks } from "../media/creative-images.js";
 import { asRecord, getString } from "./creatives.js";
 import { READ } from "./_register.js";
 
-const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 const TOTAL_BYTES_BUDGET = 20 * 1024 * 1024;
 const MISSING_ACCOUNT_HINT =
   "Image hash could not be resolved to a URL — pass account_id so the adimages lookup can run.";
@@ -193,7 +192,7 @@ export function pickVideoThumbnailUrl(video: AdVideo, size: "full" | "small"): s
   return size === "small" ? video.picture ?? largest?.uri : largest?.uri ?? video.picture;
 }
 
-async function resolveImageHashes(accountId: string, hashes: string[]): Promise<Map<string, AdImage>> {
+export async function resolveImageHashes(accountId: string, hashes: string[]): Promise<Map<string, AdImage>> {
   const response = await metaApiClient.get<MetaApiResponse<AdImage>>(
     `/${accountId}/adimages`,
     {
@@ -391,43 +390,15 @@ export function registerCreativeMediaTools(server: McpServer, deps: CreativeMedi
         }
       }
 
-      let totalBytes = 0;
-      let blockIndex = 0;
-      const imageBlocks: ContentBlock[] = [];
-      for (const asset of imageAssets) {
-        if (!asset.source_url) continue;
-        if (imageBlocks.length >= max_images) {
-          asset.skipped = "max_images";
-          continue;
-        }
-        const remainingBudget = TOTAL_BYTES_BUDGET - totalBytes;
-        if (remainingBudget <= 0) {
-          asset.skipped = "size_budget";
-          continue;
-        }
-        try {
-          const downloaded = await download(asset.source_url, {
-            maxBytes: Math.min(MAX_IMAGE_BYTES, remainingBudget),
-          });
-          totalBytes += downloaded.buffer.length;
-          imageBlocks.push({
-            type: "image",
-            data: downloaded.buffer.toString("base64"),
-            mimeType: downloaded.contentType,
-          });
-          asset.downloaded = true;
-          asset.block_index = blockIndex;
-          asset.mime_type = downloaded.contentType;
-          asset.bytes = downloaded.buffer.length;
-          blockIndex += 1;
-        } catch (err) {
-          asset.error = err instanceof Error ? err.message : String(err);
-          logger.warn(
-            { imageHost: safeHostname(asset.source_url), role: asset.role },
-            "Creative media download failed",
-          );
-        }
-      }
+      // Shared with the dossier so both attach images under the same caps.
+      const imageResult = await fetchCreativeImageBlocks(imageAssets, {
+        maxImages: max_images,
+        totalBytesBudget: TOTAL_BYTES_BUDGET,
+        signal: extra?.signal,
+        download,
+      });
+      const imageBlocks = imageResult.blocks;
+      const totalBytes = imageResult.bytes;
 
       for (const video of videoAssets) {
         const thumbAsset = videoThumbAssets.get(video.video_id);
