@@ -652,3 +652,67 @@ describe("round-4 review fixes", () => {
     expect(JSON.stringify(result.content)).toContain(signed);
   });
 });
+
+describe("round-5 review fixes", () => {
+  it("scrubs a warning before it reaches the brief or the JSON", async () => {
+    vi.stubGlobal("fetch", routeFetch({ ...ROUTES, "/5001": { ...CREATIVE, object_story_spec: { link_data: { message: "copy", picture: "https://cdn.example.com/a.jpg" } } } }));
+    const deliverVideos = vi.fn(async () => ({
+      blocks: [],
+      videos: [],
+      warnings: ["Download failed for https://cdn.example.com/x?access_token=SECRET123"],
+      bytes: 0,
+    }));
+    const twoVideos = { ...CREATIVE, object_story_spec: undefined, asset_feed_spec: { videos: [{ video_id: "1000" }] } };
+    vi.stubGlobal("fetch", routeFetch({ ...ROUTES, "/5001": twoVideos, "/1000": { id: "1000", source: "https://video.xx.fbcdn.net/ok.mp4", length: 12 } }));
+    const { call } = setup({ deliverVideos: deliverVideos as never });
+
+    const result = await call({ include_media: true, video_delivery: "url" });
+
+    expect(JSON.stringify(result.content)).not.toContain("SECRET123");
+    expect(result.content[0].text).toMatch(/Download failed/);
+  });
+
+  it("scrubs the fatal error when the ad itself cannot be read", async () => {
+    vi.stubGlobal("fetch", routeFetch({ "/8001": graphError("Bad https://graph.facebook.com/v26.0/8001?access_token=SECRET123") }));
+    const { call } = setup();
+    const error = (await call({}).catch((e: Error) => e)) as Error;
+    expect(error.message).not.toContain("SECRET123");
+    expect(error.message).toMatch(/graph\.facebook\.com/);
+  });
+
+  it("claims thumbnail delivery only when a poster actually became a block", async () => {
+    const withVideo = { ...CREATIVE, object_story_spec: undefined, asset_feed_spec: { videos: [{ video_id: "1000" }] } };
+    // A video with a source but no poster at all.
+    vi.stubGlobal("fetch", routeFetch({ ...ROUTES, "/5001": withVideo, "/1000": { id: "1000", source: "https://video.xx.fbcdn.net/ok.mp4", length: 12 } }));
+    const { call } = setup();
+
+    const result = await call({ include_media: true, video_delivery: "thumbnail" });
+
+    const media = lastJson(result).media as { videos: Array<{ delivered: { mode: string; block_indexes: number[] }; error?: string }> };
+    expect(media.videos[0].delivered.mode).toBe("none");
+    expect(media.videos[0].delivered.block_indexes).toEqual([]);
+    expect(media.videos[0].error).toBeTruthy();
+    expect(result.content.some((b) => b.type === "image")).toBe(false);
+    expect(result.content[0].text).not.toMatch(/thumbnail image only/);
+  });
+
+  it("reports the block index of a poster that did become a block", async () => {
+    const withVideo = { ...CREATIVE, object_story_spec: undefined, asset_feed_spec: { videos: [{ video_id: "1000" }] } };
+    vi.stubGlobal("fetch", routeFetch({ ...ROUTES, "/5001": withVideo, "/1000": { id: "1000", source: "https://video.xx.fbcdn.net/ok.mp4", length: 12, picture: "https://scontent.xx.fbcdn.net/poster.jpg" } }));
+    const fetchImages = vi.fn(async (assets: Array<{ source_url?: string; downloaded: boolean; block_index?: number }>) => {
+      const poster = assets.find((a) => a.source_url);
+      if (poster) {
+        poster.downloaded = true;
+        poster.block_index = 0;
+      }
+      return { blocks: [{ type: "image", data: "aW1n", mimeType: "image/jpeg" }], bytes: 3 };
+    });
+    const { call } = setup({ fetchImages: fetchImages as never });
+
+    const result = await call({ include_media: true, video_delivery: "thumbnail" });
+
+    const media = lastJson(result).media as { videos: Array<{ delivered: { mode: string; block_indexes: number[] } }> };
+    expect(media.videos[0].delivered.mode).toBe("thumbnail");
+    expect(media.videos[0].delivered.block_indexes).toEqual([1]);
+  });
+});

@@ -340,7 +340,7 @@ function renderDossier(input: {
   if (input.sectionsFailed.length > 0) {
     lines.push("", `Sections that could not be loaded: ${input.sectionsFailed.join(", ")}. Everything else in this report is complete.`);
   }
-  for (const warning of input.warnings) lines.push(`⚠ ${singleLine(warning, 300)}`);
+  for (const warning of input.warnings) lines.push(`⚠ ${singleLine(scrubCredentials(warning), 300)}`);
 
   return joinBounded(lines);
 }
@@ -415,6 +415,25 @@ function serializeDossier(envelope: Record<string, unknown>): string {
   return JSON.stringify({ ad: { id: (envelope.ad as DossierAd).id }, sections_failed: envelope.sections_failed, warnings: ["The dossier did not fit the response budget; request fewer sections."] }, null, 2);
 }
 
+/**
+ * effective_object_story_id belongs to AdCreative, not to Ad; asking the Ad
+ * for it would fail the one call that is allowed to fail the tool. The error
+ * is scrubbed because this server puts the access token in the Graph query.
+ */
+async function readAd(adId: string): Promise<DossierAd> {
+  try {
+    return await metaApiClient.get<DossierAd>(`/${adId}`, {
+      fields: [...AD_DEFAULT_FIELDS, "account_id", "issues_info", "recommendations", "bid_amount", "tracking_specs"].join(","),
+    });
+  } catch (err) {
+    if (err instanceof Error) {
+      err.message = scrubCredentials(err.message);
+      throw err;
+    }
+    throw new Error(scrubCredentials(String(err)));
+  }
+}
+
 export function registerAdDossierTools(server: McpServer, deps: AdDossierDeps = {}): void {
   const deliverVideos = deps.deliverVideos ?? defaultDeliverVideos;
   const fetchImages = deps.fetchImages ?? defaultFetchImages;
@@ -456,12 +475,10 @@ export function registerAdDossierTools(server: McpServer, deps: AdDossierDeps = 
       const sectionsFailed: Section[] = [];
       const warnings: string[] = [];
 
-      // The only call that may fail the tool: without the ad there is no dossier.
-      const ad = await metaApiClient.get<DossierAd>(`/${adId}`, {
-        // effective_object_story_id belongs to AdCreative, not to Ad; asking the
-        // Ad for it would fail the one call that is allowed to fail the tool.
-        fields: [...AD_DEFAULT_FIELDS, "account_id", "issues_info", "recommendations", "bid_amount", "tracking_specs"].join(","),
-      });
+      // The only call that may fail the tool: without the ad there is no
+      // dossier. Its message is scrubbed first, since this server builds Graph
+      // urls with the access token in the query and an error can quote one.
+      const ad = await readAd(adId);
 
       const creativeId = ad.creative?.id;
 
@@ -654,17 +671,25 @@ export function registerAdDossierTools(server: McpServer, deps: AdDossierDeps = 
             ];
             warnings.push(...delivery.warnings);
           } else {
-            deliveredVideos = [...undeliverable, ...sources.map((source): DeliveredVideo => ({
+            deliveredVideos = [...undeliverable, ...sources.map((source): DeliveredVideo => {
+              // "thumbnail" is only true when a poster actually became a block.
+              const poster = images.find((image) => image.role === "video_thumbnail" && image.downloaded);
+              return {
               key: source.key,
               label: source.label,
               origin: source.origin,
               video_id: source.video_id,
               title: source.title,
               duration_seconds: source.duration_seconds,
-              delivered: { mode: "thumbnail", block_indexes: [] },
+              delivered: poster
+                ? { mode: "thumbnail", block_indexes: [poster.block_index as number] }
+                : { mode: "none", block_indexes: [] },
+              thumbnail_url: sanitizeMetadataUrl(poster?.source_url),
+              error: poster ? undefined : "No poster image could be attached for this video; request video_delivery=frames or url to see it.",
               source_url: sanitizeMetadataUrl(source.source_url),
               permalink_url: sanitizeMetadataUrl(source.permalink_url),
-            }))];
+              };
+            })];
           }
           return true;
         });
@@ -703,7 +728,7 @@ export function registerAdDossierTools(server: McpServer, deps: AdDossierDeps = 
         media: { images, videos: deliveredVideos },
         date_preset,
         sections_failed: sectionsFailed,
-        warnings,
+        warnings: warnings.map((warning) => scrubCredentials(warning)),
       }) as Record<string, unknown>;
 
       const content: CallToolResult["content"] = [textBlock(brief), ...blocks, textBlock(serializeDossier(envelope))];

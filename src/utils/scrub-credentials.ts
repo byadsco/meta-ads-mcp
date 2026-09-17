@@ -1,4 +1,13 @@
 /**
+ * Best-effort removal of credential-shaped values from text this server is
+ * about to return. It is defence in depth, not a security boundary: the text
+ * it cleans is the advertiser's own content and this server's own error
+ * messages, both going back to the tenant they belong to. It is not a
+ * sanitizer for hostile input, and exotic encodings (overlong UTF-8, deeply
+ * nested percent-encoding, a name broken up by arbitrary characters) are out
+ * of its scope by design — chasing those turns into an unwinnable game with
+ * no attacker on the other side of it.
+ *
  * Credential-shaped parameter names. Compared after normalization, so the
  * spelling in the input does not matter: `access_token`, `access%5Ftoken`,
  * `access%255Ftoken`, `ACCESS-TOKEN` and `%61ccess_token` all reduce to the
@@ -55,6 +64,19 @@ export function isCredentialName(raw: string): boolean {
 const REDACTED = "[REDACTED]";
 
 /**
+ * Whether a credential name appears anywhere in the text, however it is
+ * spelled. Used where the whole value can be dropped, so the shape around the
+ * name does not matter.
+ */
+export function mentionsCredential(text: string): boolean {
+  const normalized = normalizeName(text);
+  for (const key of CREDENTIAL_KEYS) {
+    if (normalized.includes(key)) return true;
+  }
+  return false;
+}
+
+/**
  * Every separator a name=value pair can sit behind, plus the start of the
  * text. `/` and `:` are in the set because a fragment is often path-shaped
  * (`#/access_token=…`), which is where a credential hides most easily.
@@ -104,21 +126,26 @@ export function scrubUrlCredentials(raw: string): string | undefined {
     changed = true;
   }
 
-  for (const name of [...url.searchParams.keys()]) {
-    if (isCredentialName(name)) {
-      url.searchParams.delete(name);
-      changed = true;
-    }
+  const kept: Array<[string, string]> = [];
+  let droppedParam = false;
+  for (const [name, value] of url.searchParams) {
+    if (isCredentialName(name)) droppedParam = true;
+    else kept.push([name, value]);
+  }
+  if (droppedParam) {
+    // Rebuilt in one pass: deleting inside the iteration is quadratic in the
+    // number of parameters.
+    url.search = new URLSearchParams(kept).toString();
+    changed = true;
   }
 
-  if (url.hash.length > 1) {
-    // A fragment can be a parameter list, a path-like value, or free text;
-    // scrubbing its text covers all three without inventing a format.
-    const scrubbedHash = scrubCredentials(url.hash);
-    if (scrubbedHash !== url.hash) {
-      url.hash = scrubbedHash;
-      changed = true;
-    }
+  // A fragment is never needed for a CDN signature and is never sent to the
+  // server, so the whole thing goes as soon as it mentions a credential in
+  // any shape. That covers the separators and encodings a parameter-by-
+  // parameter scrub would have to enumerate.
+  if (url.hash.length > 1 && mentionsCredential(url.hash)) {
+    url.hash = "";
+    changed = true;
   }
 
   return changed ? url.toString() : raw;

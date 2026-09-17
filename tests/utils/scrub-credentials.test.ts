@@ -113,3 +113,39 @@ describe("scrubUrlCredentials", () => {
     expect(scrubUrlCredentials("https:// is a protocol")).toBeUndefined();
   });
 });
+
+describe("round-5 review fixes", () => {
+  it("drops a fragment that mentions a credential in any shape", () => {
+    for (const hash of [
+      "#access_token=SECRET123",
+      "#access+token=SECRET123",
+      "#access!token=SECRET123",
+      "#access_token/SECRET123",
+      "#access_token:SECRET123",
+      "#/access_token=SECRET123",
+      `#access${"_".repeat(70)}token=SECRET123`,
+      "#access%252525255Ftoken=SECRET123",
+    ]) {
+      const scrubbed = scrubUrlCredentials(`https://x.test/a${hash}`)!;
+      expect(scrubbed, hash).not.toContain("SECRET123");
+      expect(scrubbed).toBe("https://x.test/a");
+    }
+  });
+
+  it("keeps a fragment that is just a fragment", () => {
+    const url = "https://x.test/a#section-2";
+    expect(scrubUrlCredentials(url)).toBe(url);
+  });
+
+  it("rebuilds a wide query in one pass rather than deleting in a loop", () => {
+    // Distinct names that all normalize to the same credential, which is what
+    // makes the delete path do work on every one of them.
+    const params = Array.from({ length: 4000 }, (_, i) => `${"_".repeat(i % 40)}token${"-".repeat(Math.floor(i / 40))}=SECRET123`).join("&");
+    const started = Date.now();
+    const scrubbed = scrubUrlCredentials(`https://x.test/a?${params}&oe=69617495`)!;
+    const elapsed = Date.now() - started;
+    expect(scrubbed).not.toContain("SECRET123");
+    expect(scrubbed).toContain("oe=69617495");
+    expect(elapsed).toBeLessThan(1000);
+  });
+});
