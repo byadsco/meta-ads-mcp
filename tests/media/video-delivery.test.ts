@@ -355,6 +355,19 @@ describe("deliverVideos", () => {
     expect(received).toBeInstanceOf(AbortSignal);
   });
 
+  it("never leaks scratch paths from local processing errors", async () => {
+    const deps = fakeDeps({
+      ffmpeg: fakeFfmpeg({
+        compact: async () => {
+          throw Object.assign(new Error("ENOENT: no such file, open /tmp/meta-ads-video-abc/x.mp4"), { code: "ENOENT" });
+        },
+      }),
+    });
+    const result = await deliverVideos([SOURCE], { delivery: "inline" }, deps, CTX);
+    expect(result.videos[0].error).toBe("Local processing failed (ENOENT)");
+    expect(JSON.stringify(result.videos)).not.toContain("/tmp/");
+  });
+
   it("enforces the total bytes budget across videos", async () => {
     const deps = fakeDeps({
       ffmpeg: fakeFfmpeg({

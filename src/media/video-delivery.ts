@@ -129,6 +129,13 @@ function clampInlineBytes(requested: number | undefined, transport: "http" | "st
   return Math.min(Math.max(1 * MB, requested ?? DEFAULT_MAX_INLINE_BYTES), cap);
 }
 
+/** Scratch paths must never reach tool output; keep the error code, drop the message. */
+function publicErrorMessage(err: unknown): string {
+  const code = (err as { code?: unknown })?.code;
+  if (typeof code === "string" && /^E[A-Z]+$/.test(code)) return `Local processing failed (${code})`;
+  return err instanceof Error ? err.message : String(err);
+}
+
 function looksLikeMp4(buffer: Buffer): boolean {
   // ISO BMFF: a size box followed by "ftyp" at byte 4.
   return buffer.length >= 12 && buffer.subarray(4, 8).toString("latin1") === "ftyp";
@@ -404,7 +411,7 @@ export async function deliverVideos(
           payload = await fs.readFile(compact.path);
           transcoded = true;
         } catch (err) {
-          meta.error = err instanceof Error ? err.message : String(err);
+          meta.error = publicErrorMessage(err);
           await fallbackToThumbnail(source, meta, job);
           return;
         }
@@ -444,7 +451,7 @@ export async function deliverVideos(
           } catch (err) {
             const meta = videos.find((v) => v.key === source.key);
             if (meta) {
-              meta.error = err instanceof Error ? err.message : String(err);
+              meta.error = publicErrorMessage(err);
               if (meta.delivered.mode === "none") meta.delivered.mode = job.signal.aborted ? "skipped_time_budget" : "none";
             }
           }

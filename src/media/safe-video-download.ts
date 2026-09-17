@@ -114,8 +114,13 @@ function requestVideo(
       settled = true;
       options.signal?.removeEventListener("abort", onAbort);
       const wrapped = publicError(err);
-      const cleanup = filePath ? fs.rm(filePath, { force: true }) : Promise.resolve();
-      void cleanup.finally(() => reject(wrapped));
+      // Wait for the write stream to release its descriptor before unlinking,
+      // otherwise a buffered flush can recreate the partial file after rm.
+      const closed = out && !out.closed
+        ? new Promise<void>((done) => { out?.once("close", () => done()); })
+        : Promise.resolve();
+      const cleanup = closed.then(() => (filePath ? fs.rm(filePath, { force: true }) : undefined)).catch(() => undefined);
+      void cleanup.then(() => reject(wrapped));
     };
 
     // Rejected responses are torn down, never drained: a 1 GB video above the
