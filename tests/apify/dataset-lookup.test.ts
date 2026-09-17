@@ -339,6 +339,58 @@ describe("findDatasetItem", () => {
     expect(lookup.stats().generations).toBe(0);
   });
 
+  it("does not report a false no-progress error when a caller joins a scan that already published its page", async () => {
+    const ids = Array.from({ length: 1001 }, (_, i) => String(1000000000000 + i));
+    vi.stubGlobal("fetch", vi.fn().mockImplementation(async (input: string) => {
+      const params = new URL(input).searchParams;
+      const offset = Number(params.get("offset"));
+      const limit = Number(params.get("limit"));
+      return mockFetchResponse(ids.slice(offset, offset + limit).map((v) => ({ ad_archive_id: v })));
+    }));
+    const lookup = createDatasetLookup({ pageSize: 1000, maxItems: 5000 });
+
+    const first = lookup.findDatasetItem("ds123abcde", ids[0]);
+    // Two microtasks later the first page is published but the scan promise may still be registered.
+    await Promise.resolve();
+    await Promise.resolve();
+    const last = lookup.findDatasetItem("ds123abcde", ids[1000]);
+    const [a, b] = await Promise.all([first, last]);
+    expect(a.offset).toBe(0);
+    expect(b.offset).toBe(1000);
+  });
+
+  it("gives up with a clear error when the dataset keeps changing under every rescan", async () => {
+    let version = 0;
+    vi.stubGlobal("fetch", vi.fn().mockImplementation(async (input: string) => {
+      const params = new URL(input).searchParams;
+      const offset = Number(params.get("offset"));
+      if (params.get("fields")) {
+        // Every scan sees the target at offset 0...
+        return mockFetchResponse(offset === 0 ? [{ ad_archive_id: "1000000000001" }] : []);
+      }
+      // ...but the full fetch always returns a different ad there.
+      version += 1;
+      return mockFetchResponse([{ ad_archive_id: String(2000000000000 + version) }]);
+    }));
+    const lookup = createDatasetLookup({ pageSize: 1000 });
+    await expect(lookup.findDatasetItem("ds123abcde", "1000000000001")).rejects.toThrow(/changing|not found/);
+    expect((globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.length).toBeLessThan(20);
+  });
+
+  it("never reuses a generation identity after the key state was forgotten", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockFetchResponse([{ ad_archive_id: "1000000000001" }])));
+    let now = 1_000;
+    const lookup = createDatasetLookup({ pageSize: 1000, ttlMs: 100, now: () => now });
+    await lookup.findDatasetItem("ds123abcde", "1000000000001");
+    const before = lookup.stats().generation_ids;
+    now += 1_000;
+    lookup.stats();
+    await lookup.findDatasetItem("ds123abcde", "1000000000001");
+    const after = lookup.stats().generation_ids;
+    expect(after).not.toEqual(before);
+    expect(after.every((g) => g > 0)).toBe(true);
+  });
+
   it("rejects malformed ids before any request", async () => {
     vi.stubGlobal("fetch", vi.fn());
     const lookup = createDatasetLookup();

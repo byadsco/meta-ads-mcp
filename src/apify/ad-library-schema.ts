@@ -379,7 +379,7 @@ export function normalizeLibraryAd(raw: AdLibraryRawItem, offset: number | null)
   return {
     ad_archive_id: id,
     offset,
-    ad_library_url: str(raw.ad_library_url) ?? "https://www.facebook.com/ads/library/?id=" + id,
+    ad_library_url: urlOrNull(raw.ad_library_url, "ad_library_url", truncated) ?? "https://www.facebook.com/ads/library/?id=" + id,
     page: {
       id: str(raw.page_id) ?? str(snapshot.page_id) ?? str(raw.pageID),
       name: capText(str(raw.page_name) ?? str(snapshot.page_name) ?? str(raw.pageName), "page.name", truncated),
@@ -450,27 +450,39 @@ export function libraryImageAssets(ad: LibraryAd, size: "full" | "small"): Libra
   return assets;
 }
 
-function buildLibrarySource(adId: string, pageName: string | null, v: LibraryVideo, index: number): VideoSource {
+const MAX_LABEL_PAGE_CHARS = 120;
+
+function buildLibrarySource(adId: string, pageName: string | null, v: LibraryVideo, index: number, omitted: string[] = []): VideoSource {
+  const page = pageName ? pageName.slice(0, MAX_LABEL_PAGE_CHARS) : "";
   return {
     key: "library:" + adId + ":video:" + index,
-    label: "Video " + index + " of Ad Library ad " + adId + (pageName ? " — " + pageName : ""),
+    label: "Video " + index + " of Ad Library ad " + adId + (page ? " — " + page : ""),
     origin: "ad_library",
     ad_archive_id: adId,
     card_index: index,
     source_url: v.hd_url ?? v.sd_url ?? undefined,
     low_res_url: v.sd_url ?? undefined,
     thumbnail_url: v.preview_image_url ?? undefined,
+    error: omitted.length > 0 ? "Rendition URL(s) omitted as too long: " + omitted.join(", ") + "; using the remaining rendition(s)." : undefined,
   };
+}
+
+/** Which of this video renditions were dropped by the url policy, from the truncation labels of the record. */
+function omittedFor(truncated: string[], prefix: string): string[] {
+  return truncated
+    .filter((t) => t.startsWith(prefix) && t.endsWith("(url omitted)"))
+    .map((t) => t.slice(prefix.length, t.indexOf(" (")));
 }
 
 /** Video sources for the delivery pipeline: HD as source, SD as the preferred download, preview as thumbnail. */
 export function extractLibraryVideoSources(ad: LibraryAd): VideoSource[] {
-  const sources = ad.videos.map((v, i) => buildLibrarySource(ad.ad_archive_id, ad.page.name, v, i));
+  const sources = ad.videos.map((v, i) => buildLibrarySource(ad.ad_archive_id, ad.page.name, v, i, omittedFor(ad.truncated, "videos[" + i + "].")));
   for (const c of ad.cards) {
     if (!c.video) continue;
     // Top-level videos and video cards never coexist in real records; offset the
     // card index only when they do, so keys and resource URIs stay unique.
-    sources.push(buildLibrarySource(ad.ad_archive_id, ad.page.name, c.video, ad.videos.length > 0 ? ad.videos.length + c.index : c.index));
+    const index = ad.videos.length > 0 ? ad.videos.length + c.index : c.index;
+    sources.push(buildLibrarySource(ad.ad_archive_id, ad.page.name, c.video, index, omittedFor(ad.truncated, "cards[" + c.index + "].video_")));
   }
   return sources;
 }
@@ -484,15 +496,15 @@ export function libraryVideoAt(raw: AdLibraryRawItem, index: number): VideoSourc
   const adId = archiveIdOf(raw) ?? "";
   const snapshot = asRecord(raw.snapshot);
   const pageName = str(raw.page_name) ?? str(snapshot.page_name) ?? str(raw.pageName);
-  const scratch: string[] = [];
   let position = 0;
   const videos = asArray(snapshot.videos);
   for (let i = 0; i < videos.length; i++) {
     const record = videos[i];
     if (!isRecord(record)) continue;
-    const v = video(record, "videos[" + i + "]", scratch);
+    const omitted: string[] = [];
+    const v = video(record, "", omitted);
     if (!v) continue;
-    if (position === index) return buildLibrarySource(adId, pageName, v, position);
+    if (position === index) return buildLibrarySource(adId, pageName, v, position, omittedFor(omitted, "."));
     position += 1;
   }
   const topLevel = position;
@@ -500,10 +512,11 @@ export function libraryVideoAt(raw: AdLibraryRawItem, index: number): VideoSourc
   for (let i = 0; i < cards.length; i++) {
     const record = cards[i];
     if (!isRecord(record)) continue;
-    const v = video(record, "cards[" + i + "]", scratch);
+    const omitted: string[] = [];
+    const v = video(record, "", omitted);
     if (!v) continue;
     const cardIndex = topLevel > 0 ? topLevel + i : i;
-    if (position === index) return buildLibrarySource(adId, pageName, v, cardIndex);
+    if (position === index) return buildLibrarySource(adId, pageName, v, cardIndex, omittedFor(omitted, "."));
     position += 1;
   }
   return undefined;

@@ -813,6 +813,22 @@ describe("ads_library_* tools", () => {
       expect(Object.keys(spend).length).toBeLessThanOrEqual(201);
     });
 
+    it("bounds property names and clones the metadata only once for a record with a giant key", async () => {
+      const hostile = JSON.parse(JSON.stringify(FIX_DCO)) as Record<string, unknown>;
+      hostile.spend = "__KEY__";
+      const wire = JSON.stringify([hostile]).replace("\"__KEY__\"", "{\"" + "k".repeat(2_000_000) + "\":1}");
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce({ ok: true, status: 200, headers: new Headers(), text: async () => wire }));
+
+      const result = await setup({ deliverVideos: fakeDeliver(), downloadImage: fakeImage() }).byName("ads_library_get_ad_details")({
+        dataset_id: "ds123abcde", ad_archive_id: "706579198992184", hint_offset: 3,
+        include_images: false, max_images: 8, image_size: "full", video_delivery: "thumbnail", frame_count: 6, include_raw: true,
+      });
+      const last = result.content[result.content.length - 1].text;
+      expect(last.length).toBeLessThanOrEqual(50_000);
+      expect(last).not.toContain("k".repeat(300));
+      expect(JSON.parse(last)).toBeTruthy();
+    });
+
     it("never publishes an overlong video url in the metadata", async () => {
       const hostile = JSON.parse(JSON.stringify(FIX_VIDEO)) as Record<string, unknown>;
       const snap = hostile.snapshot as Record<string, unknown>;

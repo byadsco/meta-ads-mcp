@@ -48,7 +48,7 @@ export interface FoundDatasetItem {
 
 export interface DatasetLookup {
   findDatasetItem(datasetId: string, adArchiveId: string, options?: { hintOffset?: number }): Promise<FoundDatasetItem>;
-  stats(): { cached_datasets: number; cached_ids: number; in_flight: number; generations: number };
+  stats(): { cached_datasets: number; cached_ids: number; in_flight: number; generations: number; generation_ids: number[] };
 }
 
 interface CacheEntry {
@@ -85,17 +85,28 @@ export function createDatasetLookup(config: DatasetLookupConfig = {}): DatasetLo
   const inFlight = new Map<string, { generation: number; promise: Promise<CacheEntry> }>();
   // Scans still running per key, including ones already superseded by a newer scan.
   const activeScans = new Map<string, number>();
-  // A global counter, bumped on invalidation: a scan started earlier can never
-  // match a later generation, even after the key state has been forgotten.
+  // Lookups currently between scans of a key; their generation must survive until they finish.
+  const activeLocates = new Map<string, number>();
+  // Generation identities come from one global counter and are allocated on
+  // first use, so an identity is never reused: a scan started under an older
+  // (or since forgotten) identity can never match the current one.
   let generationCounter = 0;
   const generations = new Map<string, number>();
-  const generationOf = (key: string) => generations.get(key) ?? 0;
+  const generationOf = (key: string): number => {
+    let generation = generations.get(key);
+    if (generation === undefined) {
+      generation = ++generationCounter;
+      generations.set(key, generation);
+    }
+    return generation;
+  };
   const invalidate = (key: string) => {
     cache.delete(key);
     generations.set(key, ++generationCounter);
   };
+  const MAX_RESTARTS = 5;
   const maybeForget = (key: string) => {
-    if (!cache.has(key) && (activeScans.get(key) ?? 0) === 0) generations.delete(key);
+    if (!cache.has(key) && (activeScans.get(key) ?? 0) === 0 && (activeLocates.get(key) ?? 0) === 0) generations.delete(key);
   };
 
   const itemsPath = (datasetId: string) => "/v2/datasets/" + datasetId + "/items";
@@ -187,18 +198,27 @@ export function createDatasetLookup(config: DatasetLookupConfig = {}): DatasetLo
     const running = inFlight.get(key);
     if (running && running.generation === generation) return running.promise;
     activeScans.set(key, (activeScans.get(key) ?? 0) + 1);
-    const promise = scanFrom(datasetId, adArchiveId, previous)
-      .then((entry) => {
-        if (generationOf(key) === generation) putCache(key, entry);
-        return entry;
-      })
-      .finally(() => {
-        if (inFlight.get(key)?.promise === promise) inFlight.delete(key);
-        const remaining = (activeScans.get(key) ?? 1) - 1;
-        if (remaining <= 0) activeScans.delete(key);
-        else activeScans.set(key, remaining);
+    const settle = () => {
+      // Publication and unregistration happen in the same synchronous step, so
+      // no caller can observe the published page while still joining this scan.
+      if (inFlight.get(key)?.promise === promise) inFlight.delete(key);
+      const remaining = (activeScans.get(key) ?? 1) - 1;
+      if (remaining <= 0) activeScans.delete(key);
+      else activeScans.set(key, remaining);
+    };
+    const promise: Promise<CacheEntry> = scanFrom(datasetId, adArchiveId, previous).then(
+      (entry) => {
+        if (generations.get(key) === generation) putCache(key, entry);
+        settle();
         maybeForget(key);
-      });
+        return entry;
+      },
+      (err: unknown) => {
+        settle();
+        maybeForget(key);
+        throw err;
+      },
+    );
     inFlight.set(key, { generation, promise });
     return promise;
   };
@@ -214,6 +234,20 @@ export function createDatasetLookup(config: DatasetLookupConfig = {}): DatasetLo
    * current cache instead of carrying a stale map forward.
    */
   const locate = async (key: string, datasetId: string, adArchiveId: string): Promise<{ offset: number | undefined; entry: CacheEntry }> => {
+    activeLocates.set(key, (activeLocates.get(key) ?? 0) + 1);
+    try {
+      return await locateInner(key, datasetId, adArchiveId);
+    } finally {
+      const remaining = (activeLocates.get(key) ?? 1) - 1;
+      if (remaining <= 0) activeLocates.delete(key);
+      else activeLocates.set(key, remaining);
+      maybeForget(key);
+    }
+  };
+
+  const locateInner = async (key: string, datasetId: string, adArchiveId: string): Promise<{ offset: number | undefined; entry: CacheEntry }> => {
+    let restarts = 0;
+    let stalls = 0;
     for (;;) {
       const generation = generationOf(key);
       const entry = getCache(key);
@@ -222,13 +256,20 @@ export function createDatasetLookup(config: DatasetLookupConfig = {}): DatasetLo
       if (isExhausted(entry)) return { offset: undefined, entry: entry as CacheEntry };
       const before = entry?.scanned ?? 0;
       const result = await scan(key, datasetId, adArchiveId, entry);
-      if (generationOf(key) !== generation) continue;
+      if (generations.get(key) !== generation) {
+        if (++restarts > MAX_RESTARTS) {
+          throw new McpError(ErrorCode.InternalError, "Dataset " + datasetId + " is changing too fast to locate ad " + adArchiveId + "; retry later or pass hint_offset.");
+        }
+        continue;
+      }
       const found = result.offsets.get(adArchiveId);
       if (found !== undefined) return { offset: found, entry: result };
       if (isExhausted(result)) return { offset: undefined, entry: result };
-      if (result.scanned <= before) {
+      // A joined scan may already be reflected in the cache; only two stalls in a row mean a real problem.
+      if (result.scanned <= before && ++stalls >= 2) {
         throw new McpError(ErrorCode.InternalError, "Dataset scan made no progress; Apify returned an inconsistent page. Retry, or pass hint_offset.");
       }
+      if (result.scanned > before) stalls = 0;
     }
   };
 
@@ -256,12 +297,14 @@ export function createDatasetLookup(config: DatasetLookupConfig = {}): DatasetLo
       if (second.offset !== undefined) {
         const fresh = await fetchOne(datasetId, second.offset);
         if (fresh && archiveIdOf(fresh) === adArchiveId) return { item: fresh, offset: second.offset };
+        invalidate(key);
+        throw new McpError(ErrorCode.InternalError, "Dataset " + datasetId + " is changing too fast to locate ad " + adArchiveId + "; retry later or pass hint_offset.");
       }
       throw new DatasetItemNotFoundError(adArchiveId, datasetId, second.entry.scanned, !second.entry.complete);
     },
     stats() {
       purgeExpired();
-      return { cached_datasets: cache.size, cached_ids: totalIds(), in_flight: inFlight.size, generations: generations.size };
+      return { cached_datasets: cache.size, cached_ids: totalIds(), in_flight: inFlight.size, generations: generations.size, generation_ids: [...generations.values()] };
     },
   };
 }

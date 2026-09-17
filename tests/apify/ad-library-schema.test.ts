@@ -264,6 +264,40 @@ describe("normalizeLibraryAd round-3 hardening", () => {
   });
 });
 
+describe("round-4 hardening", () => {
+  it("bounds source labels even on the indexed path with a huge page name", () => {
+    const raw = {
+      ad_archive_id: "1234567890",
+      page_name: "P".repeat(100_000),
+      snapshot: { videos: [{ video_sd_url: "https://video.xx.fbcdn.net/0.mp4" }] },
+    } as AdLibraryRawItem;
+    const direct = libraryVideoAt(raw, 0);
+    expect(direct?.label.length).toBeLessThanOrEqual(220);
+    const normalized = extractLibraryVideoSources(normalizeLibraryAd(raw, 0));
+    expect(normalized[0].label.length).toBeLessThanOrEqual(220);
+  });
+
+  it("applies the url policy to ad_library_url and falls back to the canonical link", () => {
+    const raw = { ad_archive_id: "1234567890", ad_library_url: "https://www.facebook.com/ads/library/?" + "q".repeat(9000) } as AdLibraryRawItem;
+    const ad = normalizeLibraryAd(raw, 0);
+    expect(ad.ad_library_url).toBe("https://www.facebook.com/ads/library/?id=1234567890");
+    expect(ad.truncated).toEqual(expect.arrayContaining([expect.stringMatching(/ad_library_url/)]));
+  });
+
+  it("tells the caller when a rendition url was omitted from a video source", () => {
+    const long = "https://video.xx.fbcdn.net/" + "h".repeat(5000);
+    const raw = {
+      ad_archive_id: "1234567890",
+      snapshot: { videos: [{ video_hd_url: long, video_sd_url: "https://video.xx.fbcdn.net/sd.mp4" }] },
+    } as AdLibraryRawItem;
+    const fromNormalized = extractLibraryVideoSources(normalizeLibraryAd(raw, 0));
+    expect(fromNormalized[0].low_res_url).toBe("https://video.xx.fbcdn.net/sd.mp4");
+    expect(fromNormalized[0].error).toMatch(/omitted/);
+    const direct = libraryVideoAt(raw, 0);
+    expect(direct?.error).toMatch(/omitted/);
+  });
+});
+
 describe("extractLibraryVideoSources", () => {
   it("builds delivery sources with sd as low-res and the preview as thumbnail", () => {
     const ad = normalizeLibraryAd(VIDEO, 0);

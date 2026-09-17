@@ -52,10 +52,15 @@ async function readBoundedBody(response: Response, maxBytes: number): Promise<st
   return text;
 }
 
-/** Empty bodies are failures where JSON is expected (204 is handled before this): a null page would be cached as an empty dataset. */
+/**
+ * Empty bodies are failures where JSON is expected (204 is handled before
+ * this): a null page would be cached as an empty dataset. Thrown as a plain
+ * Error, not McpError, so execute() treats it like any other transport
+ * failure — retried on GET, flagged as indeterminate on POST.
+ */
 function parseJsonBody(text: string): unknown {
   if (text.trim().length === 0) {
-    throw new McpError(ErrorCode.InternalError, "Apify returned an empty body where JSON was expected.");
+    throw new Error("Apify returned an empty body where JSON was expected.");
   }
   return JSON.parse(text);
 }

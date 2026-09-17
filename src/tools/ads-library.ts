@@ -59,6 +59,8 @@ const JSON_MAX_DEPTH = 8;
 const JSON_MAX_NODES = 4000;
 const JSON_MAX_STRING = 4000;
 const JSON_MAX_KEYS = 200;
+const JSON_MAX_KEY_CHARS = 128;
+const JSON_MAX_TOTAL_CHARS = 200_000;
 
 export interface AdLibraryToolDeps extends VideoDeliveryDeps {
   deliverVideos?: typeof defaultDeliverVideos;
@@ -917,10 +919,20 @@ interface DetailsMetadata {
  */
 export function boundedClone(value: unknown, maxDepth = JSON_MAX_DEPTH, maxNodes = JSON_MAX_NODES, maxString = JSON_MAX_STRING, maxKeys = JSON_MAX_KEYS): unknown {
   let budget = maxNodes;
+  // Characters copied so far (keys and strings): a wide object of long keys is
+  // as expensive as one long string and is capped the same way.
+  let chars = 0;
+  const spend = (n: number): boolean => {
+    chars += n;
+    return chars <= JSON_MAX_TOTAL_CHARS;
+  };
   const visit = (v: unknown, depth: number): unknown => {
     if (v === undefined || v === null) return v;
     if (budget-- <= 0) return "[omitted: budget]";
-    if (typeof v === "string") return v.length > maxString ? v.slice(0, maxString) + " [truncated]" : v;
+    if (typeof v === "string") {
+      const kept = v.length > maxString ? v.slice(0, maxString) + " [truncated]" : v;
+      return spend(kept.length) ? kept : "[omitted: size budget]";
+    }
     if (typeof v === "number" || typeof v === "boolean") return v;
     if (typeof v !== "object") return String(v);
     if (depth >= maxDepth) return "[omitted: too deep]";
@@ -939,11 +951,17 @@ export function boundedClone(value: unknown, maxDepth = JSON_MAX_DEPTH, maxNodes
     let n = 0;
     for (const k in v as Record<string, unknown>) {
       if (!Object.prototype.hasOwnProperty.call(v, k) || k === "__proto__" || k === "constructor" || k === "prototype") continue;
-      if (n++ >= maxKeys || budget <= 0) {
+      if (n++ >= maxKeys || budget <= 0 || chars > JSON_MAX_TOTAL_CHARS) {
         out["[omitted]"] = "more keys";
         break;
       }
-      out[k] = visit((v as Record<string, unknown>)[k], depth + 1);
+      // Property names are data too: a 20 MB key must not be copied into the clone.
+      const key = k.length > JSON_MAX_KEY_CHARS ? k.slice(0, 32) + "…[key truncated]" : k;
+      if (!spend(key.length)) {
+        out["[omitted]"] = "size budget";
+        break;
+      }
+      out[key] = visit((v as Record<string, unknown>)[k], depth + 1);
     }
     return out;
   };
@@ -956,8 +974,9 @@ export function boundedClone(value: unknown, maxDepth = JSON_MAX_DEPTH, maxNodes
  * reduced, then dropped. A truncated string would leave unparseable JSON.
  */
 function boundedMetadataJson(metadata: DetailsMetadata): string {
-  const attempt = (m: DetailsMetadata) => JSON.stringify(boundedClone(m), null, 2);
-  let current: DetailsMetadata = metadata;
+  // Clone once; every reduction below works on the bounded copy, never on the raw record again.
+  const attempt = (m: DetailsMetadata) => JSON.stringify(m, null, 2);
+  let current = boundedClone(metadata) as DetailsMetadata;
   let json = attempt(current);
   if (json.length <= MAX_JSON_CHARS) return json;
   if (current.raw !== undefined) {
@@ -984,7 +1003,7 @@ function boundedMetadataJson(metadata: DetailsMetadata): string {
     videos: current.videos.slice(0, 3),
     warnings: [...current.warnings, "metadata reduced to a minimal summary: the record exceeds the JSON size limit even without cards."],
   };
-  json = JSON.stringify(boundedClone(minimal, 6, 500, 1000), null, 2);
+  json = JSON.stringify(boundedClone(minimal, 6, 500, 1000, 50), null, 2);
   if (json.length <= MAX_JSON_CHARS) return json;
   return JSON.stringify({ ad_archive_id: current.ad.ad_archive_id, warnings: ["metadata omitted: the record exceeds the JSON size limit."] }, null, 2);
 }

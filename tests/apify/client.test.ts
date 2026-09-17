@@ -82,6 +82,22 @@ describe("apify client", () => {
       await expect(client.get("/v2/datasets/ds123abcde/items")).rejects.toThrow(/empty/i);
     });
 
+    it("retries a GET whose body came back empty", async () => {
+      vi.stubGlobal("fetch", vi.fn()
+        .mockResolvedValueOnce({ ok: true, status: 200, headers: new Headers(), text: async () => "" })
+        .mockResolvedValueOnce(mockFetchResponse([{ ok: true }])));
+      const client = new ApifyApiClient({ maxRetries: 1 });
+      await expect(client.get("/v2/datasets/ds123abcde/items")).resolves.toEqual([{ ok: true }]);
+      expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+    }, 10_000);
+
+    it("does not retry a POST whose body came back empty, but warns that it may have been accepted", async () => {
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, status: 201, headers: new Headers(), text: async () => "" }));
+      const client = new ApifyApiClient({ maxRetries: 3 });
+      await expect(client.post("/v2/acts/x~y/runs", { count: 1 })).rejects.toThrow(/may still have been accepted/);
+      expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+    });
+
     it("still returns undefined for a 204", async () => {
       vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, status: 204, headers: new Headers(), text: async () => "" }));
       await expect(new ApifyApiClient({ maxRetries: 0 }).delete("/v2/actor-runs/abcdefghij")).resolves.toBeUndefined();
