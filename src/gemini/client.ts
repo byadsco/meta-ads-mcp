@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { McpError, ErrorCode } from "@modelcontextprotocol/sdk/types.js";
 import { isSingleTenantMode, LOCAL_TENANT_ID, resolveTenantId } from "../auth/tenant.js";
 import { hashToken } from "../auth/token-store.js";
@@ -126,6 +127,13 @@ export async function resolveGeminiKey(): Promise<ResolvedGeminiKey> {
 }
 
 export class GeminiApiError extends Error {
+  /**
+   * Set when the failure happened after upload bytes were sent, so the caller
+   * can still delete a file Google may have created (an accepted finalize
+   * whose response was lost would otherwise sit there for 48 hours).
+   */
+  fileName?: string;
+
   constructor(
     message: string,
     readonly status: number,
@@ -472,6 +480,10 @@ export function createGeminiClient(config: GeminiClientConfig = {}): GeminiClien
     },
 
     async uploadFile({ key, data, mimeType, displayName, signal }) {
+      // The name is chosen here rather than left to Google (the API accepts a
+      // supplied one) so that a finalize whose response never arrives still
+      // leaves the caller something to delete.
+      const requestedName = `files/mcp-${randomUUID()}`;
       const start = await request(
         `${GEMINI_BASE_URL}/upload/v1beta/files`,
         {
@@ -484,25 +496,37 @@ export function createGeminiClient(config: GeminiClientConfig = {}): GeminiClien
             "x-goog-upload-header-content-type": mimeType,
             "content-type": "application/json",
           },
-          body: JSON.stringify({ file: { display_name: displayName } }),
+          body: JSON.stringify({ file: { name: requestedName, display_name: displayName } }),
         },
         { key, timeoutMs: VALIDATE_TIMEOUT_MS, signal, maxBytes: SMALL_RESPONSE_BYTES, what: "upload start" },
       );
       const uploadUrl = assertUploadUrl(start.response.headers.get("x-goog-upload-url"));
 
       // The session url authenticates itself: the API key is deliberately not sent again.
-      const finalize = await request(
-        uploadUrl,
-        {
-          method: "POST",
-          headers: { "x-goog-upload-offset": "0", "x-goog-upload-command": "upload, finalize", "content-type": mimeType },
-          // A Buffer is a valid fetch body at runtime; the DOM typings only know ArrayBuffer-backed views.
-          body: data as unknown as BodyInit,
-        },
-        { key, timeoutMs: UPLOAD_TIMEOUT_MS, signal, maxBytes: SMALL_RESPONSE_BYTES, what: "upload" },
-      );
+      let finalize;
+      try {
+        finalize = await request(
+          uploadUrl,
+          {
+            method: "POST",
+            headers: { "x-goog-upload-offset": "0", "x-goog-upload-command": "upload, finalize", "content-type": mimeType },
+            // A Buffer is a valid fetch body at runtime; the DOM typings only know ArrayBuffer-backed views.
+            body: data as unknown as BodyInit,
+          },
+          { key, timeoutMs: UPLOAD_TIMEOUT_MS, signal, maxBytes: SMALL_RESPONSE_BYTES, what: "upload" },
+        );
+      } catch (err) {
+        // Google may have accepted the upload before the response was lost.
+        if (err instanceof GeminiApiError) err.fileName = requestedName;
+        throw err;
+      }
       const body = parseJson(finalize.text, "upload") as { file?: unknown } | null;
-      return fileFrom(body?.file);
+      try {
+        return fileFrom(body?.file);
+      } catch (err) {
+        if (err instanceof GeminiApiError) err.fileName = requestedName;
+        throw err;
+      }
     },
 
     async waitForFileActive({ key, name, budgetMs, signal }) {

@@ -273,6 +273,12 @@ function envInt(name: string, fallback: number): number {
 
 let defaultLimiter: SlidingWindowLimiter | undefined;
 let defaultCache: AnalysisCache | undefined;
+/**
+ * Work in progress by cache key, so two identical calls arriving together are
+ * billed once. Entries are removed as soon as the work settles, which bounds
+ * the map by the number of concurrent analyses (the job runner caps that).
+ */
+const inFlight = new Map<string, Promise<CachedAnalysis>>();
 
 function getDefaultLimiter(): SlidingWindowLimiter {
   if (!defaultLimiter) {
@@ -291,10 +297,44 @@ export function resetVideoAnalysisStateForTests(): void {
   defaultCache = undefined;
 }
 
-function cacheKeyFor(tenantId: string, source: VideoSource, options: VideoAnalysisOptions, focus: string | undefined, model: string): string {
+/**
+ * The key identifies the bytes that will be analyzed, not just the source id:
+ * an Ad Library source key is only `library:<ad_archive_id>:video:<index>`, so
+ * the same ad scraped into two datasets — or a record edited between scrapes —
+ * would otherwise be served another video's analysis.
+ */
+function cacheKeyFor(tenantId: string, source: VideoSource, mediaUrl: string, options: VideoAnalysisOptions, focus: string | undefined, model: string): string {
   return createHash("sha256")
-    .update(JSON.stringify([tenantId, source.key, options.quality, options.detail, options.language, focus ?? "", model, PROMPT_VERSION]))
+    .update(JSON.stringify([tenantId, source.key, source.origin, mediaUrl, options.quality, options.detail, options.language, focus ?? "", model, PROMPT_VERSION]))
     .digest("hex");
+}
+
+/** Lists the schema types as objects; a null or a scalar would break every consumer downstream. */
+function objectEntriesOnly(value: unknown): { kept: unknown[]; dropped: number } {
+  if (!Array.isArray(value)) return { kept: [], dropped: 0 };
+  const kept = value.filter((item) => Boolean(item) && typeof item === "object" && !Array.isArray(item));
+  return { kept, dropped: value.length - kept.length };
+}
+
+const TIMED_LIST_FIELDS = ["transcript", "on_screen_text", "scenes"] as const;
+
+/**
+ * Gemini can answer with a structurally odd list, above all on the
+ * schema-less retry. Normalizing here rather than at render time means the
+ * cached copy is sound too, so a repeat cannot keep failing for the whole TTL.
+ */
+function normalizeAnalysis(analysis: Record<string, unknown>, warnings: string[]): Record<string, unknown> {
+  let dropped = 0;
+  for (const field of TIMED_LIST_FIELDS) {
+    if (analysis[field] === undefined) continue;
+    const result = objectEntriesOnly(analysis[field]);
+    analysis[field] = result.kept;
+    dropped += result.dropped;
+  }
+  if (dropped > 0) {
+    warnings.push(`${dropped} malformed entr${dropped === 1 ? "y" : "ies"} in the transcript, on-screen text or scene list were dropped.`);
+  }
+  return analysis;
 }
 
 function mimeTypeFor(probe: VideoProbe | undefined): string {
@@ -323,15 +363,27 @@ export async function analyzeVideoWithGemini(
   const model = deps.model ?? resolveGeminiModel();
   const focus = flattenFocus(options.focus);
   const cache = deps.cache ?? getDefaultCache();
-  const cacheKey = cacheKeyFor(tenantId, source, options, focus, model);
-  const hit = cache.get(cacheKey);
-  if (hit) return { ...hit, cached: true, key_source: keySource };
 
   const preferred = options.quality === "hd" ? source.source_url ?? source.low_res_url : source.low_res_url ?? source.source_url;
   if (!preferred) {
     throw new Error(`${source.label}: no downloadable video URL${source.error ? ` (${source.error})` : ""}.`);
   }
   const rendition: "sd" | "hd" = preferred === source.source_url && source.source_url !== source.low_res_url ? "hd" : "sd";
+
+  const cacheKey = cacheKeyFor(tenantId, source, preferred, options, focus, model);
+  const hit = cache.get(cacheKey);
+  if (hit) return { ...hit, cached: true, key_source: keySource };
+
+  // An identical call already in flight is joined rather than billed twice.
+  const shared = inFlight.get(cacheKey);
+  if (shared) {
+    try {
+      return { ...(await shared), cached: true, key_source: keySource };
+    } catch {
+      // That caller's failure (an abort, say) is not this one's: fall through
+      // and do the work, exactly as if nothing had been in flight.
+    }
+  }
 
   const limiter = deps.limiter ?? getDefaultLimiter();
   const permit = limiter.acquire(tenantId);
@@ -346,6 +398,16 @@ export async function analyzeVideoWithGemini(
   const report = ctx.report ?? (async () => undefined);
   const warnings: string[] = [];
   let billed = false;
+
+  let publish: ((result: CachedAnalysis) => void) | undefined;
+  let fail: ((err: unknown) => void) | undefined;
+  inFlight.set(
+    cacheKey,
+    new Promise<CachedAnalysis>((resolve, reject) => {
+      publish = resolve;
+      fail = reject;
+    }),
+  );
 
   try {
     const result = await runner.run({ tenantId, signal: ctx.signal }, async (job) => {
@@ -402,7 +464,16 @@ export async function analyzeVideoWithGemini(
         generated = await client.generateJson({ ...request, video });
       } else {
         transport = "files_api";
-        const uploaded = await client.uploadFile({ key, data, mimeType, displayName: "ad-video", signal: job.signal });
+        let uploaded;
+        try {
+          uploaded = await client.uploadFile({ key, data, mimeType, displayName: "ad-video", signal: job.signal });
+        } catch (err) {
+          // An accepted upload whose response was lost still leaves a file at
+          // Google; the client reports the name it asked for so it can go.
+          const orphan = (err as { fileName?: unknown }).fileName;
+          if (typeof orphan === "string") await client.deleteFile({ key, name: orphan });
+          throw err;
+        }
         try {
           const active = uploaded.state === "ACTIVE"
             ? uploaded
@@ -418,7 +489,7 @@ export async function analyzeVideoWithGemini(
       if (!generated.json || typeof generated.json !== "object" || Array.isArray(generated.json)) {
         throw new Error("Gemini returned an analysis with an unexpected shape (not a JSON object).");
       }
-      const analysis = boundedClone(generated.json, ANALYSIS_BOUNDS) as Record<string, unknown>;
+      const analysis = normalizeAnalysis(boundedClone(generated.json, ANALYSIS_BOUNDS) as Record<string, unknown>, warnings);
       const serialized = JSON.stringify(analysis);
       if (serialized.includes("[omitted") || serialized.includes(" [truncated]")) {
         warnings.push("Parts of the analysis were truncated to fit the response budget.");
@@ -455,6 +526,7 @@ export async function analyzeVideoWithGemini(
     });
 
     cache.set(cacheKey, result);
+    publish?.(result);
     logger.info(
       {
         event: "gemini_video_analysis",
@@ -471,6 +543,9 @@ export async function analyzeVideoWithGemini(
     return { ...result, cached: false, key_source: keySource };
   } catch (err) {
     if (!billed) permit.refund();
+    fail?.(err);
     throw err;
+  } finally {
+    inFlight.delete(cacheKey);
   }
 }

@@ -181,7 +181,7 @@ describe("GeminiClient", () => {
     expect(startHeaders.get("x-goog-upload-command")).toBe("start");
     expect(startHeaders.get("x-goog-upload-header-content-length")).toBe("10");
     expect(startHeaders.get("x-goog-upload-header-content-type")).toBe("video/mp4");
-    expect(JSON.parse(String(start[1]?.body))).toEqual({ file: { display_name: "ad-video" } });
+    expect(JSON.parse(String(start[1]?.body))).toEqual({ file: { name: expect.stringMatching(/^files\/[a-z0-9-]{1,64}$/), display_name: "ad-video" } });
 
     const uploadHeaders = headersOf(upload);
     expect(uploadHeaders.get("x-goog-api-key")).toBeNull();
@@ -413,5 +413,44 @@ describe("resolveGeminiKey", () => {
     process.env.META_APP_SECRET = "fixture";
     process.env.GEMINI_API_KEY = "AQ.env_fixture_key_000000000";
     await expect(resolveGeminiKey()).rejects.toThrow(/authenticated user/i);
+  });
+});
+
+describe("round-1 review fixes (client)", () => {
+  it("names the file itself, so an ambiguous finalize can still be cleaned up", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response("", { status: 200, headers: { "x-goog-upload-url": "https://generativelanguage.googleapis.com/upload/v1beta/files?upload_id=abc" } }))
+      .mockResolvedValueOnce(jsonResponse({ file: { name: "files/abc-123", uri: "https://generativelanguage.googleapis.com/v1beta/files/abc-123", state: "ACTIVE" } }));
+    const client = createGeminiClient({ fetch: fetchMock as never });
+
+    const file = await client.uploadFile({ key: KEY, data: Buffer.from("x"), mimeType: "video/mp4", displayName: "ad-video" });
+
+    const body = JSON.parse(String((fetchMock.mock.calls[0] as unknown as FetchArgs)[1]?.body)) as { file: { name: string; display_name: string } };
+    expect(body.file.display_name).toBe("ad-video");
+    expect(body.file.name).toMatch(/^files\/[a-z0-9-]{1,64}$/);
+    // Google is free to ignore the requested name; the returned one wins.
+    expect(file.name).toBe("files/abc-123");
+  });
+
+  it("reports the name it asked for when the finalize response is lost, so the caller can delete it", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response("", { status: 200, headers: { "x-goog-upload-url": "https://generativelanguage.googleapis.com/upload/v1beta/files?upload_id=abc" } }))
+      .mockRejectedValueOnce(new Error("socket hang up"));
+    const client = createGeminiClient({ fetch: fetchMock as never });
+
+    const error = (await client.uploadFile({ key: KEY, data: Buffer.from("x"), mimeType: "video/mp4", displayName: "ad-video" }).catch((e: unknown) => e)) as GeminiApiError & { fileName?: string };
+    expect(error).toBeInstanceOf(GeminiApiError);
+    expect(error.fileName).toMatch(/^files\/[a-z0-9-]{1,64}$/);
+    const requested = JSON.parse(String((fetchMock.mock.calls[0] as unknown as FetchArgs)[1]?.body)) as { file: { name: string } };
+    expect(error.fileName).toBe(requested.file.name);
+  });
+
+  it("carries no file name when the failure happened before any byte was sent", async () => {
+    const fetchMock = vi.fn().mockRejectedValueOnce(new Error("offline"));
+    const client = createGeminiClient({ fetch: fetchMock as never });
+    const error = (await client.uploadFile({ key: KEY, data: Buffer.from("x"), mimeType: "video/mp4", displayName: "ad-video" }).catch((e: unknown) => e)) as GeminiApiError & { fileName?: string };
+    expect(error.fileName).toBeUndefined();
   });
 });

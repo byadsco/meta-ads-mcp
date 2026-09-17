@@ -37,6 +37,14 @@ function asList(value: unknown): unknown[] {
   return Array.isArray(value) ? value : [];
 }
 
+/**
+ * The analysis is normalized upstream, but the renderer must not depend on
+ * that: a non-object entry here would be a TypeError on a field access.
+ */
+function asRecordList(value: unknown): Record<string, unknown>[] {
+  return asList(value).filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object" && !Array.isArray(item));
+}
+
 function str(value: unknown, max: number): string {
   return typeof value === "string" || typeof value === "number" ? singleLine(String(value), max) : "";
 }
@@ -106,9 +114,10 @@ function renderBrief(analysis: Record<string, unknown>, result: VideoAnalysisRes
     if (bits.length > 0) lines.push(`Branding: ${bits.join(" · ")}`);
   }
 
-  const scenes = asList(analysis.scenes).slice(0, 12);
+  const allScenes = asRecordList(analysis.scenes);
+  const scenes = allScenes.slice(0, 12);
   if (scenes.length > 0) {
-    lines.push(`Scenes (${asList(analysis.scenes).length}, first ${scenes.length}):`);
+    lines.push(`Scenes (${allScenes.length}, first ${scenes.length}):`);
     for (const raw of scenes) {
       const scene = raw as Timed;
       const span = [str(scene.start, 12), str(scene.end, 12)].filter(Boolean).join("–");
@@ -116,7 +125,7 @@ function renderBrief(analysis: Record<string, unknown>, result: VideoAnalysisRes
     }
   }
 
-  const transcript = asList(analysis.transcript);
+  const transcript = asRecordList(analysis.transcript);
   if (transcript.length > 0) {
     const shown = transcript.slice(0, 20);
     lines.push(`Transcript (${transcript.length} segment(s)${transcript.length > shown.length ? `, first ${shown.length}; full text in the JSON` : ""}):`);
@@ -127,7 +136,7 @@ function renderBrief(analysis: Record<string, unknown>, result: VideoAnalysisRes
     }
   }
 
-  const onScreen = asList(analysis.on_screen_text);
+  const onScreen = asRecordList(analysis.on_screen_text);
   if (onScreen.length > 0) {
     const shown = onScreen.slice(0, 12);
     lines.push(`On-screen text (${onScreen.length}${onScreen.length > shown.length ? `, first ${shown.length}` : ""}):`);

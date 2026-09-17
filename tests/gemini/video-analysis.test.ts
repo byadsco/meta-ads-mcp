@@ -303,3 +303,85 @@ describe("createAnalysisCache", () => {
     expect(cache.size()).toBeLessThanOrEqual(1);
   });
 });
+
+describe("round-1 review fixes (analysis)", () => {
+  it("drops non-object entries from the timed lists before caching them", async () => {
+    const odd = { ...ANALYSIS, scenes: [null, { start: "00:00", description: "ok" }], transcript: [null, 5], on_screen_text: ["plain", null] };
+    const { deps } = setup({ client: fakeClient({ generateJson: vi.fn(async () => ({ json: odd, usage: {}, model: "gemini-3.8-flash", schema_enforced: false })) }) });
+
+    const result = await analyzeVideoWithGemini(SOURCE, OPTIONS, deps, {});
+
+    expect(result.analysis.scenes).toEqual([{ start: "00:00", description: "ok" }]);
+    expect(result.analysis.transcript).toEqual([]);
+    expect(result.analysis.on_screen_text).toEqual([]);
+    expect(result.warnings.join(" ")).toMatch(/entr(y|ies)/i);
+  });
+
+  it("separates two datasets that carry the same Ad Library ad", async () => {
+    const first = { ...SOURCE, key: "library:123:video:0", origin: "ad_library" as const, ad_archive_id: "123", source_url: "https://video.xx.fbcdn.net/one.mp4", low_res_url: "https://video.xx.fbcdn.net/one.mp4" };
+    const second = { ...first, source_url: "https://video.xx.fbcdn.net/two.mp4", low_res_url: "https://video.xx.fbcdn.net/two.mp4" };
+    const { deps, client, downloadVideo } = setup();
+
+    const a = await analyzeVideoWithGemini(first, OPTIONS, deps, {});
+    const b = await analyzeVideoWithGemini(second, OPTIONS, deps, {});
+
+    expect(a.cached).toBe(false);
+    expect(b.cached).toBe(false);
+    expect(client.generateJson).toHaveBeenCalledTimes(2);
+    expect(downloadVideo.mock.calls.map((c) => c[0])).toEqual(["https://video.xx.fbcdn.net/one.mp4", "https://video.xx.fbcdn.net/two.mp4"]);
+
+    const again = await analyzeVideoWithGemini(second, OPTIONS, deps, {});
+    expect(again.cached).toBe(true);
+  });
+
+  it("shares one billable analysis between concurrent identical calls", async () => {
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const generateJson = vi.fn(async () => {
+      await gate;
+      return { json: ANALYSIS, usage: { total_tokens: 1800 }, model: "gemini-3.8-flash", schema_enforced: true };
+    });
+    const { deps } = setup({ client: fakeClient({ generateJson }) });
+
+    const both = Promise.all([analyzeVideoWithGemini(SOURCE, OPTIONS, deps, {}), analyzeVideoWithGemini(SOURCE, OPTIONS, deps, {})]);
+    release();
+    const [first, second] = await both;
+
+    expect(generateJson).toHaveBeenCalledTimes(1);
+    expect([first.cached, second.cached]).toContain(true);
+    expect(first.analysis).toEqual(second.analysis);
+  });
+
+  it("does not let one caller's failure become another's", async () => {
+    let attempt = 0;
+    const generateJson = vi.fn(async () => {
+      attempt += 1;
+      if (attempt === 1) throw new Error("first caller aborted");
+      return { json: ANALYSIS, usage: {}, model: "gemini-3.8-flash", schema_enforced: true };
+    });
+    const { deps } = setup({ client: fakeClient({ generateJson }), limiter: createSlidingWindowLimiter({ limit: 5, windowMs: 3_600_000 }) });
+
+    const results = await Promise.allSettled([analyzeVideoWithGemini(SOURCE, OPTIONS, deps, {}), analyzeVideoWithGemini(SOURCE, OPTIONS, deps, {})]);
+    expect(results.some((r) => r.status === "fulfilled")).toBe(true);
+    expect(results.some((r) => r.status === "rejected")).toBe(true);
+  });
+
+  it("frees the in-flight slot once the work settles", async () => {
+    const { deps, client } = setup();
+    await analyzeVideoWithGemini(SOURCE, OPTIONS, deps, {});
+    const other = { ...SOURCE, key: "meta:video:1000", video_id: "1000", source_url: "https://video.xx.fbcdn.net/other.mp4", low_res_url: "https://video.xx.fbcdn.net/other.mp4" };
+    await analyzeVideoWithGemini(other, OPTIONS, deps, {});
+    expect(client.generateJson).toHaveBeenCalledTimes(2);
+  });
+
+  it("deletes a file whose finalize response was lost", async () => {
+    const uploadFile = vi.fn(async () => {
+      throw Object.assign(new Error("socket hang up"), { fileName: "files/lost-123" });
+    });
+    const { deps, client } = setup({ client: fakeClient({ uploadFile }) }, 32 * 1024);
+    await expect(analyzeVideoWithGemini(SOURCE, OPTIONS, deps, {})).rejects.toThrow(/socket hang up/);
+    expect(client.deleteFile).toHaveBeenCalledWith({ key: KEY, name: "files/lost-123" });
+  });
+});
