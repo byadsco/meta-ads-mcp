@@ -23,6 +23,10 @@ export interface LibraryVideo {
   hd_url: string | null;
   sd_url: string | null;
   preview_image_url: string | null;
+  /** Renditions dropped by the url policy (e.g. "video_hd_url"), attached to this video only. */
+  omitted_urls?: string[];
+  /** Position in the record video order (top-level videos, then video cards); what video_index addresses. */
+  selector?: number;
 }
 
 export interface LibraryCard {
@@ -239,8 +243,22 @@ function urlOrNull(value: unknown, label: string, truncated: string[]): string |
   return url;
 }
 
-function strings(value: unknown): string[] {
-  return asArray(value).map(str).filter((s): s is string => s !== null);
+const MAX_LIST_ITEMS = 20;
+const MAX_LIST_ITEM_CHARS = 64;
+
+/** Bounded before conversion: a hostile record can carry millions of entries here. */
+function strings(value: unknown, label: string, truncated: string[]): string[] {
+  const raw = asArray(value);
+  const out: string[] = [];
+  for (const item of raw) {
+    if (out.length >= MAX_LIST_ITEMS) {
+      truncated.push(label);
+      break;
+    }
+    const text = str(item);
+    if (text !== null) out.push(text.length > MAX_LIST_ITEM_CHARS ? text.slice(0, MAX_LIST_ITEM_CHARS) : text);
+  }
+  return out;
 }
 
 export function isAdLibraryErrorItem(item: unknown): boolean {
@@ -259,10 +277,14 @@ function image(record: Record<string, unknown>, label: string, truncated: string
 }
 
 function video(record: Record<string, unknown>, label: string, truncated: string[]): LibraryVideo | null {
-  const hd_url = urlOrNull(record.video_hd_url, label + ".video_hd_url", truncated);
-  const sd_url = urlOrNull(record.video_sd_url, label + ".video_sd_url", truncated);
-  const preview_image_url = urlOrNull(record.video_preview_image_url, label + ".video_preview_image_url", truncated);
-  return hd_url || sd_url ? { hd_url, sd_url, preview_image_url } : null;
+  const own: string[] = [];
+  const hd_url = urlOrNull(record.video_hd_url, "video_hd_url", own);
+  const sd_url = urlOrNull(record.video_sd_url, "video_sd_url", own);
+  const preview_image_url = urlOrNull(record.video_preview_image_url, "video_preview_image_url", own);
+  for (const note of own) truncated.push(label + "." + note);
+  if (!hd_url && !sd_url) return null;
+  const omitted_urls = own.map((note) => note.slice(0, note.indexOf(" (")));
+  return { hd_url, sd_url, preview_image_url, ...(omitted_urls.length > 0 ? { omitted_urls } : {}) };
 }
 
 function card(record: Record<string, unknown>, index: number, truncated: string[]): LibraryCard {
@@ -358,11 +380,28 @@ function takeMedia<T>(raw: unknown[], build: (record: Record<string, unknown>, r
 }
 
 function collectMedia(snapshot: Record<string, unknown>, truncated: string[]): { images: LibraryImage[]; videos: LibraryVideo[]; cards: LibraryCard[] } {
-  // Images and videos are labelled by their compacted position (what the
-  // sources see); cards keep their raw index, which they also expose.
   const images = takeMedia(asArray(snapshot.images), (r, _i, pos) => image(r, "images[" + pos + "]", truncated), MAX_MEDIA_ITEMS, "images", truncated);
-  const videos = takeMedia(asArray(snapshot.videos), (r, _i, pos) => video(r, "videos[" + pos + "]", truncated), MAX_MEDIA_ITEMS, "videos", truncated);
-  const cards = takeMedia(asArray(snapshot.cards), (r, i) => card(r, i, truncated), MAX_CARDS, "cards", truncated);
+  // Every video gets a selector = its position in the record video order
+  // (top-level videos, then video cards), the same order libraryVideoAt walks,
+  // so video_index means the same thing on both paths regardless of the caps.
+  let selector = 0;
+  const videos = takeMedia(asArray(snapshot.videos), (r, _i, pos) => {
+    const v = video(r, "videos[" + pos + "]", truncated);
+    if (v) v.selector = selector++;
+    return v;
+  }, MAX_MEDIA_ITEMS, "videos", truncated);
+  // Videos beyond the cap still occupy selector positions.
+  const rawVideos = asArray(snapshot.videos);
+  let seen = 0;
+  for (const r of rawVideos) {
+    if (!isRecord(r) || !(str(r.video_hd_url) || str(r.video_sd_url))) continue;
+    if (seen++ >= videos.length) selector += 1;
+  }
+  const cards = takeMedia(asArray(snapshot.cards), (r, i) => {
+    const c = card(r, i, truncated);
+    if (c.video) c.video.selector = selector++;
+    return c;
+  }, MAX_CARDS, "cards", truncated);
   return { images, videos, cards };
 }
 
@@ -400,14 +439,14 @@ export function normalizeLibraryAd(raw: AdLibraryRawItem, offset: number | null)
       name: capText(str(raw.page_name) ?? str(snapshot.page_name) ?? str(raw.pageName), "page.name", truncated),
       profile_uri: urlOrNull(snapshot.page_profile_uri, "page.profile_uri", truncated),
       profile_picture_url: urlOrNull(snapshot.page_profile_picture_url, "page.profile_picture_url", truncated),
-      categories: strings(snapshot.page_categories),
+      categories: strings(snapshot.page_categories, "page.categories", truncated),
       like_count: num(snapshot.page_like_count),
       is_deleted: bool(raw.page_is_deleted) ?? bool(snapshot.page_is_deleted),
     },
     is_active: bool(raw.is_active),
     start_date: isoDate(raw.start_date),
     end_date: isoDate(raw.end_date),
-    publisher_platforms: strings(raw.publisher_platform),
+    publisher_platforms: strings(raw.publisher_platform, "publisher_platforms", truncated),
     display_format: str(snapshot.display_format),
     copy: {
       body,
@@ -468,8 +507,9 @@ export function libraryImageAssets(ad: LibraryAd, size: "full" | "small"): Libra
 
 const MAX_LABEL_PAGE_CHARS = 120;
 
-function buildLibrarySource(adId: string, pageName: string | null, v: LibraryVideo, index: number, omitted: string[] = []): VideoSource {
+function buildLibrarySource(adId: string, pageName: string | null, v: LibraryVideo, index: number): VideoSource {
   const page = pageName ? pageName.slice(0, MAX_LABEL_PAGE_CHARS) : "";
+  const omitted = v.omitted_urls ?? [];
   return {
     key: "library:" + adId + ":video:" + index,
     label: "Video " + index + " of Ad Library ad " + adId + (page ? " — " + page : ""),
@@ -483,22 +523,16 @@ function buildLibrarySource(adId: string, pageName: string | null, v: LibraryVid
   };
 }
 
-/** Which of this video renditions were dropped by the url policy, from the truncation labels of the record. */
-function omittedFor(truncated: string[], prefix: string): string[] {
-  return truncated
-    .filter((t) => t.startsWith(prefix) && t.endsWith("(url omitted)"))
-    .map((t) => t.slice(prefix.length, t.indexOf(" (")));
-}
-
-/** Video sources for the delivery pipeline: HD as source, SD as the preferred download, preview as thumbnail. */
+/**
+ * Video sources for the delivery pipeline: HD as source, SD as the preferred
+ * download, preview as thumbnail. The index is the video selector, so it is
+ * the value video_index accepts and it matches libraryVideoAt exactly.
+ */
 export function extractLibraryVideoSources(ad: LibraryAd): VideoSource[] {
-  const sources = ad.videos.map((v, i) => buildLibrarySource(ad.ad_archive_id, ad.page.name, v, i, omittedFor(ad.truncated, "videos[" + i + "].")));
+  const sources = ad.videos.map((v, i) => buildLibrarySource(ad.ad_archive_id, ad.page.name, v, v.selector ?? i));
   for (const c of ad.cards) {
     if (!c.video) continue;
-    // Top-level videos and video cards never coexist in real records; offset the
-    // card index only when they do, so keys and resource URIs stay unique.
-    const index = ad.videos.length > 0 ? ad.videos.length + c.index : c.index;
-    sources.push(buildLibrarySource(ad.ad_archive_id, ad.page.name, c.video, index, omittedFor(ad.truncated, "cards[" + c.index + "].video_")));
+    sources.push(buildLibrarySource(ad.ad_archive_id, ad.page.name, c.video, c.video.selector ?? c.index));
   }
   return sources;
 }
@@ -506,34 +540,28 @@ export function extractLibraryVideoSources(ad: LibraryAd): VideoSource[] {
 /**
  * Addresses the n-th video of a raw record (top-level videos first, then
  * video cards, in order) without materializing the capped collections, so a
- * caller can reach videos beyond the presentation caps.
+ * caller can reach videos beyond the presentation caps. Same walk and same
+ * selector arithmetic as collectMedia.
  */
 export function libraryVideoAt(raw: AdLibraryRawItem, index: number): VideoSource | undefined {
   const adId = archiveIdOf(raw) ?? "";
   const snapshot = asRecord(raw.snapshot);
   const pageName = str(raw.page_name) ?? str(snapshot.page_name) ?? str(raw.pageName);
-  let position = 0;
-  const videos = asArray(snapshot.videos);
-  for (let i = 0; i < videos.length; i++) {
-    const record = videos[i];
+  let selector = 0;
+  const scratch: string[] = [];
+  for (const record of asArray(snapshot.videos)) {
     if (!isRecord(record)) continue;
-    const omitted: string[] = [];
-    const v = video(record, "", omitted);
+    const v = video(record, "", scratch);
     if (!v) continue;
-    if (position === index) return buildLibrarySource(adId, pageName, v, position, omittedFor(omitted, "."));
-    position += 1;
+    if (selector === index) return buildLibrarySource(adId, pageName, v, selector);
+    selector += 1;
   }
-  const topLevel = position;
-  const cards = asArray(snapshot.cards);
-  for (let i = 0; i < cards.length; i++) {
-    const record = cards[i];
+  for (const record of asArray(snapshot.cards)) {
     if (!isRecord(record)) continue;
-    const omitted: string[] = [];
-    const v = video(record, "", omitted);
+    const v = video(record, "", scratch);
     if (!v) continue;
-    const cardIndex = topLevel > 0 ? topLevel + i : i;
-    if (position === index) return buildLibrarySource(adId, pageName, v, cardIndex, omittedFor(omitted, "."));
-    position += 1;
+    if (selector === index) return buildLibrarySource(adId, pageName, v, selector);
+    selector += 1;
   }
   return undefined;
 }

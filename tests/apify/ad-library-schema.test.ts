@@ -221,7 +221,7 @@ describe("normalizeLibraryAd round-3 hardening", () => {
     expect(ad.copy.link_url).toBeNull();
     expect(ad.page.profile_picture_url).toBeNull();
     expect(ad.images[0]).toEqual({ original_url: null, resized_url: "https://scontent.xx.fbcdn.net/ok.jpg" });
-    expect(ad.videos[0]).toEqual({ hd_url: null, sd_url: "https://video.xx.fbcdn.net/ok.mp4", preview_image_url: null });
+    expect(ad.videos[0]).toMatchObject({ hd_url: null, sd_url: "https://video.xx.fbcdn.net/ok.mp4", preview_image_url: null, omitted_urls: ["video_hd_url", "video_preview_image_url"] });
     expect(ad.cards[0].video).toBeNull();
     expect(ad.truncated.some((t) => /url omitted/.test(t))).toBe(true);
     expect(JSON.stringify(ad)).not.toContain("a".repeat(100));
@@ -320,6 +320,54 @@ describe("round-5 hardening", () => {
   });
 });
 
+describe("round-6 hardening", () => {
+  it("bounds string lists (platforms, categories) before converting them", () => {
+    const raw = {
+      ad_archive_id: "1234567890",
+      publisher_platform: Array.from({ length: 50_000 }, () => "x".repeat(50)),
+      snapshot: { page_categories: Array.from({ length: 50_000 }, () => 0) },
+    } as AdLibraryRawItem;
+    const started = Date.now();
+    const ad = normalizeLibraryAd(raw, 0);
+    expect(Date.now() - started).toBeLessThan(200);
+    expect(ad.publisher_platforms.length).toBeLessThanOrEqual(20);
+    expect(ad.page.categories.length).toBeLessThanOrEqual(20);
+    expect(ad.truncated).toEqual(expect.arrayContaining(["publisher_platforms", "page.categories"]));
+  });
+
+  it("attaches omission notes only to the video they belong to", () => {
+    const long = "https://video.xx.fbcdn.net/" + "h".repeat(5000);
+    const raw = {
+      ad_archive_id: "1234567890",
+      // First entry: only an overlong HD url, so the video is dropped entirely.
+      // Second entry: a valid video with no omissions.
+      snapshot: { videos: [{ video_hd_url: long }, { video_sd_url: "https://video.xx.fbcdn.net/ok.mp4" }] },
+    } as AdLibraryRawItem;
+    const ad = normalizeLibraryAd(raw, 0);
+    const sources = extractLibraryVideoSources(ad);
+    expect(sources).toHaveLength(1);
+    expect(sources[0].error).toBeUndefined();
+    expect(libraryVideoAt(raw, 0)?.error).toBeUndefined();
+    expect(ad.truncated.some((t) => /url omitted/.test(t))).toBe(true);
+  });
+
+  it("keeps card indexes consistent between the normalized sources and libraryVideoAt beyond the caps", () => {
+    const raw = {
+      ad_archive_id: "1234567890",
+      snapshot: {
+        videos: Array.from({ length: 25 }, (_, i) => ({ video_sd_url: "https://video.xx.fbcdn.net/" + i + ".mp4" })),
+        cards: [{ video_sd_url: "https://video.xx.fbcdn.net/card.mp4" }],
+      },
+    } as AdLibraryRawItem;
+    const normalized = extractLibraryVideoSources(normalizeLibraryAd(raw, 0));
+    const cardFromNormalized = normalized.find((s) => s.low_res_url?.endsWith("card.mp4"));
+    expect(cardFromNormalized).toBeDefined();
+    const direct = libraryVideoAt(raw, cardFromNormalized!.card_index as number);
+    expect(direct?.low_res_url).toBe("https://video.xx.fbcdn.net/card.mp4");
+    expect(direct?.key).toBe(cardFromNormalized!.key);
+  });
+});
+
 describe("extractLibraryVideoSources", () => {
   it("builds delivery sources with sd as low-res and the preview as thumbnail", () => {
     const ad = normalizeLibraryAd(VIDEO, 0);
@@ -342,11 +390,15 @@ describe("extractLibraryVideoSources", () => {
     expect(sources[0].source_url).toBe(sources[0].low_res_url);
   });
 
-  it("emits one source per video card, keeping the card index", () => {
+  it("emits one source per video card, addressed by its video selector (video_index)", () => {
+    // The mixed carousel has an image card at 0 and its only video at card 1:
+    // as the first video of the record it is selector 0, which is what
+    // video_index=0 addresses on both the normalized and the direct path.
     const sources = extractLibraryVideoSources(normalizeLibraryAd(MIXED_CAROUSEL, 0));
     expect(sources).toHaveLength(1);
-    expect(sources[0].card_index).toBe(1);
-    expect(sources[0].key).toBe("library:9000000000000002:video:1");
+    expect(sources[0].card_index).toBe(0);
+    expect(sources[0].key).toBe("library:9000000000000002:video:0");
+    expect(libraryVideoAt(MIXED_CAROUSEL, 0)?.key).toBe(sources[0].key);
   });
 });
 

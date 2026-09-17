@@ -948,15 +948,19 @@ function boundedMetadataJson(metadata: DetailsMetadata): string {
     json = attempt(current);
     if (json.length <= MAX_JSON_CHARS) return json;
   }
+  // The minimal summary is built field by field: images and videos were
+  // already bounded above (urls up to MAX_URL_CHARS kept whole), so they are
+  // taken as-is rather than through another clone that would truncate a
+  // signed url into a dead link.
   const minimal = {
     ad_archive_id: current.ad.ad_archive_id,
     ad_library_url: current.ad.ad_library_url,
     media_summary: current.ad.media_summary,
     images: current.images.slice(0, 10),
     videos: current.videos.slice(0, 3),
-    warnings: [...current.warnings, "metadata reduced to a minimal summary: the record exceeds the JSON size limit even without cards."],
+    warnings: [...current.warnings, "metadata reduced to a minimal summary: the record exceeds the JSON size limit even without cards."].slice(0, JSON_MAX_WARNINGS),
   };
-  json = JSON.stringify(boundedClone(minimal, { maxDepth: 6, maxNodes: 500, maxString: 1000, maxKeys: 50 }), null, 2);
+  json = attempt(minimal as unknown as DetailsMetadata);
   if (json.length <= MAX_JSON_CHARS) return json;
   return JSON.stringify({ ad_archive_id: current.ad.ad_archive_id, warnings: ["metadata omitted: the record exceeds the JSON size limit."] }, null, 2);
 }

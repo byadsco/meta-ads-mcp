@@ -876,6 +876,36 @@ describe("ads_library_* tools", () => {
       expect(last.length).toBeLessThanOrEqual(50_000);
     });
 
+    it("never truncates a valid signed url in the minimal fallback", async () => {
+      const longUrl = "https://scontent.xx.fbcdn.net/v/t39.35426-6/" + "a".repeat(1400) + ".jpg?oh=x&oe=69617495";
+      const hostile = JSON.parse(JSON.stringify(FIX_VIDEO)) as Record<string, unknown>;
+      const snap = hostile.snapshot as Record<string, unknown>;
+      (snap.videos as Array<Record<string, unknown>>)[0].video_preview_image_url = longUrl;
+      // Enough detail bulk to push past the JSON limit even after dropping raw and cards.
+      for (const key of ["advertiser", "aaa_info", "insights", "eu_transparency"]) {
+        hostile[key] = Object.fromEntries(Array.from({ length: 90 }, (_, i) => ["k" + i, "v".repeat(1900)]));
+      }
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(mockFetchResponse([hostile])));
+      const deliverVideos = vi.fn(async (sources: Array<Record<string, unknown>>) => ({
+        blocks: [],
+        videos: sources.map((src) => ({ ...src, delivered: { mode: "url", block_indexes: [], resource_uri: "meta-ads://ad-library/1178344137830897/video/0" } })),
+        warnings: [],
+        bytes: 0,
+      }));
+
+      const result = await setup({ deliverVideos, downloadImage: fakeImage() }).byName("ads_library_get_ad_details")({
+        dataset_id: "ds123abcde", ad_archive_id: "1178344137830897", hint_offset: 1,
+        include_images: false, max_images: 8, image_size: "full", video_delivery: "url", frame_count: 6, include_raw: false,
+      });
+      const last = result.content[result.content.length - 1].text;
+      expect(last.length).toBeLessThanOrEqual(50_000);
+      const json = JSON.parse(last) as Record<string, unknown>;
+      expect(last).not.toContain("[truncated]\"");
+      const videos = json.videos as Block[];
+      expect(videos[0].thumbnail_url).toBe(longUrl);
+      expect((videos[0].delivered as Record<string, unknown>).resource_uri).toBe("meta-ads://ad-library/1178344137830897/video/0");
+    });
+
     it("include_raw returns the untouched actor record alongside the normalized ad", async () => {
       vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(mockFetchResponse([FIX_IMAGE])));
       const result = await setup({ deliverVideos: fakeDeliver(), downloadImage: fakeImage() }).byName("ads_library_get_ad_details")({
@@ -890,8 +920,11 @@ describe("ads_library_* tools", () => {
 
   describe("boundedClone", () => {
     it("counts every visited value, null included, against the node budget", () => {
-      const out = boundedClone(Array.from({ length: 40_000 }, () => null), 8, 300) as unknown[];
-      expect(out.length).toBeLessThanOrEqual(301);
+      const out = boundedClone(Array.from({ length: 40_000 }, () => null), { maxNodes: 300, maxKeys: 1000 }) as unknown[];
+      // 300 nodes: the array itself plus 299 nulls, then the omission marker.
+      expect(out.length).toBe(300);
+      expect(out.slice(0, 299).every((v) => v === null)).toBe(true);
+      expect(String(out[299])).toMatch(/omitted/);
     });
   });
 
