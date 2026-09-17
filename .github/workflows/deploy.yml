@@ -342,6 +342,7 @@ jobs:
             NODE_ENV=production
             NODE_OPTIONS=--max-old-space-size=1536
             VIDEO_MAX_CONCURRENT_JOBS=2
+            GEMINI_ANALYSES_PER_TENANT_PER_HOUR=20
             META_APP_ID=${{ secrets.META_APP_ID }}
             SERVER_URL=${{ secrets.SERVER_URL }}
             AUTH_ALLOWED_EMAILS=${{ secrets.AUTH_ALLOWED_EMAILS }}

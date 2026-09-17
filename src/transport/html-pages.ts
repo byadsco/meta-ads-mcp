@@ -1,4 +1,5 @@
 import type { ApifyTokenStatus } from "../store/apify-token-repo.js";
+import type { GeminiKeyStatus } from "../store/gemini-key-repo.js";
 import type { MetaTokenSummary } from "../store/meta-token-repo.js";
 import { escapeHtml } from "../utils/html.js";
 
@@ -121,11 +122,69 @@ export function renderApifySection(ctx: ApifySectionContext): string {
     </div>`;
 }
 
+export interface GeminiSectionContext {
+  status: GeminiKeyStatus;
+  /** Internal path the POST handlers redirect back to. Already validated by the caller. */
+  returnTo: string;
+  variant: "consent" | "connections";
+}
+
+/**
+ * Same shape as the Apify section, including the rule that the consent
+ * variant never offers disconnect: dropping a credential mid-OAuth is a
+ * destructive action the user did not come here for. Only classes already in
+ * PAGE_STYLES are used, so both pages style everything they emit.
+ */
+export function renderGeminiSection(ctx: GeminiSectionContext): string {
+  const returnHidden = `<input type="hidden" name="return" value="${escapeHtml(ctx.returnTo)}" />`;
+  const registerForm = `<form method="POST" action="/auth/register-gemini-key">
+        ${returnHidden}
+        <input type="password" name="gemini_api_key" placeholder="AQ.…" required minlength="20" maxlength="512" autocomplete="off" />
+        <button type="submit">Validar y guardar</button>
+      </form>
+      <p class="hint">Crea la clave en <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener noreferrer">aistudio.google.com/apikey</a>. Se usa tu cuota (aprox. USD 0,02 por anuncio). Usa una clave de tier de pago para creativos de clientes: Google puede usar las entradas del tier gratuito para mejorar sus modelos. Los videos se envian a Gemini para analizarlos y los grandes quedan hasta 48 h en su Files API.</p>`;
+
+  if (!ctx.status.registered) {
+    return `<div class="section">
+      <div class="section-title">Gemini — analisis de video (opcional)</div>
+      <details>
+        <summary>Conectar Gemini para que el servidor analice los videos</summary>
+        ${registerForm}
+      </details>
+      ${ctx.variant === "consent" ? `<p class="hint">Opcional: no hace falta para aprobar.</p>` : ""}
+    </div>`;
+  }
+
+  const updated = formatUpdatedAt(ctx.status.updatedAt);
+  const disconnect =
+    ctx.variant === "connections"
+      ? `<form method="POST" action="/auth/delete-gemini-key" class="inline">
+          ${returnHidden}
+          <button type="submit" class="danger">Desconectar</button>
+        </form>`
+      : "";
+
+  return `<div class="section">
+      <div class="section-title">Gemini — analisis de video (opcional)</div>
+      <div class="token-row">
+        <span class="token-name">Clave de Gemini</span>
+        <span class="badge">conectado</span>
+        ${updated ? `<span class="token-expiry">${updated}</span>` : ""}
+        <span class="row-actions">${disconnect}</span>
+      </div>
+      <details>
+        <summary>Reemplazar clave</summary>
+        ${registerForm}
+      </details>
+    </div>`;
+}
+
 export interface ConnectionsPageContext {
   user: { fbUserId: string; email: string | null; name: string | null };
   tokens: MetaTokenSummary[];
   activeName: string | null;
   apify: ApifyTokenStatus;
+  gemini: GeminiKeyStatus;
 }
 
 export function userInitials(user: { name: string | null; email: string | null }): string {
@@ -211,6 +270,8 @@ ${PAGE_EXTRA_STYLES}
     </div>
 
     ${renderApifySection({ status: ctx.apify, returnTo: CONNECTIONS_PATH, variant: "connections" })}
+
+    ${renderGeminiSection({ status: ctx.gemini, returnTo: CONNECTIONS_PATH, variant: "connections" })}
   </div>
 </body>
 </html>`;

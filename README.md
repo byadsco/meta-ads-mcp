@@ -62,7 +62,7 @@ both servers.
 | | Meta's official MCP (`mcp.facebook.com/ads`) | This project |
 |---|---|---|
 | Auth model | Per-user OAuth in your AI client | **Multi-tenant**: agency operator handles N client accounts from one server |
-| Tool surface | 29 tools (campaigns, ads, catalogs, 5 insight views, opportunity_score, dataset, errors, help) | **137 tools** including the official 29-equivalent + audiences, lookalikes, lead forms, automated rules, A/B studies, async reports, billing invoices, custom conversions, asset uploads, comment moderation, cross-account macros, and full WhatsApp Business management (templates, phone numbers, flows, QR codes) |
+| Tool surface | 29 tools (campaigns, ads, catalogs, 5 insight views, opportunity_score, dataset, errors, help) | **141 tools** including the official 29-equivalent + audiences, lookalikes, lead forms, automated rules, A/B studies, async reports, billing invoices, custom conversions, asset uploads, comment moderation, cross-account macros, and full WhatsApp Business management (templates, phone numbers, flows, QR codes) |
 | Hosting | Hosted by Meta | Self-hosted on Cloud Run / your infra; tokens encrypted at rest in Firestore |
 | Cross-account | Per-user, single Meta login | Yes — `ads_portfolio_summary` aggregates across N accounts |
 | Token control | Lives in your AI client | Server-side System User token registry per agency operator |
@@ -78,7 +78,7 @@ When to use which:
 
 ## Features
 
-- **137 tools** covering campaign management, creatives, targeting, audiences, reporting, comments, billing, invoices, tokens, Instagram workflows, WhatsApp Business management, rate-limit observability, semantic insight views, diagnostics, help-center search, competitor research via the public Meta Ad Library (full ad cards with their images and videos), video analysis (keyframes or the MP4 itself for video-capable models), and agency-tier cross-account macros.
+- **141 tools** covering campaign management, creatives, targeting, audiences, reporting, comments, billing, invoices, tokens, Instagram workflows, WhatsApp Business management, rate-limit observability, semantic insight views, diagnostics, help-center search, competitor research via the public Meta Ad Library (full ad cards with their images and videos), video analysis (keyframes or the MP4 itself for video-capable models), and agency-tier cross-account macros.
 - **Aligned vocabulary** with Meta's official MCP server so agents transfer cleanly between both.
 - **Sign in with Meta (Facebook Login)** — replaces shared PINs. Each user lands their own long-lived (60-day) Meta token.
 - **System User token registry** — for tokens that don't expire, register them per user from the consent UI.
@@ -127,6 +127,7 @@ Ads tools use the `ads_*` naming convention, aligned with Meta's official MCP se
 | Bulk ad creation | 1 | `ads_bulk_create_video_ads` — video URLs → upload, processing wait, auto-thumbnail, creative and ad in one call |
 | Instagram | 2 | IG account and media lookup |
 | Ad Library (Apify) | 9 | Competitor ad research: `ads_library_scrape` the public Meta Ad Library by keyword or Facebook page, poll run status, page through results (each with a media summary and its offset), abort runs, `ads_library_get_ad_details` for the full card of one scraped ad with its images inline and its videos as thumbnails / keyframes / links, plus per-user Apify token register/status/delete |
+| Gemini video analysis | 4 | `ads_analyze_video` — the server watches the video with Gemini and returns hook, transcript, on-screen text, scenes, format, compliance flags and ideas to test; plus per-user Gemini key register/status/delete |
 | Tokens | 4 | List / set-active / register / delete |
 | Rate Status | 1 | Live view of quota usage, open circuits and write-pacer state |
 | WhatsApp — WABAs & phones | 8 | `whatsapp_get_business_accounts`, phone number list/register/deregister/verify, business profile get/update |
@@ -211,6 +212,44 @@ and a 30 MB response budget shared with the images. Without `ffmpeg` on the
 server the tool degrades to thumbnails and says so. The production image
 installs `ffmpeg` and Cloud Run runs with 2 GiB / 2 vCPU and a size-limited
 in-memory `/tmp`; `/health` reports `ffmpeg: true|false`.
+
+### Server-side analysis with Gemini
+
+`ads_analyze_video` covers the remaining case: an agent whose own model cannot
+ingest video at all. The server downloads the video through the same hardened
+pipeline, sends it to **Google Gemini** with the user's own API key, and returns
+a structured analysis — hook (with a 1-5 score and the reasoning), verbatim
+transcript, on-screen text, scene list, audio, format (aspect ratio, pacing,
+sound-off friendliness), branding, claims a reviewer might question, strengths,
+weaknesses and concrete ideas to test. A `focus` question is answered directly.
+
+It is the last resort by design, and the tool description says so: if your model
+can watch video, `delivery=inline` is free and better; if it can see images,
+`delivery=frames` is free and usually enough.
+
+The key belongs to the user, not to the server. Each one registers their own on
+`/auth/connections` or with `ads_register_gemini_key`, and it is validated
+against the API and then stored encrypted (AES-256-GCM, its own AAD namespace)
+exactly like the Meta and Apify credentials. `GEMINI_API_KEY` is honoured only
+in stdio / single-operator mode: sharing one key across OAuth tenants would bill
+everyone's analyses to the operator. Create a key at
+[aistudio.google.com/apikey](https://aistudio.google.com/apikey).
+Full operational detail is in [docs/gemini-video-analysis.md](docs/gemini-video-analysis.md).
+
+What it costs and where the video goes, both stated in the tool description:
+roughly **USD 0.02 per ad** against your own quota, and the video is sent to
+Google. One at or below `GEMINI_INLINE_MAX_BYTES` (12 MB) is embedded in the
+request and stored nowhere; a larger one goes through the Files API and is
+deleted as soon as the analysis returns, with Google removing leftovers within
+48 hours. Use a paid-tier key for client creatives: Google may use free-tier
+inputs to improve its models.
+
+Guardrails: a per-tenant hourly cap (`GEMINI_ANALYSES_PER_TENANT_PER_HOUR`,
+default 20) that is refunded when nothing was billed, a short-lived result cache
+keyed by tenant, video and options so a retry costs nothing, and the same job
+runner, byte caps and time budget as the rest of the video pipeline. Everything
+the model writes is delimited as untrusted content and flattened to single
+lines, so an analysis cannot forge the structure around it.
 
 WhatsApp tools require the `whatsapp_business_management` permission. Tokens issued before this scope was added must be re-authorized (sign in again through the OAuth flow) before the `whatsapp_*` tools will work, and the Meta App must have the **WhatsApp product** added in the developer dashboard.
 

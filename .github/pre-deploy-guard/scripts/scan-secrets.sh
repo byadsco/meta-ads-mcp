@@ -21,6 +21,8 @@ PATTERNS=(
   'meta-tokens-json|(^|[^A-Za-z0-9_])META_TOKENS[[:space:]]*=[[:space:]]*["'\''"]?\{[^}]*EAA'
   'google-oauth-token|ya29\.[0-9A-Za-z_-]{30,}'
   'google-api-key|AIza[0-9A-Za-z_-]{35}'
+  'gemini-auth-key|AQ\.[A-Za-z0-9_-]{20,}'
+  'gemini-api-key|(^|[^A-Za-z0-9_])GEMINI_API_KEY[[:space:]]*=[[:space:]]*["'\''"]?[A-Za-z0-9_.-]{20,}'
   'gcp-service-account-key|"private_key":[[:space:]]*"-----BEGIN'
   'private-key-block|-----BEGIN[[:space:]]*(RSA|EC|DSA|OPENSSH|PGP)?[[:space:]]*PRIVATE[[:space:]]*KEY-----'
   'github-token|gh[pousr]_[A-Za-z0-9]{36,}'

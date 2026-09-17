@@ -9,6 +9,25 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
+- **Server-side video analysis with Gemini — `ads_analyze_video` plus per-tenant
+  key management (137 → 141 tools).** For agents whose own model cannot ingest
+  video at all: the server downloads the video through the existing hardened
+  pipeline, sends it to Google Gemini with the user's own API key, and returns a
+  structured analysis (hook with a 1-5 score and its reasoning, verbatim
+  transcript, on-screen text, scene list, audio, format, branding, claims a
+  reviewer might question, strengths, weaknesses, ideas to test, and a direct
+  answer to an optional `focus` question). Own-account videos and Ad Library
+  videos both work, one per call, with `card_index` to pick one from a carousel
+  or DCO ad. The tool description points a video-capable client at
+  `ads_get_video_media delivery=inline` first, since that is free, and states
+  the cost (about USD 0.02 per ad against the user's own quota) and that the
+  video is sent to Google. `ads_register_gemini_key`,
+  `ads_get_gemini_key_status` and `ads_delete_gemini_key` mirror the Apify token
+  tools, and the key can also be registered from `/auth/connections`.
+  Small videos are embedded in the request and stored nowhere; larger ones go
+  through the Files API and are deleted as soon as the analysis returns.
+  Request and response shapes were verified against the wire types of the
+  official `googleapis/js-genai` SDK.
 - **Ad Library ads with their media — `ads_library_get_ad_details` (136 → 137 tools).**
   The compact projection of `ads_library_get_results` gains a `media` summary
   (display format, image and video counts, `has_video`, the CDN expiry decoded
@@ -61,6 +80,16 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Changed
 
+
+- `/auth/connections` and the OAuth consent page gained a Gemini section next to
+  the Apify one, with the same rules: a password field, no disconnect button
+  mid-OAuth, and a status read that degrades to "not connected" rather than
+  taking down OAuth approval. `POST /auth/register-gemini-key` is rate-limited
+  like its Apify counterpart, since each call reaches out to Google.
+- The budgeted response-body reader moved out of the Apify client into
+  `src/utils/bounded-body.ts`, and the single-line sanitizer for untrusted text
+  out of the Ad Library renderer into `src/utils/single-line.ts`, so both
+  outbound clients and both renderers share one implementation.
 - **Runtime image and Cloud Run sizing.** The Docker image is pinned to
   `node:22-alpine3.24` and installs `ffmpeg`; the deploy runs with 2 GiB /
   2 vCPU, concurrency 40 and a size-limited in-memory `/tmp` volume. CI and
@@ -161,6 +190,32 @@ no code here but change delivery:
 
 ### Security
 
+
+- Gemini keys are stored encrypted at rest (AES-256-GCM) under their own AAD
+  namespace (`gemini_key:<user>:default`), so a ciphertext cannot be relocated
+  between users or between the Meta, Apify and Gemini collections. A decryption
+  failure propagates instead of degrading to "no key", which would fall through
+  to a shared fallback credential. `GEMINI_API_KEY` is honoured only in
+  single-tenant mode, and tenant resolution fails closed for an unidentified
+  multi-tenant caller.
+- The key travels only in the `x-goog-api-key` header, never in a URL, and is
+  not sent to the resumable-upload session URL, which is validated (https, exact
+  host, no port or credentials, `/upload/` path) before any video byte leaves.
+  File names and model ids are pattern-checked before interpolation, redirects
+  are refused, every response is read under a byte budget, and key-shaped
+  strings are scrubbed from errors and logs (`gemini_api_key`, `gemini_key`,
+  `x-goog-api-key` added to the logger's redaction paths).
+- A billable `generateContent` failure is never retried; the only retry is a
+  single schema-less attempt after a 400 that names the schema field, which
+  Google does not bill. A per-tenant hourly cap is refunded when the work ended
+  before the key was used and kept once it was.
+- Everything the model writes is delimited as untrusted content and flattened to
+  single lines with hyphen runs neutralized, so an analysis cannot forge the
+  fence that marks it as untrusted. The JSON block is reduced field by field
+  rather than truncated as a string, which would leave it unparseable.
+- `.gitleaks.toml` and the custom scanner gained rules for the `AQ.` key prefix
+  Google AI Studio has used since September 2026 and for any `GEMINI_API_KEY=`
+  assignment; the `AIza` rule alone would not have seen either.
 - Video downloads stream to a per-video scratch directory (never
   `Buffer.concat`), tear rejected responses down instead of draining them,
   honour the caller's abort signal from DNS onwards, and never echo scratch

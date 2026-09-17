@@ -29,6 +29,8 @@ import { logger } from "../utils/logger.js";
 import { escapeHtml } from "../utils/html.js";
 import { hashToken } from "../auth/token-store.js";
 import { getApifyTokenRepo } from "../store/apify-token-repo.js";
+import { getGeminiKeyRepo } from "../store/gemini-key-repo.js";
+import { createGeminiClient, validateGeminiKeyInput } from "../gemini/client.js";
 import { ApifyApiClient } from "../apify/client.js";
 import type { ApifyEnvelope, ApifyUser } from "../apify/types.js";
 import { CONNECTIONS_PATH, renderConnectionsPage } from "./html-pages.js";
@@ -41,6 +43,9 @@ const STANDALONE_RETURN_PATHS = new Set<string>([CONNECTIONS_PATH]);
  * api.apify.com must not hold the connection for minutes.
  */
 const apifyValidationClient = new ApifyApiClient({ timeout: 10_000, maxRetries: 0 });
+
+/** Same reasoning as the Apify one: this runs inside a user-facing request, so it must not stall it. */
+const geminiValidationClient = createGeminiClient();
 
 /**
  * SameSite=Lax blocks a cross-site POST, but "same-site" is not "same-origin":
@@ -522,10 +527,25 @@ export function mountAuthRoutes(
       return;
     }
 
-    const [tokens, activeName, apify] = await Promise.all([
+    const [tokens, activeName, apify, gemini] = await Promise.all([
       listTokens(session.fbUserId),
       getDefaultTokenName(session.fbUserId),
       getApifyTokenRepo().getStatus(session.fbUserId),
+      // Gemini is an optional add-on: a failure reading its status must not
+      // take the page down, the same way the consent page degrades.
+      getGeminiKeyRepo()
+        .getStatus(session.fbUserId)
+        .catch((error: unknown) => {
+          logger.warn(
+            {
+              event: "gemini_status_unavailable",
+              fbUserId: hashPii(session.fbUserId),
+              error: error instanceof Error ? error.message : String(error),
+            },
+            "Could not read Gemini key status; rendering connections without it",
+          );
+          return { registered: false, keyFingerprint: null, updatedAt: null };
+        }),
     ]);
 
     res.setHeader(
@@ -545,6 +565,7 @@ export function mountAuthRoutes(
         tokens,
         activeName,
         apify,
+        gemini,
       }),
     );
   });
@@ -656,4 +677,91 @@ export function mountAuthRoutes(
       res.redirect(302, safeReturnTo(req.body?.return, CONNECTIONS_PATH));
     },
   );
+  app.post(
+    "/auth/register-gemini-key",
+    express.urlencoded({ extended: false }),
+    async (req, res) => {
+      if (!isSameOriginPost(req)) {
+        logger.warn(
+          { event: "cross_origin_post_rejected", path: "/auth/register-gemini-key" },
+          "Rejected a cross-origin form post",
+        );
+        renderError(res, 403, "Cross-origin request rejected.");
+        return;
+      }
+
+      const session = await getSession(req);
+      if (!session) {
+        renderError(res, 401, "Session expired. Sign in again.");
+        return;
+      }
+
+      const parsed = validateGeminiKeyInput(req.body?.gemini_api_key);
+      if (!parsed.ok) {
+        renderError(res, 400, "Invalid Gemini API key.");
+        return;
+      }
+
+      try {
+        await geminiValidationClient.validateKey(parsed.key);
+      } catch (error) {
+        logger.warn(
+          {
+            event: "gemini_key_register_failed",
+            fbUserId: hashPii(session.fbUserId),
+            keyHash: hashToken(parsed.key),
+            // The client scrubs key-shaped strings before this point.
+            error: error instanceof Error ? error.message : String(error),
+          },
+          "Gemini key validation failed",
+        );
+        renderError(
+          res,
+          400,
+          "Gemini key validation failed. The key may be revoked, restricted, or lack access to the Generative Language API. Check the server logs for details.",
+        );
+        return;
+      }
+
+      await getGeminiKeyRepo().saveKey(session.fbUserId, parsed.key);
+      logger.info(
+        { event: "gemini_key_registered", fbUserId: hashPii(session.fbUserId) },
+        "Gemini key registered via web UI",
+      );
+
+      res.redirect(302, safeReturnTo(req.body?.return, CONNECTIONS_PATH));
+    },
+  );
+
+  app.post(
+    "/auth/delete-gemini-key",
+    express.urlencoded({ extended: false }),
+    async (req, res) => {
+      if (!isSameOriginPost(req)) {
+        logger.warn(
+          { event: "cross_origin_post_rejected", path: "/auth/delete-gemini-key" },
+          "Rejected a cross-origin form post",
+        );
+        renderError(res, 403, "Cross-origin request rejected.");
+        return;
+      }
+
+      const session = await getSession(req);
+      if (!session) {
+        renderError(res, 401, "Session expired. Sign in again.");
+        return;
+      }
+
+      // Idempotent on purpose, like the Apify one: a resubmitted form or a
+      // stale tab should land back on the page, not on an error.
+      await getGeminiKeyRepo().deleteKey(session.fbUserId);
+      logger.info(
+        { event: "gemini_key_deleted", fbUserId: hashPii(session.fbUserId) },
+        "Gemini key deleted via web UI",
+      );
+
+      res.redirect(302, safeReturnTo(req.body?.return, CONNECTIONS_PATH));
+    },
+  );
 }
+

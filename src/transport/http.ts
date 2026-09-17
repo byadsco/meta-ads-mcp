@@ -19,9 +19,12 @@ import {
   CONNECTIONS_PATH,
   PAGE_STYLES,
   renderApifySection,
+  renderGeminiSection,
   userInitials,
 } from "./html-pages.js";
 import { getApifyTokenRepo } from "../store/apify-token-repo.js";
+import { getGeminiKeyRepo } from "../store/gemini-key-repo.js";
+import type { GeminiKeyStatus } from "../store/gemini-key-repo.js";
 import type { ApifyTokenStatus } from "../store/apify-token-repo.js";
 
 import { validateAuthorizeQuery } from "./authorize-validation.js";
@@ -65,6 +68,9 @@ const UNKNOWN_APIFY_STATUS: ApifyTokenStatus = {
   apifyUsername: null,
   updatedAt: null,
 };
+
+/** Same degradation for the Gemini key: the section disappears, OAuth continues. */
+const UNKNOWN_GEMINI_STATUS: GeminiKeyStatus = { registered: false, keyFingerprint: null, updatedAt: null };
 
 function normalizeHostname(hostname: string): string {
   return hostname.startsWith("[") && hostname.endsWith("]")
@@ -122,6 +128,7 @@ interface ConsentContext {
   tokens: Awaited<ReturnType<typeof listTokens>>;
   activeName: string | null;
   apify: ApifyTokenStatus;
+  gemini: GeminiKeyStatus;
 }
 
 export function renderConsentPage(ctx: ConsentContext): string {
@@ -222,6 +229,8 @@ ${PAGE_STYLES}
     </details>
 
     ${renderApifySection({ status: ctx.apify, returnTo: fullPath, variant: "consent" })}
+
+    ${renderGeminiSection({ status: ctx.gemini, returnTo: fullPath, variant: "consent" })}
 
     <a class="manage-link" href="${CONNECTIONS_PATH}">Gestionar conexiones →</a>
 
@@ -505,6 +514,11 @@ export async function startHttpTransport(
       "/auth/register-apify-token",
       createRateLimiter(10, 15 * 60 * 1000),
     );
+    // Same reasoning for the Gemini key: each POST calls generativelanguage.googleapis.com.
+    app.use(
+      "/auth/register-gemini-key",
+      createRateLimiter(10, 15 * 60 * 1000),
+    );
 
     mountAuthRoutes(app, {
       serverUrl,
@@ -554,11 +568,11 @@ export async function startHttpTransport(
         return;
       }
 
-      const [tokens, activeName, apify] = await Promise.all([
+      const [tokens, activeName, apify, gemini] = await Promise.all([
         listTokens(session.fbUserId),
         getDefaultTokenName(session.fbUserId),
-        // Apify is an optional add-on, so a failure reading its status must not
-        // take down OAuth approval. Degrade to "not connected" and log it.
+        // Apify and Gemini are optional add-ons, so a failure reading their
+        // status must not take down OAuth approval. Degrade to "not connected".
         getApifyTokenRepo()
           .getStatus(session.fbUserId)
           .catch((error: unknown) => {
@@ -571,6 +585,19 @@ export async function startHttpTransport(
               "Could not read Apify status; rendering consent without it",
             );
             return UNKNOWN_APIFY_STATUS;
+          }),
+        getGeminiKeyRepo()
+          .getStatus(session.fbUserId)
+          .catch((error: unknown) => {
+            logger.warn(
+              {
+                event: "gemini_status_unavailable",
+                fbUserId: hashPii(session.fbUserId),
+                error: error instanceof Error ? error.message : String(error),
+              },
+              "Could not read Gemini key status; rendering consent without it",
+            );
+            return UNKNOWN_GEMINI_STATUS;
           }),
       ]);
 
@@ -594,6 +621,7 @@ export async function startHttpTransport(
           tokens,
           activeName,
           apify,
+          gemini,
         }),
       );
     });

@@ -53,3 +53,6 @@ export const WHATSAPP_WRITE_WARNING = "⚠️ Modifies live WhatsApp Business da
 
 /** Same, for Apify-backed tools: these spend the tenant's Apify credit or touch their stored credentials. */
 export const APIFY_WRITE_WARNING = "⚠️ Uses your Apify account (paid credits / stored credentials). ";
+
+/** Same, for Gemini-backed tools: these spend the tenant's Gemini quota or touch their stored key. */
+export const GEMINI_WRITE_WARNING = "⚠️ Uses your Gemini API key (paid quota / stored credentials). ";

@@ -6,6 +6,8 @@ import { registerAdTools } from "./ads.js";
 import { registerCreativeTools } from "./creatives.js";
 import { registerCreativeMediaTools } from "./creative-media.js";
 import { registerVideoMediaTools } from "./video-media.js";
+import { registerVideoAnalysisTools } from "./video-analysis.js";
+import { registerGeminiKeyTools } from "./gemini-keys.js";
 import { registerInsightsTools } from "./insights.js";
 import { registerInsightsViewTools } from "./insights-views.js";
 import { registerTargetingTools } from "./targeting.js";
@@ -51,6 +53,7 @@ export function registerAllTools(server: McpServer): void {
   registerCreativeTools(server);     // 9 tools
   registerCreativeMediaTools(server); // 1 tool — creative media as inline image blocks
   registerVideoMediaTools(server);   // 1 tool — ads_get_video_media (keyframes / inline MP4 / urls)
+  registerVideoAnalysisTools(server); // 1 tool — ads_analyze_video (Gemini video understanding)
   registerEntityTools(server);       // 3 tools — generic helpers (get_ad_entities, update_entity, activate_entity)
   registerInsightsTools(server);     // 1 tool  — power-tool ads_get_insights
   registerInsightsViewTools(server); // 5 tools — semantic insight views
@@ -89,8 +92,11 @@ export function registerAllTools(server: McpServer): void {
   // ─── Ad Library scraping (Apify) ─────────────────────────
   registerAdsLibraryTools(server);   // 9 tools — competitor ad research via Apify + token mgmt + ad details with media
 
+  // ─── Gemini video analysis ───────────────────────────────
+  registerGeminiKeyTools(server);    // 3 tools — per-tenant Gemini key registration / status / delete
+
   // ─── Token Management ────────────────────────────────────
   registerTokenTools(server);        // 4 tools — list / set-active / register / delete
 
-  // Total: 137 tools (79 renamed + 14 new in v3 + 3 audience-sharing + 1 invoices + 27 WhatsApp + 1 url-tags + 1 bulk video ads + 1 creative media + 9 Ad Library/Apify + 1 video media)
+  // Total: 141 tools (79 renamed + 14 new in v3 + 3 audience-sharing + 1 invoices + 27 WhatsApp + 1 url-tags + 1 bulk video ads + 1 creative media + 9 Ad Library/Apify + 1 video media + 1 video analysis + 3 Gemini key mgmt)
 }
