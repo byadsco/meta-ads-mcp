@@ -123,7 +123,7 @@ function buildCreativeFieldsParam(fields?: string[]): string {
   return buildFieldsParam(expanded, [...CREATIVE_DEFAULT_FIELDS]);
 }
 
-function withDerivedEffectiveLinkUrl(creative: AdCreative): AdCreative {
+export function withDerivedEffectiveLinkUrl(creative: AdCreative): AdCreative {
   const effectiveLinkUrl = extractEffectiveLinkUrl(creative);
   return effectiveLinkUrl && !creative.effective_link_url
     ? { ...creative, effective_link_url: effectiveLinkUrl }

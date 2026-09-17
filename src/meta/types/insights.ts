@@ -84,6 +84,29 @@ export interface InsightsResult {
   [key: string]: unknown;
 }
 
+/**
+ * Retention funnel for video ads. Each *_watched_actions field is an action
+ * breakdown, not a scalar: the video_view entry carries the count.
+ * cost_per_thruplay is only meaningful once ThruPlays exist.
+ */
+export const VIDEO_INSIGHTS_FIELDS = [
+  "video_play_actions",
+  "video_p25_watched_actions",
+  "video_p50_watched_actions",
+  "video_p75_watched_actions",
+  "video_p100_watched_actions",
+  "video_thruplay_watched_actions",
+  "video_avg_time_watched_actions",
+  "cost_per_thruplay",
+] as const;
+
+/** Auction quality signals; omitted by Meta below 500 impressions. */
+export const RANKING_INSIGHTS_FIELDS = [
+  "quality_ranking",
+  "engagement_rate_ranking",
+  "conversion_rate_ranking",
+] as const;
+
 export const INSIGHTS_DEFAULT_FIELDS = [
   "impressions",
   "clicks",
