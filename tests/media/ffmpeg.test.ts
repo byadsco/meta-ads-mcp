@@ -112,6 +112,40 @@ describe("createFfmpeg (unit, execFile injected)", () => {
     expect(calls[0].opts.killSignal).toBe("SIGKILL");
   });
 
+  it("probe restricts demuxers, pixels and streams natively before any input is opened", async () => {
+    const { exec, calls } = fakeExec(PROBE_JSON);
+    const ffmpeg = createFfmpeg({ execFile: exec, ffprobePath: "ffprobe", ffmpegPath: "ffmpeg" });
+    const input = path.join(dir, "in.mp4");
+    await fs.writeFile(input, "x");
+
+    await ffmpeg.probe(input);
+
+    const args = calls[0].args;
+    const before = args.slice(0, args.indexOf(input));
+    expect(before).toEqual(expect.arrayContaining(["-format_whitelist", "mov,mp4,m4a,3gp,3g2,mj2,matroska,webm"]));
+    expect(before).toEqual(expect.arrayContaining(["-analyzeduration", "5M", "-probesize", "10M"]));
+    expect(args.indexOf("-format_whitelist")).toBeLessThan(args.indexOf(input));
+  });
+
+  it("frame and sheet filters bound both output dimensions", async () => {
+    const { exec, calls } = fakeExec();
+    const ffmpeg = createFfmpeg({ execFile: exec, ffprobePath: "ffprobe", ffmpegPath: "ffmpeg" });
+    const input = path.join(dir, "in.mp4");
+    await fs.writeFile(input, "x");
+    await fs.writeFile(path.join(dir, "frame_1.jpg"), "j");
+    await fs.writeFile(path.join(dir, "sheet.jpg"), "s");
+
+    await ffmpeg.extractFrames(input, { outDir: dir, count: 1, durationSeconds: 2, maxWidth: 640, demuxer: "mov,mp4,m4a,3gp,3g2,mj2" });
+    await ffmpeg.contactSheet(input, { outDir: dir, count: 1, columns: 1, durationSeconds: 2, tileWidth: 512, demuxer: "mov,mp4,m4a,3gp,3g2,mj2" });
+
+    for (const call of calls) {
+      const vf = call.args[call.args.indexOf("-vf") + 1];
+      // scale=w:h with force_original_aspect_ratio=decrease keeps the frame inside a bounded box.
+      expect(vf).toMatch(/scale=\d+:\d+:force_original_aspect_ratio=decrease/);
+      expect(call.args).toEqual(expect.arrayContaining(["-max_alloc"]));
+    }
+  });
+
   it("extractFrames seeks before -i, forces the probed demuxer and writes into the job dir", async () => {
     const { exec, calls } = fakeExec();
     const ffmpeg = createFfmpeg({ execFile: exec, ffprobePath: "ffprobe", ffmpegPath: "ffmpeg" });
@@ -138,7 +172,7 @@ describe("createFfmpeg (unit, execFile injected)", () => {
     expect(args.indexOf("-ss")).toBeLessThan(args.indexOf("-i"));
     expect(args).toEqual(expect.arrayContaining(["-nostdin", "-protocol_whitelist", "file", "-f", "mov,mp4,m4a,3gp,3g2,mj2", "-frames:v", "1"]));
     expect(args[args.length - 1]).toBe(path.join(outDir, "frame_1.jpg"));
-    expect(args.join(" ")).toContain("scale=640:-2");
+    expect(args.join(" ")).toContain("scale=640:640:force_original_aspect_ratio=decrease");
     expect(calls[0].opts.cwd).toBe(outDir);
     expect(calls[0].opts.env).toEqual({ PATH: process.env.PATH });
   });
@@ -164,7 +198,7 @@ describe("createFfmpeg (unit, execFile injected)", () => {
     expect(sheet.columns).toBe(3);
     const joined = calls[0].args.join(" ");
     expect(joined).toContain("tile=3x2");
-    expect(joined).toContain("scale=512:-2");
+    expect(joined).toContain("scale=512:512:force_original_aspect_ratio=decrease");
     expect(calls[0].args).toEqual(expect.arrayContaining(["-fs"]));
   });
 
@@ -189,7 +223,7 @@ describe("createFfmpeg (unit, execFile injected)", () => {
     const args = calls[0].args;
     expect(args).toEqual(expect.arrayContaining(["-c:v", "libx264", "-c:a", "aac", "-movflags", "+faststart", "-t", "30"]));
     expect(args[args.indexOf("-fs") + 1]).toBe("1000");
-    expect(args.join(" ")).toContain("scale=-2:480");
+    expect(args.join(" ")).toContain("scale=853:480:force_original_aspect_ratio=decrease:force_divisible_by=2");
   });
 
   it("compact fails clearly when even the smallest rendition exceeds maxBytes", async () => {

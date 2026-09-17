@@ -666,12 +666,20 @@ export async function startHttpTransport(
       const server = createServer();
       await server.connect(transport);
 
-      await transport.handleRequest(req, res, req.body);
-
-      res.on("close", () => {
+      // Registered before handling so a client disconnect mid-request closes the
+      // transport, which aborts every in-flight tool handler via extra.signal
+      // (video downloads / ffmpeg jobs must not outlive their caller).
+      const cleanup = () => {
         transport.close().catch(() => {});
         server.close().catch(() => {});
-      });
+      };
+      if (res.destroyed) {
+        cleanup();
+        return;
+      }
+      res.once("close", cleanup);
+
+      await transport.handleRequest(req, res, req.body);
     } catch (error) {
       logger.error({ error }, "Error handling MCP request");
       if (!res.headersSent) {

@@ -27,6 +27,7 @@ export interface SafeImageDownloadOptions extends AssertSafeUrlOptions {
   maxBytes?: number;
   maxRedirects?: number;
   timeoutMs?: number;
+  signal?: AbortSignal;
   request?: typeof https.request;
 }
 
@@ -54,10 +55,15 @@ function requestImage(
   resolved: ResolvedSafePublicUrl,
   options: Required<Pick<SafeImageDownloadOptions, "maxBytes" | "timeoutMs">> & {
     request: typeof https.request;
+    signal?: AbortSignal;
   },
 ): Promise<RedirectOrResult<SafeImageDownload>> {
   return new Promise((resolve, reject) => {
     let settled = false;
+    if (options.signal?.aborted) {
+      reject(new UnsafeUrlError("Image download aborted"));
+      return;
+    }
     const reqOptions: RequestOptions = {
       method: "GET",
       headers: { Accept: "image/*" },
@@ -132,11 +138,16 @@ function requestImage(
       req.destroy(new UnsafeUrlError(`Image download timed out after ${options.timeoutMs}ms`));
     });
 
+    const onAbort = () => req.destroy(new UnsafeUrlError("Image download aborted"));
+    options.signal?.addEventListener("abort", onAbort, { once: true });
+
     req.on("error", (err) => {
+      options.signal?.removeEventListener("abort", onAbort);
       if (settled) return;
       settled = true;
       reject(err instanceof UnsafeUrlError ? err : new UnsafeUrlError(`Image download failed: ${err.message}`));
     });
+    req.on("close", () => options.signal?.removeEventListener("abort", onAbort));
 
     req.end();
   });
@@ -154,6 +165,6 @@ export async function downloadSafePublicImage(
   return followSafeRedirects(
     rawUrl,
     { maxRedirects, resolve: options.resolve, what: "image" },
-    (resolved) => requestImage(resolved, { request, maxBytes, timeoutMs }),
+    (resolved) => requestImage(resolved, { request, maxBytes, timeoutMs, signal: options.signal }),
   );
 }

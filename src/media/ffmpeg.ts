@@ -21,6 +21,9 @@ export type ExecFileFn = (
 ) => Promise<{ stdout: Buffer; stderr: Buffer }>;
 
 const ALLOWED_DEMUXERS = new Set(["mov,mp4,m4a,3gp,3g2,mj2", "matroska,webm"]);
+// Handed to -format_whitelist so ffprobe never instantiates a playlist/concat
+// demuxer, even before the parsed output is validated.
+const FORMAT_WHITELIST = [...ALLOWED_DEMUXERS].join(",");
 const MAX_PIXELS = 3840 * 2160;
 const MAX_STREAMS = 4;
 const DEFAULT_MAX_SECONDS = 240;
@@ -181,10 +184,18 @@ function inputArgs(demuxer: string): string[] {
   return [
     "-nostdin", "-hide_banner", "-loglevel", "error", "-nostats", "-y", "-xerror",
     "-max_alloc", "268435456", "-threads", "1", "-filter_threads", "1",
-    "-protocol_whitelist", "file",
+    "-protocol_whitelist", "file", "-format_whitelist", FORMAT_WHITELIST,
     "-analyzeduration", "5M", "-probesize", "10M",
     "-f", demuxer,
   ];
+}
+
+/**
+ * Bounds BOTH output dimensions: scale=W:-2 alone lets a 64x4096 source become
+ * a 1280x81920 frame. The box keeps aspect ratio and even dimensions.
+ */
+function boundedScale(maxWidth: number, maxHeight: number): string {
+  return `scale=${maxWidth}:${maxHeight}:force_original_aspect_ratio=decrease:force_divisible_by=2`;
 }
 
 function describeFailure(tool: string, err: unknown): FfmpegError {
@@ -246,7 +257,8 @@ export function createFfmpeg(config: FfmpegConfig = {}): Ffmpeg {
       const stdout = await run(
         ffprobePath,
         [
-          "-v", "error", "-protocol_whitelist", "file",
+          "-v", "error", "-protocol_whitelist", "file", "-format_whitelist", FORMAT_WHITELIST,
+          "-analyzeduration", "5M", "-probesize", "10M",
           "-show_entries", "format=format_name,duration,size,nb_streams:stream=codec_type,codec_name,width,height,r_frame_rate",
           "-of", "json", input,
         ],
@@ -265,7 +277,7 @@ export function createFfmpeg(config: FfmpegConfig = {}): Ffmpeg {
           [
             ...inputArgs(options.demuxer),
             "-ss", String(timestamps[i]), "-i", input,
-            "-frames:v", "1", "-vf", `scale=${options.maxWidth}:-2`, "-q:v", "4",
+            "-frames:v", "1", "-vf", boundedScale(options.maxWidth, options.maxWidth), "-q:v", "4",
             "-fs", String(FRAME_OUTPUT_CAP_BYTES), "-f", "image2", out,
           ],
           { timeout: FRAME_TIMEOUT_MS, cwd: options.outDir, signal: options.signal, tool: "ffmpeg" },
@@ -286,7 +298,7 @@ export function createFfmpeg(config: FfmpegConfig = {}): Ffmpeg {
         [
           ...inputArgs(options.demuxer),
           "-ss", String(timestamps[0]), "-i", input,
-          "-vf", `fps=1/${interval},scale=${options.tileWidth}:-2,tile=${columns}x${rows}:padding=4:margin=4:color=black`,
+          "-vf", `fps=1/${interval},${boundedScale(options.tileWidth, options.tileWidth)},tile=${columns}x${rows}:padding=4:margin=4:color=black`,
           "-frames:v", "1", "-q:v", "4",
           "-fs", String(FRAME_OUTPUT_CAP_BYTES * 2), "-f", "image2", out,
         ],
@@ -308,7 +320,7 @@ export function createFfmpeg(config: FfmpegConfig = {}): Ffmpeg {
           [
             ...inputArgs(options.demuxer),
             "-i", input, "-t", String(clipSeconds),
-            "-vf", `scale=-2:${rendition.height},fps=10`,
+            "-vf", `${boundedScale(Math.round((rendition.height * 16) / 9), rendition.height)},fps=10`,
             "-c:v", "libx264", "-preset", "veryfast", "-crf", String(rendition.crf), "-pix_fmt", "yuv420p",
             "-c:a", "aac", "-b:a", "48k", "-ac", "1",
             "-movflags", "+faststart", "-fs", String(options.maxBytes), "-f", "mp4", out,

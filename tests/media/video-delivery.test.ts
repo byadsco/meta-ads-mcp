@@ -261,6 +261,70 @@ describe("deliverVideos", () => {
     expect(result.warnings.some((w) => /max_videos/.test(w))).toBe(true);
   });
 
+  it("removes each video's scratch files before starting the next one", async () => {
+    const seen: string[] = [];
+    const deps = fakeDeps({
+      downloadVideo: async (url, opts) => {
+        // Every earlier original must already be gone when a new download starts.
+        for (const prior of seen) {
+          await expect(fs.stat(prior)).rejects.toThrow();
+        }
+        const file = path.join(opts.destDir, "in.mp4");
+        await fs.writeFile(file, ORIGINAL_MP4);
+        seen.push(file);
+        return { path: file, bytes: ORIGINAL_MP4.length, contentType: "video/mp4", finalUrl: new URL(url) };
+      },
+    });
+    const second = { ...SOURCE, key: "meta:video:456", video_id: "456" };
+    const result = await deliverVideos([SOURCE, second], { delivery: "frames" }, deps, CTX);
+    expect(result.videos.map((v) => v.delivered.mode)).toEqual(["frames", "frames"]);
+    expect(seen).toHaveLength(2);
+    expect(path.dirname(seen[0])).not.toBe(path.dirname(seen[1]));
+  });
+
+  it("never exceeds the total bytes budget once the thumbnail is counted", async () => {
+    const deps = fakeDeps({
+      downloadImage: async (url) => ({ buffer: Buffer.alloc(400), contentType: "image/jpeg", extension: ".jpg", finalUrl: new URL(url) }),
+      ffmpeg: fakeFfmpeg({
+        contactSheet: async (_i, opts) => ({ buffer: Buffer.alloc(700), timestamps_seconds: [1], columns: opts.columns, rows: 1 }),
+      }),
+    });
+    const result = await deliverVideos([SOURCE], { delivery: "frames" }, deps, CTX, { totalBytesBudget: 1000 });
+    expect(result.bytes).toBeLessThanOrEqual(1000);
+    expect(result.videos[0].delivered.mode).toBe("skipped_size_budget");
+  });
+
+  it("stops processing and skips fallbacks once the job signal is aborted", async () => {
+    const controller = new AbortController();
+    const thumbnailCalls: string[] = [];
+    const deps = fakeDeps({
+      downloadImage: async (url) => {
+        thumbnailCalls.push(url);
+        return { buffer: Buffer.alloc(1), contentType: "image/jpeg", extension: ".jpg", finalUrl: new URL(url) };
+      },
+      downloadVideo: async () => {
+        controller.abort();
+        throw new Error("Video download aborted");
+      },
+    });
+    const second = { ...SOURCE, key: "meta:video:456", video_id: "456" };
+    const result = await deliverVideos([SOURCE, second], { delivery: "frames" }, deps, { tenantId: "t1", signal: controller.signal });
+    expect(thumbnailCalls).toEqual([]);
+    expect(result.videos.map((v) => v.delivered.mode)).toEqual(["skipped_time_budget", "skipped_time_budget"]);
+  });
+
+  it("passes the job signal to thumbnail downloads", async () => {
+    let received: AbortSignal | undefined;
+    const deps = fakeDeps({
+      downloadImage: async (url, opts) => {
+        received = opts?.signal;
+        return { buffer: Buffer.alloc(1), contentType: "image/jpeg", extension: ".jpg", finalUrl: new URL(url) };
+      },
+    });
+    await deliverVideos([SOURCE], { delivery: "frames" }, deps, CTX);
+    expect(received).toBeInstanceOf(AbortSignal);
+  });
+
   it("enforces the total bytes budget across videos", async () => {
     const deps = fakeDeps({
       ffmpeg: fakeFfmpeg({

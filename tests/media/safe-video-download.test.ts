@@ -19,20 +19,21 @@ function fakeResolve(map: Record<string, string[]>) {
     (map[hostname] ?? []).map((address) => ({ address }));
 }
 
-function makeRequest(responses: FakeResponse[]) {
-  const calls: Array<{ url: URL; options: Record<string, unknown> }> = [];
+function makeRequest(responses: FakeResponse[], behaviour: { holdHeaders?: boolean } = {}) {
+  const calls: Array<{ url: URL; options: Record<string, unknown>; req: { destroy: ReturnType<typeof vi.fn> } }> = [];
   const request = vi.fn((urlInput: URL, options: Record<string, unknown>, callback: (res: IncomingMessage) => void) => {
     const req = new EventEmitter() as EventEmitter & {
       setTimeout: (ms: number, cb?: () => void) => void;
       end: () => void;
       destroy: (err?: Error) => void;
     };
-    calls.push({ url: urlInput, options });
     req.setTimeout = vi.fn();
     req.destroy = vi.fn((err?: Error) => {
       if (err) queueMicrotask(() => req.emit("error", err));
     });
+    calls.push({ url: urlInput, options, req: req as unknown as { destroy: ReturnType<typeof vi.fn> } });
     req.end = vi.fn(() => {
+      if (behaviour.holdHeaders) return;
       queueMicrotask(() => {
         const next = responses.shift();
         if (!next) {
@@ -211,6 +212,46 @@ describe("downloadSafePublicVideo", () => {
       allowedHostSuffixes: [".example.com"],
     });
     expect(video.bytes).toBe(1);
+  });
+
+  it("destroys the connection when a response is rejected instead of draining it", async () => {
+    const { request, calls } = makeRequest([
+      { headers: { "content-type": "video/mp4", "content-length": "11" }, chunks: [Buffer.alloc(11)] },
+    ]);
+
+    await expect(
+      downloadSafePublicVideo("https://video.xx.fbcdn.net/clip.mp4", { request, resolve: PUBLIC, destDir: dir, maxBytes: 10 }),
+    ).rejects.toThrow(/too large/);
+    const req = calls[0].req;
+    expect(req.destroy).toHaveBeenCalled();
+  });
+
+  it("aborts a request that has not received headers yet", async () => {
+    const controller = new AbortController();
+    const { request, calls } = makeRequest([], { holdHeaders: true });
+
+    const pending = downloadSafePublicVideo("https://video.xx.fbcdn.net/clip.mp4", {
+      request, resolve: PUBLIC, destDir: dir, signal: controller.signal,
+    });
+    await new Promise((r) => setTimeout(r, 5));
+    controller.abort();
+
+    await expect(pending).rejects.toThrow(/abort/i);
+    expect(calls[0].req.destroy).toHaveBeenCalled();
+  });
+
+  it("does not leak scratch paths in error messages", async () => {
+    const { request } = makeRequest([
+      { headers: { "content-type": "video/mp4" }, chunks: [Buffer.from("x")] },
+    ]);
+
+    const err = await downloadSafePublicVideo("https://video.xx.fbcdn.net/clip.mp4", {
+      request, resolve: PUBLIC, destDir: path.join(dir, "missing"),
+    }).catch((e: Error) => e);
+
+    expect(err).toBeInstanceOf(UnsafeUrlError);
+    expect(err.message).toMatch(/could not be written/);
+    expect(err.message).not.toContain(dir);
   });
 
   it("wraps errors as UnsafeUrlError", async () => {

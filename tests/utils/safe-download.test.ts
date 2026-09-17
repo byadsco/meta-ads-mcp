@@ -189,6 +189,22 @@ describe("downloadSafePublicImage", () => {
     expect(pjpegImage.extension).toBe(".jpg");
   });
 
+  it("aborts an in-flight image download when the signal fires", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const { request } = makeRequest([
+      { headers: { "content-type": "image/jpeg" }, chunks: [Buffer.alloc(4)] },
+    ]);
+
+    await expect(
+      downloadSafePublicImage("https://cdn.example.com/image.jpg", {
+        request,
+        signal: controller.signal,
+        resolve: fakeResolve({ "cdn.example.com": ["203.0.113.10"] }),
+      }),
+    ).rejects.toThrow(/abort/i);
+  });
+
   it("rejects images whose Content-Length exceeds the limit", async () => {
     const { request } = makeRequest([
       {

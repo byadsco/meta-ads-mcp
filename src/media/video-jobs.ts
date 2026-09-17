@@ -54,13 +54,20 @@ export interface VideoJobRunnerConfig {
 
 export interface VideoJobRunner {
   run<T>(request: VideoJobRequest, job: (ctx: VideoJobContext) => Promise<T>): Promise<T>;
-  stats(): { running: number; queued: number };
+  stats(): { running: number; queued: number; tracked_tenants: number };
+}
+
+export class VideoJobAbortedError extends Error {
+  constructor() {
+    super("Video job aborted by the caller");
+    this.name = "VideoJobAbortedError";
+  }
 }
 
 interface Waiter {
   resolve: () => void;
   reject: (err: Error) => void;
-  timer: NodeJS.Timeout;
+  cancel: () => void;
 }
 
 export function createVideoJobRunner(config: VideoJobRunnerConfig = {}): VideoJobRunner {
@@ -76,7 +83,13 @@ export function createVideoJobRunner(config: VideoJobRunnerConfig = {}): VideoJo
   const waiters: Waiter[] = [];
   const tenantWindows = new Map<string, number[]>();
 
-  const acquire = (): Promise<void> => {
+  const removeWaiter = (waiter: Waiter) => {
+    const idx = waiters.indexOf(waiter);
+    if (idx >= 0) waiters.splice(idx, 1);
+  };
+
+  const acquire = (signal: AbortSignal | undefined): Promise<void> => {
+    if (signal?.aborted) return Promise.reject(new VideoJobAbortedError());
     if (running < maxConcurrent) {
       running += 1;
       return Promise.resolve();
@@ -85,19 +98,26 @@ export function createVideoJobRunner(config: VideoJobRunnerConfig = {}): VideoJo
       return Promise.reject(new VideoJobBusyError());
     }
     return new Promise<void>((resolve, reject) => {
-      const waiter: Waiter = {
+      const timer = setTimeout(() => waiter.cancel(new VideoJobBusyError()), queueWaitMs);
+      const onAbort = () => waiter.cancel(new VideoJobAbortedError());
+      const waiter: Waiter & { cancel: (err?: Error) => void } = {
         resolve: () => {
-          clearTimeout(waiter.timer);
+          clearTimeout(timer);
+          signal?.removeEventListener("abort", onAbort);
           running += 1;
           resolve();
         },
         reject,
-        timer: setTimeout(() => {
-          const idx = waiters.indexOf(waiter);
-          if (idx >= 0) waiters.splice(idx, 1);
-          reject(new VideoJobBusyError());
-        }, queueWaitMs),
+        // A cancelled waiter leaves the queue immediately so it cannot hold a
+        // queue position (or later a slot) for a caller that is gone.
+        cancel: (err: Error = new VideoJobAbortedError()) => {
+          clearTimeout(timer);
+          signal?.removeEventListener("abort", onAbort);
+          removeWaiter(waiter);
+          reject(err);
+        },
       };
+      signal?.addEventListener("abort", onAbort, { once: true });
       waiters.push(waiter);
     });
   };
@@ -108,11 +128,19 @@ export function createVideoJobRunner(config: VideoJobRunnerConfig = {}): VideoJo
     if (next) next.resolve();
   };
 
+  const purgeExpiredWindows = (current: number): void => {
+    for (const [tenant, stamps] of tenantWindows) {
+      const recent = stamps.filter((t) => current - t < HOUR_MS);
+      if (recent.length === 0) tenantWindows.delete(tenant);
+      else tenantWindows.set(tenant, recent);
+    }
+  };
+
   const checkTenantRate = (tenantId: string): void => {
     const current = now();
-    const recent = (tenantWindows.get(tenantId) ?? []).filter((t) => current - t < HOUR_MS);
+    purgeExpiredWindows(current);
+    const recent = tenantWindows.get(tenantId) ?? [];
     if (recent.length >= perTenantPerHour) {
-      tenantWindows.set(tenantId, recent);
       throw new VideoJobRateLimitError(perTenantPerHour);
     }
     recent.push(current);
@@ -121,22 +149,20 @@ export function createVideoJobRunner(config: VideoJobRunnerConfig = {}): VideoJo
 
   return {
     async run(request, job) {
+      if (request.signal?.aborted) throw new VideoJobAbortedError();
       checkTenantRate(request.tenantId);
-      await acquire();
+      await acquire(request.signal);
 
       const controller = new AbortController();
       const start = now();
       const deadline = start + budgetMs;
       const onCallerAbort = () => controller.abort();
-      if (request.signal?.aborted) {
-        controller.abort();
-      } else {
-        request.signal?.addEventListener("abort", onCallerAbort, { once: true });
-      }
+      request.signal?.addEventListener("abort", onCallerAbort, { once: true });
       const deadlineTimer = setTimeout(() => controller.abort(), budgetMs);
 
       let dir: string | undefined;
       try {
+        if (request.signal?.aborted) throw new VideoJobAbortedError();
         dir = await fs.mkdtemp(path.join(tmpRoot, VIDEO_TMP_PREFIX));
         const ctx: VideoJobContext = {
           dir,
@@ -149,16 +175,18 @@ export function createVideoJobRunner(config: VideoJobRunnerConfig = {}): VideoJo
       } finally {
         clearTimeout(deadlineTimer);
         request.signal?.removeEventListener("abort", onCallerAbort);
-        release();
+        // Scratch is removed before the slot is handed on, so the next job
+        // never shares tmpfs with this one's originals.
         if (dir) {
           await fs.rm(dir, { recursive: true, force: true, maxRetries: 3 }).catch((err: unknown) => {
             logger.warn({ err, event: "video_job_cleanup_failed" }, "Could not remove video scratch directory");
           });
         }
+        release();
       }
     },
     stats() {
-      return { running, queued: waiters.length };
+      return { running, queued: waiters.length, tracked_tenants: tenantWindows.size };
     },
   };
 }

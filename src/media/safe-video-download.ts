@@ -77,6 +77,17 @@ function abortError(): UnsafeUrlError {
   return new UnsafeUrlError("Video download aborted");
 }
 
+/** Filesystem errors carry scratch paths; those must not reach tool output or logs. */
+function publicError(err: unknown): UnsafeUrlError {
+  if (err instanceof UnsafeUrlError) return err;
+  const code = (err as { code?: unknown })?.code;
+  if (typeof code === "string" && /^E[A-Z]+$/.test(code) && code !== "ECONNRESET" && code !== "ETIMEDOUT" && code !== "ECONNREFUSED") {
+    return new UnsafeUrlError(`Video could not be written to scratch storage (${code})`);
+  }
+  const message = err instanceof Error ? err.message : String(err);
+  return new UnsafeUrlError(`Video download failed: ${message}`);
+}
+
 function requestVideo(
   resolved: ResolvedSafePublicUrl,
   options: {
@@ -90,15 +101,35 @@ function requestVideo(
   return new Promise((resolve, reject) => {
     let settled = false;
     let filePath: string | undefined;
+    let response: IncomingMessage | undefined;
+    let out: ReturnType<typeof createWriteStream> | undefined;
+
+    const teardown = () => {
+      response?.destroy();
+      out?.destroy();
+    };
 
     const fail = (err: unknown) => {
       if (settled) return;
       settled = true;
-      const wrapped = err instanceof UnsafeUrlError
-        ? err
-        : new UnsafeUrlError(`Video download failed: ${err instanceof Error ? err.message : String(err)}`);
+      options.signal?.removeEventListener("abort", onAbort);
+      const wrapped = publicError(err);
       const cleanup = filePath ? fs.rm(filePath, { force: true }) : Promise.resolve();
       void cleanup.finally(() => reject(wrapped));
+    };
+
+    // Rejected responses are torn down, never drained: a 1 GB video above the
+    // cap must not keep transferring outside the job budget.
+    const reject_ = (err: UnsafeUrlError) => {
+      teardown();
+      req.destroy();
+      fail(err);
+    };
+
+    const onAbort = () => {
+      teardown();
+      req.destroy();
+      fail(abortError());
     };
 
     if (options.signal?.aborted) {
@@ -113,72 +144,70 @@ function requestVideo(
     };
 
     const req = options.request(resolved.url, reqOptions, (res: IncomingMessage) => {
+      response = res;
+      if (settled) {
+        res.destroy();
+        return;
+      }
       if (isRedirect(res.statusCode)) {
-        res.resume();
+        let target: URL;
         try {
-          settled = true;
-          resolve({ redirectUrl: redirectTarget(res, resolved.url) });
+          target = redirectTarget(res, resolved.url);
         } catch (err) {
-          settled = false;
-          fail(err);
+          reject_(err as UnsafeUrlError);
+          return;
         }
+        settled = true;
+        options.signal?.removeEventListener("abort", onAbort);
+        res.destroy();
+        req.destroy();
+        resolve({ redirectUrl: target });
         return;
       }
 
       if (!res.statusCode || res.statusCode < 200 || res.statusCode >= 300) {
-        res.resume();
-        fail(new UnsafeUrlError(`Failed to download video: HTTP ${res.statusCode ?? "unknown"}`));
+        reject_(new UnsafeUrlError(`Failed to download video: HTTP ${res.statusCode ?? "unknown"}`));
         return;
       }
 
       const contentType = parseContentType(res.headers);
       if (!contentType || !ALLOWED_VIDEO_TYPES.has(contentType)) {
-        res.resume();
-        fail(new UnsafeUrlError(`Video content-type "${contentType ?? "missing"}" is not allowed`));
+        reject_(new UnsafeUrlError(`Video content-type "${contentType ?? "missing"}" is not allowed`));
         return;
       }
 
       const contentLength = parseContentLength(res.headers);
       if (contentLength !== null && contentLength > options.maxBytes) {
-        res.resume();
-        fail(new UnsafeUrlError(`Video is too large: ${contentLength} bytes exceeds ${options.maxBytes}`));
+        reject_(new UnsafeUrlError(`Video is too large: ${contentLength} bytes exceeds ${options.maxBytes}`));
         return;
       }
 
       filePath = path.join(options.destDir, `${randomUUID()}.mp4`);
-      const out = createWriteStream(filePath, { flags: "wx" });
+      const stream = createWriteStream(filePath, { flags: "wx" });
+      out = stream;
       let total = 0;
-
-      const onAbort = () => {
-        res.destroy();
-        out.destroy();
-        fail(abortError());
-      };
-      options.signal?.addEventListener("abort", onAbort, { once: true });
 
       res.on("data", (chunk: Buffer | string) => {
         const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
         total += buffer.length;
         if (total > options.maxBytes) {
-          res.destroy();
-          out.destroy();
-          fail(new UnsafeUrlError(`Video is too large: exceeded ${options.maxBytes} bytes`));
+          reject_(new UnsafeUrlError(`Video is too large: exceeded ${options.maxBytes} bytes`));
           return;
         }
-        if (!out.write(buffer)) {
+        if (!stream.write(buffer)) {
           res.pause();
-          out.once("drain", () => res.resume());
+          stream.once("drain", () => res.resume());
         }
       });
 
       res.on("end", () => {
-        out.end();
+        stream.end();
       });
 
-      out.on("finish", () => {
-        options.signal?.removeEventListener("abort", onAbort);
+      stream.on("finish", () => {
         if (settled) return;
         settled = true;
+        options.signal?.removeEventListener("abort", onAbort);
         resolve({
           path: filePath as string,
           bytes: total,
@@ -188,16 +217,16 @@ function requestVideo(
       });
 
       res.on("error", (err) => {
-        options.signal?.removeEventListener("abort", onAbort);
-        out.destroy();
+        stream.destroy();
         fail(err);
       });
-      out.on("error", (err) => {
-        options.signal?.removeEventListener("abort", onAbort);
+      stream.on("error", (err) => {
         res.destroy();
         fail(err);
       });
     });
+
+    options.signal?.addEventListener("abort", onAbort, { once: true });
 
     req.setTimeout(options.timeoutMs, () => {
       req.destroy(new UnsafeUrlError(`Video download timed out after ${options.timeoutMs}ms`));

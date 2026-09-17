@@ -1,4 +1,6 @@
 import { promises as fs } from "node:fs";
+import path from "node:path";
+import { randomUUID } from "node:crypto";
 import { logger } from "../utils/logger.js";
 import { downloadSafePublicImage, type SafeImageDownload, type SafeImageDownloadOptions } from "../utils/safe-download.js";
 import { isStdioTransport } from "../utils/transport-mode.js";
@@ -185,15 +187,48 @@ export async function deliverVideos(
 
   const fits = (bytes: number): boolean => budget.used + bytes <= budget.total;
 
-  const attachThumbnail = async (source: VideoSource, meta: DeliveredVideo): Promise<void> => {
-    if (!source.thumbnail_url) return;
+  const fetchThumbnail = async (source: VideoSource, signal?: AbortSignal): Promise<{ block: ContentBlock; bytes: number } | undefined> => {
+    if (!source.thumbnail_url || signal?.aborted) return undefined;
     try {
-      const image = await downloadImage(source.thumbnail_url, { maxBytes: THUMBNAIL_MAX_BYTES });
-      if (!fits(image.buffer.length)) return;
-      meta.delivered.block_indexes.push(pushBlock(imageBlock(image.buffer, image.contentType), image.buffer.length));
+      const image = await downloadImage(source.thumbnail_url, { maxBytes: THUMBNAIL_MAX_BYTES, signal });
+      return { block: imageBlock(image.buffer, image.contentType), bytes: image.buffer.length };
     } catch (err) {
       logger.warn({ host: safeHostname(source.thumbnail_url), err: err instanceof Error ? err.message : String(err) }, "Video thumbnail download failed");
+      return undefined;
     }
+  };
+
+  const attachThumbnail = async (source: VideoSource, meta: DeliveredVideo, signal?: AbortSignal): Promise<void> => {
+    const thumb = await fetchThumbnail(source, signal);
+    if (!thumb || !fits(thumb.bytes)) return;
+    meta.delivered.block_indexes.push(pushBlock(thumb.block, thumb.bytes));
+  };
+
+  /** Media plus thumbnail are reserved together so the response budget is never overshot. */
+  const attachWithThumbnail = async (
+    source: VideoSource,
+    meta: DeliveredVideo,
+    pending: Array<{ block: ContentBlock; bytes: number }>,
+    signal?: AbortSignal,
+  ): Promise<boolean> => {
+    const thumb = await fetchThumbnail(source, signal);
+    const blocks = thumb ? [thumb, ...pending] : pending;
+    const total = blocks.reduce((sum, p) => sum + p.bytes, 0);
+    if (!fits(total)) return false;
+    for (const p of blocks) {
+      meta.delivered.block_indexes.push(pushBlock(p.block, p.bytes));
+    }
+    meta.delivered.bytes = total - (thumb?.bytes ?? 0);
+    return true;
+  };
+
+  const fallbackToThumbnail = async (source: VideoSource, meta: DeliveredVideo, job: VideoJobContext | undefined): Promise<void> => {
+    if (job?.signal.aborted) {
+      meta.delivered.mode = "skipped_time_budget";
+      return;
+    }
+    await attachThumbnail(source, meta, job?.signal);
+    meta.delivered.mode = meta.delivered.block_indexes.length > 0 ? "thumbnail" : "none";
   };
 
   const needsPipeline = options.delivery === "frames" || options.delivery === "inline";
@@ -215,13 +250,12 @@ export async function deliverVideos(
 
     if (!source.source_url && !source.low_res_url) {
       meta.error = meta.error ?? "No downloadable video URL available.";
-      await attachThumbnail(source, meta);
-      meta.delivered.mode = meta.delivered.block_indexes.length > 0 ? "thumbnail" : "none";
+      await fallbackToThumbnail(source, meta, job);
       return;
     }
 
     if (options.delivery === "thumbnail" || (options.delivery === "frames" && !ffmpegAvailable)) {
-      await attachThumbnail(source, meta);
+      await attachThumbnail(source, meta, ctx.signal);
       meta.delivered.mode = "thumbnail";
       return;
     }
@@ -239,28 +273,35 @@ export async function deliverVideos(
       return;
     }
 
-    if (!job) {
-      meta.delivered.mode = "skipped_time_budget";
-      return;
-    }
-    if (job.outOfTime()) {
+    if (!job || job.outOfTime() || job.signal.aborted) {
       meta.delivered.mode = "skipped_time_budget";
       return;
     }
 
+    // One scratch subdirectory per video, removed as soon as the video is done,
+    // so a call never holds more than one original on tmpfs at a time.
+    const videoDir = path.join(job.dir, randomUUID());
+    await fs.mkdir(videoDir);
+    try {
+      await processDownloaded(source, meta, job, videoDir);
+    } finally {
+      await fs.rm(videoDir, { recursive: true, force: true, maxRetries: 3 }).catch(() => undefined);
+    }
+  };
+
+  const processDownloaded = async (source: VideoSource, meta: DeliveredVideo, job: VideoJobContext, videoDir: string): Promise<void> => {
     const downloadUrl = source.low_res_url ?? (source.source_url as string);
     let file: SafeVideoDownload;
     try {
       file = await downloadVideo(downloadUrl, {
-        destDir: job.dir,
+        destDir: videoDir,
         maxBytes: videoMaxBytes(),
         signal: job.signal,
       });
     } catch (err) {
       meta.error = `Video download failed: ${err instanceof Error ? err.message : String(err)}`;
       logger.warn({ host: safeHostname(downloadUrl), event: "video_download_failed" }, meta.error);
-      await attachThumbnail(source, meta);
-      meta.delivered.mode = meta.delivered.block_indexes.length > 0 ? "thumbnail" : "none";
+      await fallbackToThumbnail(source, meta, job);
       return;
     }
 
@@ -275,13 +316,12 @@ export async function deliverVideos(
         meta.has_audio = probe.has_audio;
       } catch (err) {
         meta.error = `Video rejected: ${err instanceof Error ? err.message : String(err)}`;
-        await attachThumbnail(source, meta);
-        meta.delivered.mode = meta.delivered.block_indexes.length > 0 ? "thumbnail" : "none";
+        await fallbackToThumbnail(source, meta, job);
         return;
       }
     }
 
-    if (job.outOfTime()) {
+    if (job.outOfTime() || job.signal.aborted) {
       meta.delivered.mode = "skipped_time_budget";
       return;
     }
@@ -290,7 +330,7 @@ export async function deliverVideos(
       const count = Math.min(Math.max(1, options.frame_count ?? DEFAULT_FRAME_COUNT), MAX_FRAME_COUNT);
       const layout = options.frame_layout ?? "grid";
       const width = Math.min(Math.max(160, options.frame_width ?? DEFAULT_FRAME_WIDTH), MAX_FRAME_WIDTH);
-      const common = { outDir: job.dir, durationSeconds: probe.duration_seconds, demuxer: probe.demuxer, signal: job.signal };
+      const common = { outDir: videoDir, durationSeconds: probe.duration_seconds, demuxer: probe.demuxer, signal: job.signal };
       const timestamps: number[] = [];
       const pending: Array<{ block: ContentBlock; bytes: number }> = [];
 
@@ -311,20 +351,14 @@ export async function deliverVideos(
         pending.push({ block: audioBlock(audio.buffer, audio.mimeType), bytes: audio.buffer.length });
       }
 
-      const total = pending.reduce((sum, p) => sum + p.bytes, 0);
-      if (!fits(total)) {
+      if (!(await attachWithThumbnail(source, meta, pending, job.signal))) {
         meta.delivered.mode = "skipped_size_budget";
         warnings.push(`${source.label}: frames skipped because the response size budget is exhausted; request fewer videos or frames.`);
         return;
       }
-      await attachThumbnail(source, meta);
-      for (const p of pending) {
-        meta.delivered.block_indexes.push(pushBlock(p.block, p.bytes));
-      }
       meta.delivered.mode = "frames";
       meta.delivered.frame_layout = layout;
       meta.delivered.frame_timestamps = timestamps;
-      meta.delivered.bytes = total;
       return;
     }
 
@@ -338,16 +372,14 @@ export async function deliverVideos(
         const original = await fs.readFile(file.path);
         if (!looksLikeMp4(original)) {
           meta.error = "Downloaded file is not a valid MP4 (missing ftyp header).";
-          await attachThumbnail(source, meta);
-          meta.delivered.mode = meta.delivered.block_indexes.length > 0 ? "thumbnail" : "none";
+          await fallbackToThumbnail(source, meta, job);
           return;
         }
         if (original.length <= cap) {
           payload = original;
         } else if (!ffmpegAvailable) {
           meta.error = `Original video is ${original.length} bytes, above max_inline_bytes=${cap}, and ffmpeg is unavailable to compact it.`;
-          await attachThumbnail(source, meta);
-          meta.delivered.mode = meta.delivered.block_indexes.length > 0 ? "thumbnail" : "none";
+          await fallbackToThumbnail(source, meta, job);
           return;
         }
       }
@@ -355,7 +387,7 @@ export async function deliverVideos(
       if (!payload && probe) {
         try {
           const compact = await ffmpeg.compact(file.path, {
-            outDir: job.dir,
+            outDir: videoDir,
             maxBytes: cap,
             durationSeconds: probe.duration_seconds,
             maxSeconds: videoMaxSeconds(),
@@ -367,8 +399,7 @@ export async function deliverVideos(
           transcoded = true;
         } catch (err) {
           meta.error = err instanceof Error ? err.message : String(err);
-          await attachThumbnail(source, meta);
-          meta.delivered.mode = meta.delivered.block_indexes.length > 0 ? "thumbnail" : "none";
+          await fallbackToThumbnail(source, meta, job);
           return;
         }
       }
@@ -378,17 +409,14 @@ export async function deliverVideos(
         meta.delivered.mode = "none";
         return;
       }
-      if (!fits(payload.length)) {
+      const uri = resourceUriFor(source);
+      if (!(await attachWithThumbnail(source, meta, [{ block: blobResourceBlock(uri, payload, "video/mp4"), bytes: payload.length }], job.signal))) {
         meta.delivered.mode = "skipped_size_budget";
         warnings.push(`${source.label}: inline video skipped because the response size budget is exhausted.`);
         return;
       }
-      await attachThumbnail(source, meta);
-      const uri = resourceUriFor(source);
-      meta.delivered.block_indexes.push(pushBlock(blobResourceBlock(uri, payload, "video/mp4"), payload.length));
       meta.delivered.mode = "inline";
       meta.delivered.transcoded = transcoded;
-      meta.delivered.bytes = payload.length;
       meta.delivered.resource_uri = uri;
     }
   };
@@ -402,19 +430,32 @@ export async function deliverVideos(
 
   if (heavy.length > 0) {
     // One job per call: the semaphore slot, scratch dir and time budget are shared across the call's videos.
-    await runner.run({ tenantId: ctx.tenantId, signal: ctx.signal }, async (job) => {
-      for (const source of heavy) {
-        try {
-          await processOne(source, job);
-        } catch (err) {
-          const meta = videos.find((v) => v.key === source.key);
-          if (meta) {
-            meta.error = err instanceof Error ? err.message : String(err);
-            if (meta.delivered.mode === "none") meta.delivered.mode = job.signal.aborted ? "skipped_time_budget" : "none";
+    try {
+      await runner.run({ tenantId: ctx.tenantId, signal: ctx.signal }, async (job) => {
+        for (const source of heavy) {
+          try {
+            await processOne(source, job);
+          } catch (err) {
+            const meta = videos.find((v) => v.key === source.key);
+            if (meta) {
+              meta.error = err instanceof Error ? err.message : String(err);
+              if (meta.delivered.mode === "none") meta.delivered.mode = job.signal.aborted ? "skipped_time_budget" : "none";
+            }
           }
         }
+      });
+    } catch (err) {
+      // Busy / rate-limited / aborted before the job started: report per video, never throw.
+      const message = err instanceof Error ? err.message : String(err);
+      for (const source of heavy) {
+        if (videos.some((v) => v.key === source.key)) continue;
+        const meta = baseMeta(source);
+        meta.error = message;
+        meta.delivered.mode = ctx.signal?.aborted ? "skipped_time_budget" : "none";
+        videos.push(meta);
       }
-    });
+      warnings.push(message);
+    }
   }
 
   // Keep the caller's ordering: light videos were processed first.
