@@ -736,7 +736,8 @@ export function registerAdsLibraryTools(server: McpServer, deps: AdLibraryToolDe
       if (isAdLibraryErrorItem(item)) {
         throw new McpError(
           ErrorCode.InvalidParams,
-          "Dataset item at offset " + offset + " is an actor error record (" + (typeof item.error === "string" ? item.error : "no ad_archive_id") + "), not an ad.",
+          // The actor controls this string; only a bounded, sanitized prefix is echoed back.
+          "Dataset item at offset " + offset + " is an actor error record (" + (typeof item.error === "string" ? line(item.error, 200) : "no ad_archive_id") + "), not an ad.",
         );
       }
       const ad = normalizeLibraryAd(item, offset);
@@ -844,9 +845,12 @@ function line(value: string | null | undefined, max: number): string {
   if (!value) return "";
   // Sanitize a bounded prefix only: each replace over a multi-megabyte string
   // would allocate another copy of it just for the slice below to discard.
-  const head = value.length > max * 4 ? value.slice(0, max * 4) : value;
+  const cut = value.length > max * 4;
+  const head = cut ? value.slice(0, max * 4) : value;
   const flat = head.replace(CONTROL_CHARS, " ").replace(LINE_SEPARATORS, " ").replace(/\s+/g, " ").trim();
-  return flat.length > max ? flat.slice(0, max) + "…" : flat;
+  if (flat.length > max) return flat.slice(0, max) + "…";
+  // The prefix may have been all whitespace; say so rather than render an empty field.
+  return cut ? flat + "…" : flat;
 }
 
 function renderLibraryAdCard(ad: LibraryAd, images: LibraryImageMeta[], videos: DeliveredVideo[], videoDelivery: string, warnings: string[]): string {

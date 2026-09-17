@@ -122,8 +122,10 @@ export const MAX_TEXT_CHARS = 4000;
 const MAX_ENUM_CHARS = 80;
 // Detail block keys are field names (payer_beneficiary_transparency and the like).
 const MAX_DETAIL_KEY_CHARS = 64;
-// Notes emitted for videos the url policy drops: a hostile record can carry millions of them.
-const MAX_VIDEO_DROP_NOTES = 5;
+// Notes emitted for media the url policy drops: a hostile record can carry millions of them.
+const MAX_MEDIA_DROP_NOTES = 5;
+// Raw image entries inspected; videos need the full walk to keep selectors stable, images do not.
+const MAX_MEDIA_SCANNED = 200;
 /** Longer URLs are omitted whole: truncating a signed CDN URL would only produce a broken link. */
 export const MAX_URL_CHARS = 2048;
 const TRUNCATION_MARKER = " [truncated]";
@@ -364,27 +366,34 @@ function countMedia(snapshot: Record<string, unknown>): { image_count: number; v
     const sd = str(v.video_sd_url);
     if (hd || sd) {
       video_count += 1;
-      note(sd ?? hd);
+      note(sd);
+      note(hd);
     }
   }
   for (const i of asArray(snapshot.images)) {
     if (!isRecord(i)) continue;
-    const url = str(i.original_image_url) ?? str(i.resized_image_url);
-    if (url) {
+    const original = str(i.original_image_url);
+    const resized = str(i.resized_image_url);
+    if (original || resized) {
       image_count += 1;
-      note(url);
+      note(original);
+      note(resized);
     }
   }
   for (const c of asArray(snapshot.cards)) {
     if (!isRecord(c)) continue;
-    const vid = str(c.video_sd_url) ?? str(c.video_hd_url);
-    const img = str(c.original_image_url) ?? str(c.resized_image_url);
-    if (vid) {
+    const sd = str(c.video_sd_url);
+    const hd = str(c.video_hd_url);
+    const original = str(c.original_image_url);
+    const resized = str(c.resized_image_url);
+    if (sd || hd) {
       video_count += 1;
-      note(vid);
-    } else if (img) {
+      note(sd);
+      note(hd);
+    } else if (original || resized) {
       image_count += 1;
-      note(img);
+      note(original);
+      note(resized);
     }
   }
   return { image_count, video_count, first_url };
@@ -423,7 +432,33 @@ function takeMedia<T>(raw: unknown[], build: (record: Record<string, unknown>, r
 }
 
 function collectMedia(snapshot: Record<string, unknown>, truncated: string[]): { images: LibraryImage[]; videos: LibraryVideo[]; cards: LibraryCard[] } {
-  const images = takeMedia(asArray(snapshot.images), (r, _i, pos) => image(r, "images[" + pos + "]", truncated), MAX_MEDIA_ITEMS, "images", truncated);
+  // Images have no selector contract, so the walk itself is bounded: a record
+  // full of unusable entries must not turn into thousands of omission notes.
+  const images: LibraryImage[] = [];
+  const rawImages = asArray(snapshot.images);
+  let imagesCut = false;
+  let imageDropNotes = 0;
+  for (let index = 0; index < rawImages.length && index < MAX_MEDIA_SCANNED; index++) {
+    const record = rawImages[index];
+    if (!isRecord(record)) continue;
+    if (images.length >= MAX_MEDIA_ITEMS) {
+      imagesCut = true;
+      break;
+    }
+    const notes: string[] = [];
+    const built = image(record, "images[" + images.length + "]", notes);
+    if (built) {
+      for (const note of notes) truncated.push(note);
+      images.push(built);
+      continue;
+    }
+    // Labelled by raw index: the surviving images have shifted up.
+    if (notes.length > 0 && imageDropNotes < MAX_MEDIA_DROP_NOTES) {
+      truncated.push("images[raw " + index + "] dropped (urls too long)");
+      imageDropNotes += 1;
+    }
+  }
+  if (imagesCut || rawImages.length > MAX_MEDIA_SCANNED) truncated.push("images");
   // Every addressable video gets a selector = its position in the record video
   // order (top-level videos, then video cards), the same walk libraryVideoAt
   // does with the same predicate, so video_index means the same thing on both
@@ -440,7 +475,7 @@ function collectMedia(snapshot: Record<string, unknown>, truncated: string[]): {
     if (!addressable) {
       // Labelled by raw index: the surviving videos have shifted, and each one
       // carries its own omissions in omitted_urls.
-      if (dropped && dropNotes < MAX_VIDEO_DROP_NOTES) {
+      if (dropped && dropNotes < MAX_MEDIA_DROP_NOTES) {
         truncated.push("videos[raw " + index + "] dropped (renditions too long)");
         dropNotes += 1;
       }

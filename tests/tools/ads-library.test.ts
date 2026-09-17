@@ -787,7 +787,7 @@ describe("ads_library_* tools", () => {
       const json = JSON.parse(last) as Record<string, unknown>;
       // The overlong URL is dropped at normalization time, so no image asset (and no download) exists for it.
       expect(json.images).toEqual([]);
-      expect((json.ad as Record<string, unknown>).truncated).toEqual(expect.arrayContaining([expect.stringMatching(/url omitted/)]));
+      expect((json.ad as Record<string, unknown>).truncated).toEqual(expect.arrayContaining(["images[raw 0] dropped (urls too long)"]));
       expect(downloadImage).not.toHaveBeenCalled();
       expect(result.content[0].text.length).toBeLessThan(25_000);
     });
@@ -932,6 +932,37 @@ describe("ads_library_* tools", () => {
       expect((json.ad as Record<string, unknown>).truncated).toEqual(
         expect.arrayContaining(["display_format", "copy.cta_type", "impressions_text", "currency"]),
       );
+    });
+
+    it("marks a field whose visible text was cut instead of rendering it empty", async () => {
+      const hostile = JSON.parse(JSON.stringify(FIX_IMAGE)) as Record<string, unknown>;
+      const snap = hostile.snapshot as Record<string, unknown>;
+      snap.title = " ".repeat(1200) + "REAL HEADLINE";
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(mockFetchResponse([hostile])));
+
+      const result = await setup({ deliverVideos: fakeDeliver(), downloadImage: fakeImage() }).byName("ads_library_get_ad_details")({
+        dataset_id: "ds123abcde", ad_archive_id: "841513952022622", hint_offset: 0,
+        include_images: false, max_images: 8, image_size: "full", video_delivery: "thumbnail", frame_count: 6, include_raw: false,
+      });
+      const card = result.content[0].text as string;
+      expect(card).toMatch(/Headline: …/);
+      const json = lastJson(result);
+      expect((json.ad as Record<string, unknown>).copy).toMatchObject({ title: expect.stringContaining("REAL HEADLINE") });
+    });
+
+    it("bounds the actor error message it reflects back to the client", async () => {
+      const hostile = { ad_archive_id: "841513952022622", error: "E".repeat(8_000_000) };
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce({ ok: true, status: 200, headers: new Headers(), text: async () => JSON.stringify([hostile]) }));
+
+      const call = setup({ deliverVideos: fakeDeliver(), downloadImage: fakeImage() }).byName("ads_library_get_ad_details")({
+        dataset_id: "ds123abcde", ad_archive_id: "841513952022622", hint_offset: 0,
+        include_images: false, max_images: 8, image_size: "full", video_delivery: "thumbnail", frame_count: 6, include_raw: false,
+      });
+      await expect(call).rejects.toThrow(/actor error record/);
+      await call.catch((err: Error) => {
+        expect(err.message.length).toBeLessThan(1000);
+        expect(err.message).not.toContain("E".repeat(500));
+      });
     });
 
     it("include_raw returns the untouched actor record alongside the normalized ad", async () => {

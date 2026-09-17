@@ -520,3 +520,50 @@ describe("round-7 hardening", () => {
     expect(ad.truncated.length).toBeLessThan(30);
   });
 });
+
+describe("round-8 hardening", () => {
+  it("derives expires_at from any rendition within the url limit, not just the preferred one", () => {
+    const huge = "https://video.xx.fbcdn.net/big.mp4?" + "a=0&".repeat(300_000);
+    const raw = {
+      ad_archive_id: "1234567890",
+      snapshot: { videos: [{ video_sd_url: huge, video_hd_url: "https://video.xx.fbcdn.net/ok.mp4?oe=69617495" }] },
+    } as AdLibraryRawItem;
+    expect(mediaSummary(raw).expires_at).toBe(new Date(0x69617495 * 1000).toISOString());
+
+    const imageRaw = {
+      ad_archive_id: "1234567890",
+      snapshot: { images: [{ original_image_url: huge, resized_image_url: "https://scontent.xx.fbcdn.net/ok.jpg?oe=69617495" }] },
+    } as AdLibraryRawItem;
+    expect(mediaSummary(imageRaw).expires_at).toBe(new Date(0x69617495 * 1000).toISOString());
+  });
+
+  it("bounds the notes and the walk for a record carrying thousands of unusable images", () => {
+    const long = "https://scontent.xx.fbcdn.net/" + "i".repeat(5000);
+    const raw = {
+      ad_archive_id: "1234567890",
+      snapshot: {
+        images: [
+          ...Array.from({ length: 10_000 }, () => ({ original_image_url: long, resized_image_url: long })),
+          { original_image_url: "https://scontent.xx.fbcdn.net/ok.jpg" },
+        ],
+      },
+    } as AdLibraryRawItem;
+    const ad = normalizeLibraryAd(raw, 0);
+    expect(ad.truncated.length).toBeLessThan(30);
+    expect(ad.truncated.some((t) => t.includes("images[raw 0]"))).toBe(true);
+    expect(ad.truncated).toContain("images");
+  });
+
+  it("labels a dropped image by its raw index so the note cannot point at a surviving one", () => {
+    const long = "https://scontent.xx.fbcdn.net/" + "i".repeat(5000);
+    const raw = {
+      ad_archive_id: "1234567890",
+      snapshot: { images: [{ original_image_url: long, resized_image_url: long }, { original_image_url: "https://scontent.xx.fbcdn.net/ok.jpg" }] },
+    } as AdLibraryRawItem;
+    const ad = normalizeLibraryAd(raw, 0);
+    expect(ad.images).toHaveLength(1);
+    expect(ad.images[0].original_url).toBe("https://scontent.xx.fbcdn.net/ok.jpg");
+    expect(ad.truncated.some((t) => t.includes("images[raw 0]"))).toBe(true);
+    expect(ad.truncated.some((t) => t.startsWith("images[0]."))).toBe(false);
+  });
+});
