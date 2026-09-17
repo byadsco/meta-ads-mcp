@@ -151,6 +151,8 @@ describe("round-5 review fixes", () => {
 describe("round-6 review fixes", () => {
   it("keeps a fragment whose words merely contain a credential name", () => {
     for (const url of [
+      "https://shop.example/#/products/password-manager?color=blue",
+      "https://shop.example/#/collections/secret-sale",
       "https://shop.example/#/products/author-kit",
       "https://shop.example/#/tokenized-offers",
       "https://shop.example/#/secretariat",

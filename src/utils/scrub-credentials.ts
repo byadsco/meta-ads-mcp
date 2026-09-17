@@ -119,10 +119,11 @@ export function scrubCredentials(text: string): string {
  * characters, so a name spelled with characters the redaction pattern does
  * not allow (access+token, access!token) is still recognized. Used where the
  * whole value can be dropped, which is why it can afford to be this loose:
- * it still requires an actual assignment, so an ordinary route like
- * #/products/password-manager is left alone.
+ * it still requires an actual assignment, and / and ? end a name, so an
+ * ordinary route keeps its path even when it carries a query:
+ * #/products/password-manager?color=blue reads as color=blue.
  */
-const LOOSE_PAIR = /([^=&#;,\s]{1,80})=([^&#;,\s]+)/g;
+const LOOSE_PAIR = /([^=&#;,?/\s]{1,80})=([^&#;,\s]+)/g;
 
 export function carriesCredentialPair(text: string): boolean {
   const decoded = decodeRepeatedly(text);

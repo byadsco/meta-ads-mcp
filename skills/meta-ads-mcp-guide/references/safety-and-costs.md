@@ -63,7 +63,7 @@ Media URLs from Meta's CDN and from the Ad Library are signed and short-lived, t
 
 The server strips credential-shaped values — `access_token`, `client_secret`, `api_key` and
 the like — from the URLs, warnings and error messages it returns, and drops a
-URL fragment entirely as soon as it mentions one. A clean signed CDN URL comes
+URL fragment entirely when it carries one as a name=value pair. A clean signed CDN URL comes
 back byte for byte, so its signature still works.
 
 That is defence in depth, not a boundary. The text being cleaned is the
