@@ -14,7 +14,7 @@
     "Over stdio a result carries at most 6 MiB of media in total, images and poster included; prefer frames there.",
     "ads_analyze_video uses the tenant's own Gemini key and costs about 0.02 USD per call; a repeat may hit a short-lived per-instance cache, which is not guaranteed.",
     "ads_library_* scrape the Ad Library through the tenant's Apify account, about 0.75 USD per 1,000 ads. Re-reading a dataset is free; a repeated scrape runs and bills again.",
-    "Ad account ids take the act_ prefix; other ids are numeric strings. Self-hosting needs Node.js 22.13+; ffmpeg is optional for keyframes and the Docker image includes it."
+    "Ad account ids take the act_ prefix and other Meta ids are numeric strings; Apify run and dataset ids are alphanumeric. Self-hosting needs Node.js 22.13+; ffmpeg is optional, the image has it."
   ],
   "previousVersions": [{ "tag": "v3.6.0", "title": "3.6.0" }]
 }

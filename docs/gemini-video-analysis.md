@@ -52,7 +52,8 @@ Studio since September 2026 start with `AQ.`; the older `AIza…` shape is
 still accepted by the input check, and the live validation is what decides.
 The repository's gitleaks config recognises both shapes and a key-shaped
 `GEMINI_API_KEY=` assignment; the local pre-deploy guard blocks such a
-commit, and CI fails a PR that carries one.
+commit, and CI fails an internal PR that carries one (PRs from forks are
+not scanned in CI and rely on the maintainer's local guard).
 
 ## Cost and privacy
 

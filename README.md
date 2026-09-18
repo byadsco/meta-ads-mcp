@@ -574,7 +574,7 @@ Notes:
 - **Token store** — `AsyncLocalStorage`-based request context resolves the right Meta token per request: header (`X-Meta-Token`), per-user encrypted store, env-var fallback. See [src/auth/token-store.ts](src/auth/token-store.ts) and [src/store/](src/store/).
 - **Encryption layer** — AES-256-GCM at the application boundary, before anything reaches Firestore. See [src/auth/crypto.ts](src/auth/crypto.ts).
 - **Meta client** — Graph API wrapper with circuit breaker, write pacer, and full throttling-header parsing. See [src/meta/](src/meta/).
-- **Media pipeline** — hardened video download (pinned DNS, host allowlist, streamed to tmpfs) and ffmpeg driven through `execFile` with protocol and format whitelists, behind a per-instance job semaphore and per-tenant hourly limits. See [src/media/](src/media/).
+- **Media pipeline** — hardened video download (pinned DNS, host allowlist, streamed to a scratch directory under the OS temp dir, which is a size-limited tmpfs on Cloud Run and in the compose file) and ffmpeg driven through `execFile` with protocol and format whitelists, behind a per-instance job semaphore and per-tenant hourly limits. See [src/media/](src/media/).
 - **Gemini client** — REST client for server-side video analysis with the tenant's own key; resumable Files API upload, structured JSON output, no billable retries. See [src/gemini/](src/gemini/).
 - **Ad Library client** — Apify actor runs, dataset reads and the normalizer that turns scraped records into a stable shape. See [src/apify/](src/apify/).
 - **Skills** — loads the four skills from `skills/` and publishes them as MCP resources, prompts and server `instructions`. See [src/skills/](src/skills/).
@@ -803,7 +803,7 @@ Quick summary of the runtime defences:
 - HTTPS-only redirect in production.
 - In-process rate limiting on `/register` and `/token`.
 - Tokens never logged in plaintext (`maskToken()` everywhere).
-- [gitleaks](https://github.com/gitleaks/gitleaks) preflight in CI with a [custom config](.gitleaks.toml) covering Meta tokens (`EAA…`), Apify tokens (`apify_api_…`), Gemini keys (`AQ.…` and key-shaped `GEMINI_API_KEY=` assignments), GCP keys, and our own named secrets. The local pre-deploy guard blocks the commit before it exists; CI runs after the push and fails the PR, so a leak is caught before it can merge, not before it can be pushed.
+- [gitleaks](https://github.com/gitleaks/gitleaks) preflight in CI with a [custom config](.gitleaks.toml) covering Meta tokens (`EAA…`), Apify tokens (`apify_api_…`), Gemini keys (`AQ.…` and key-shaped `GEMINI_API_KEY=` assignments), GCP keys, and our own named secrets. The local pre-deploy guard blocks the commit before it exists; CI runs after the push and fails an internal PR, so a leak is caught before it can merge, not before it can be pushed. PRs from forks are not scanned in CI, since GitHub withholds the organisation's gitleaks licence from them; maintainers run the guard locally on the merged result.
 - Workload Identity Federation for Cloud Run deploys: no service-account keys to leak.
 
 ### Public repo, private deployment

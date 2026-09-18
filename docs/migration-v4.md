@@ -58,11 +58,11 @@ Serialized compactly, the `tools/list` payload shrinks by about 1%.
 
 **OpenAI strict function calling.** Strict mode requires
 `additionalProperties: false` on every object together with every field being
-required. 102 tools have optional fields and never qualified. The other 40
-(36 with every top-level field required, 4 with no parameters at all) carried
-the keyword at the top level and no longer do; whether any of them satisfied
-strict mode in full also depended on their nested objects and free-form
-records, which strict mode needs closed too. No MCP client is known to expose
+required. 102 tools have optional fields and never qualified. 4 take no
+parameters and never carried the keyword. The remaining 36 have every
+top-level field required and did carry it, and no longer do; whether any of
+them satisfied strict mode in full also depended on their nested objects and
+free-form records, which strict mode needs closed too. No MCP client is known to expose
 tools that way; if yours does, add `additionalProperties: false` on the client
 side when building the function definition.
 
@@ -91,10 +91,11 @@ for. HTTP is unchanged: 20 MiB per inline video and 30 MiB per result.
 
 What to do about it:
 
-- Any client connected over stdio (Claude Desktop, and Claude Code when it
-  runs the server locally) should use `delivery=frames`, which returns a
-  contact sheet of keyframes well under the budget; their model does not
-  ingest video anyway.
+- The budget is a property of the transport, not of the model. Any client
+  connected over stdio (Claude Desktop, and Claude Code when it runs the
+  server locally) should use `delivery=frames`, which returns a contact sheet
+  of keyframes well under the budget. For those two clients the choice costs
+  nothing, since the Claude models read images, not video.
 - A `max_inline_bytes` above the transport's cap is clamped, not rejected;
   existing calls keep working and get a smaller file.
 - Clients that raise the SDK's `maxBufferSize` gain nothing yet; the budget is
