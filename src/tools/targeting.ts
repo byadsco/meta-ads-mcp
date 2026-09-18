@@ -244,7 +244,7 @@ export function registerTargetingTools(server: McpServer): void {
       inputSchema: {
         account_id: z.string().describe("Ad account ID"),
         targeting_spec: z
-          .record(z.unknown())
+          .record(z.string(), z.unknown())
           .describe("Targeting specification (same format as ads_create_ad_set targeting)"),
       },
       annotations: { ...READ },
@@ -295,7 +295,7 @@ export function registerTargetingTools(server: McpServer): void {
         ad_id: z.string().optional().describe("Ad ID to get targeting description for"),
         account_id: z.string().optional().describe("Ad account ID (required when using targeting_spec)"),
         targeting_spec: z
-          .record(z.unknown())
+          .record(z.string(), z.unknown())
           .optional()
           .describe("Targeting spec to preview (same format as ads_create_ad_set targeting). Requires account_id."),
       },

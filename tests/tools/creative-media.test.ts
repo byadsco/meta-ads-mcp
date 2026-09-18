@@ -1,3 +1,4 @@
+import { z } from "zod";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { registerCreativeMediaTools, collectCreativeMedia, pickVideoThumbnailUrl } from "../../src/tools/creative-media.js";
 import { downloadSafePublicImage } from "../../src/utils/safe-download.js";
@@ -585,9 +586,11 @@ describe("ads_get_creative_media video_delivery", () => {
   it("does not offer inline delivery on this tool", () => {
     const server = createMockMcpServer();
     registerCreativeMediaTools(server as never, { download: fakeDownload() as never });
-    const schema = server._registeredTools[0].schema as Record<string, { _def?: { innerType?: { _def?: { values?: string[] } }; values?: string[] } }>;
-    const def = schema.video_delivery?._def;
-    const values = def?.values ?? def?.innerType?._def?.values ?? [];
+    // Read the contract a client sees rather than zod's internals, which
+    // moved between zod 3 and 4. Same converter options as the SDK uses.
+    const shape = server._registeredTools[0].schema as z.ZodRawShape;
+    const json = z.toJSONSchema(z.object(shape), { io: "input", target: "draft-7" }) as { properties: Record<string, { enum?: string[]; default?: string }> };
+    const values = json.properties.video_delivery?.enum ?? [];
     expect(values).toEqual(expect.arrayContaining(["thumbnail", "frames", "url"]));
     expect(values).not.toContain("inline");
   });
