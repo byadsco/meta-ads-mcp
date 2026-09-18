@@ -1,12 +1,12 @@
 # meta-ads-mcp — agent guide
 
-Project memory for Claude Code (and any other AI assistant). This file is committed and shared with everyone working on the repo.
+Project memory for Claude Code, Codex and any other AI assistant. `CLAUDE.md` and `AGENTS.md` are the same document, kept identical; edit both. This file is committed and shared with everyone working on the repo.
 
 ## What this project is
 
 A Model Context Protocol server that brokers Meta Ads API access for advertising agencies. Multi-tenant, OAuth-gated, with encrypted-at-rest token storage in Firestore. Deployed to Google Cloud Run.
 
-- **Stack**: Node 22.13+, TypeScript (ESM), Express 5, vitest, Pino, Zod, Firestore. MCP SDK 1.29 (`registerTool` API + `ToolAnnotations`).
+- **Stack**: Node 22.13+, TypeScript (ESM), Express 5, vitest, Pino, zod 4, Firestore. MCP SDK 1.30 (`registerTool` API + `ToolAnnotations`). ffmpeg in the image for the video tools.
 - **Entry**: [src/index.ts](src/index.ts) → [src/transport/http.ts](src/transport/http.ts).
 - **Deploy**: push to `main` triggers [.github/workflows/deploy.yml](.github/workflows/deploy.yml). PRs trigger [.github/workflows/ci.yml](.github/workflows/ci.yml).
 - **License**: MIT. **Repository is public on GitHub.**
@@ -40,7 +40,7 @@ Before **any** `git commit -m`, `git push`, `gcloud run deploy`, `docker push`, 
    - Apify API tokens: `apify_api_[A-Za-z0-9]{20,}`
    - `META_TOKENS` as a JSON map of `EAA…` tokens (multi-tenant)
    - Google: `AIza[A-Za-z0-9_-]{35}`, `ya29\.[A-Za-z0-9_-]+`, GCP service account JSON
-   - Gemini keys: `AQ\.[A-Za-z0-9_-]{20,}` and any `GEMINI_API_KEY=` assignment
+   - Gemini keys: `AQ\.[A-Za-z0-9_-]{20,}` and a `GEMINI_API_KEY=` assignment whose value is key-shaped (20 or more key characters)
    - Generic: `-----BEGIN … PRIVATE KEY-----`, GitHub PATs (`gh[pousr]_`), AWS keys (`AKIA`)
 8. `.gitignore` covers `.env`, `.env.local`, `*.key`, `*.pem`, `credentials.json`, `service-account*.json`, `dist/`, `node_modules/`.
 

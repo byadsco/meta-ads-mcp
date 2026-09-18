@@ -335,7 +335,7 @@ jobs:
           # and answers /health in under half a second. The root
           # cause of the change in the unset behaviour is not established.
           # Dropping the volume would also let it start, but the volume is
-          # what turns an oversize scratch write into ENOMEM instead of a dead
+          # what turns an oversize scratch write into ENOSPC instead of a dead
           # instance, so it stays.
           flags: >-
             --allow-unauthenticated
@@ -482,6 +482,31 @@ jobs:
           gh release create "${ARGS[@]}"
           echo "created=true" >> "$GITHUB_OUTPUT"
           echo "Released $TAG at $DEPLOYED_SHA. The follow-up publish job will ship npm + ghcr artifacts."
+
+      # Context7 indexes this repository's documentation for coding agents
+      # (context7.com/byadsco/meta-ads-mcp); it re-reads it on its own schedule
+      # and immediately when asked. Asked on every push to main, so a docs-only
+      # merge refreshes the index too. Needs an owner API key stored as the
+      # CONTEXT7_API_KEY secret; without it the step says so and exits 0.
+      # continue-on-error keeps a Context7 outage from failing this job,
+      # which would block the publish job that depends on it.
+      - name: Refresh Context7 index
+        continue-on-error: true
+        env:
+          CONTEXT7_API_KEY: ${{ secrets.CONTEXT7_API_KEY }}
+        run: |
+          set -eu
+          if [ -z "${CONTEXT7_API_KEY}" ]; then
+            echo "CONTEXT7_API_KEY is not set; skipping the Context7 refresh."
+            exit 0
+          fi
+          curl --fail --silent --show-error --max-time 30 \
+            -X POST https://context7.com/api/v1/refresh \
+            -H "Authorization: Bearer ${CONTEXT7_API_KEY}" \
+            -H "Content-Type: application/json" \
+            -d '{"libraryName":"/byadsco/meta-ads-mcp"}'
+          echo
+          echo "Context7 refresh requested."
 
   publish:
     # Trigger publish.yml explicitly via workflow_call. We can't rely on the

@@ -135,9 +135,11 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   it), which was a promise the runtime never kept, since `z.object` strips
   unknown keys rather than rejecting them in both majors. MCP allows the
   keyword to be omitted. The one place it mattered is OpenAI's strict
-  function calling, which requires it alongside every field being required;
-  109 tools have optional fields and never qualified, and the 33 whose fields
-  are all required did qualify and no longer do, an accepted change; 23
+  function calling, which requires it on every object alongside every field
+  being required; 102 tools have optional fields and never qualified, 4 take
+  no parameters and never carried the keyword, and the 36 with every
+  top-level field required did carry it and no longer do, an accepted
+  change; 23
   `$ref`s to reused sub-schemas are inlined, which
   clients that do not resolve references can now read; the 12 free-form
   records gain `propertyNames: {type: string}`; integer fields gain
