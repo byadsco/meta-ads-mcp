@@ -6,7 +6,7 @@ Project memory for Codex (and any other AI assistant). This file is committed an
 
 A Model Context Protocol server that brokers Meta Ads API access for advertising agencies. Multi-tenant, OAuth-gated, with encrypted-at-rest token storage in Firestore. Deployed to Google Cloud Run.
 
-- **Stack**: Node 20.10+, TypeScript (ESM), Express 5, vitest, Pino, Zod, Firestore. MCP SDK 1.29 (`registerTool` API + `ToolAnnotations`).
+- **Stack**: Node 22.13+, TypeScript (ESM), Express 5, vitest, Pino, Zod, Firestore. MCP SDK 1.29 (`registerTool` API + `ToolAnnotations`).
 - **Entry**: [src/index.ts](src/index.ts) → [src/transport/http.ts](src/transport/http.ts).
 - **Deploy**: push to `main` triggers [.github/workflows/deploy.yml](.github/workflows/deploy.yml). PRs trigger [.github/workflows/ci.yml](.github/workflows/ci.yml).
 - **License**: MIT. **Repository is public on GitHub.**

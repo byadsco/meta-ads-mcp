@@ -7,6 +7,21 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Breaking changes
+
+- **Minimum Node.js is now 22.13; the next release is 4.0.0.** `engines.node`
+  moves from `>=20.10.0` to `>=22.13.0`, which npm treats as a warning by
+  default and as an install failure under `engine-strict`, so it is a major
+  for anyone installing the package. The production image has run Node 22
+  since the video pipeline landed while the workflows tested on Node 20, and
+  Node 20 left support in April 2026. 22.13 rather than 22 flat because the
+  dev toolchain already needs it: ESLint 10 requires `^22.13.0`, and vitest 5,
+  which is not adopted yet (the range is still `^4.0.18`), requires
+  `^22.12.0 || ^24.0.0 || >=26.0.0`. `@google-cloud/firestore` 9, also not
+  adopted yet (`^8.5.0`), requires Node 22 as its only breaking change. CI,
+  the deploy preflight and the publish workflow now run Node 22, and the
+  Dependabot config no longer holds vitest back at 4.
+
 ### Added
 
 - **One ad in full — `ads_get_ad_dossier` (141 → 142 tools).** A creative
