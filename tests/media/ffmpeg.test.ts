@@ -327,6 +327,18 @@ describe("createFfmpeg (unit, execFile injected)", () => {
     expect(ffmpeg.lastKnownAvailability()).toBe(true);
   });
 
+  it("forwards a caller's timeout to the probe and defaults to 10 s otherwise", async () => {
+    const { exec, calls } = fakeExec("ffmpeg version 8.1");
+    const ffmpeg = createFfmpeg({ execFile: exec, ffprobePath: "ffprobe", ffmpegPath: "ffmpeg" });
+    await ffmpeg.isAvailable({ timeoutMs: 30_000 });
+    expect(calls[0].opts.timeout).toBe(30_000);
+
+    const plain = fakeExec("ffmpeg version 8.1");
+    const other = createFfmpeg({ execFile: plain.exec, ffprobePath: "ffprobe", ffmpegPath: "ffmpeg" });
+    await other.isAvailable();
+    expect(plain.calls[0].opts.timeout).toBe(10_000);
+  });
+
   it("concurrent callers share one in-flight probe", async () => {
     const { exec, calls } = fakeExec("ffmpeg version 8.1");
     const ffmpeg = createFfmpeg({ execFile: exec, ffprobePath: "ffprobe", ffmpegPath: "ffmpeg" });

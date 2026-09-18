@@ -31,6 +31,14 @@ const DEFAULT_MAX_SECONDS = 240;
 const PROBE_TIMEOUT_MS = 20_000;
 const VERSION_PROBE_TIMEOUT_MS = 10_000;
 const VERSION_PROBE_RETRY_AFTER_MS = 5_000;
+// How long the one probe started at boot may run. On a fresh node the first
+// run of ffmpeg has taken over 10 s with CPU to spare, where a warm node
+// answers in about a second; the likeliest reason is that Cloud Run streams
+// image layers on demand and the first execution waits for the layer that
+// holds ffmpeg, which is probable but not confirmed. The transport does not
+// hold the port open for this long; it waits a bounded time and lets the
+// probe finish in the background.
+export const STARTUP_VERSION_PROBE_TIMEOUT_MS = 30_000;
 const FRAME_TIMEOUT_MS = 30_000;
 const TRANSCODE_TIMEOUT_MS = 150_000;
 const STDIO_MAX_BUFFER = 1024 * 1024;
@@ -168,7 +176,7 @@ interface JobOptions {
 }
 
 export interface Ffmpeg {
-  isAvailable(): Promise<boolean>;
+  isAvailable(options?: { timeoutMs?: number }): Promise<boolean>;
   /** The settled answer without spawning anything; undefined until a probe was conclusive. */
   lastKnownAvailability(): boolean | undefined;
   probe(input: string, options?: { maxSeconds?: number; signal?: AbortSignal }): Promise<VideoProbe>;
@@ -264,17 +272,19 @@ export function createFfmpeg(config: FfmpegConfig = {}): Ffmpeg {
   };
 
   return {
-    isAvailable() {
+    isAvailable(options = {}) {
       if (!available) {
-        // A transient failure is forgotten so a later call asks again. Cloud
-        // Run throttles the CPU once the port is open and no request is in
-        // flight; a probe caught in that window outlived its own timeout, and
-        // remembering that as "no ffmpeg" disabled every video tool on the
+        // A transient failure is forgotten so a later call asks again. Two
+        // things have made the first probe on an instance slow: Cloud Run
+        // throttles the CPU once the port is open and no request is in
+        // flight, and, probably, it streams image layers on demand, so the
+        // first run of ffmpeg on a fresh node waits for its layer.
+        // Remembering either as "no ffmpeg" disabled every video tool on the
         // instance for as long as it lived. The cooldown keeps an instance
         // under pressure from spawning on every call: a refused spawn returns
         // at once, unlike a timeout, and would otherwise retry without pause.
         if (now() < retryNotBefore) return Promise.resolve(false);
-        available = run(ffmpegPath, ["-version"], { timeout: VERSION_PROBE_TIMEOUT_MS, tool: "ffmpeg" })
+        available = run(ffmpegPath, ["-version"], { timeout: options.timeoutMs ?? VERSION_PROBE_TIMEOUT_MS, tool: "ffmpeg" })
           .then(() => {
             known = true;
             return true;
