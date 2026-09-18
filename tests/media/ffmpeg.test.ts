@@ -225,6 +225,12 @@ describe("createFfmpeg (unit, execFile injected)", () => {
     expect(args).toEqual(expect.arrayContaining(["-c:v", "libx264", "-c:a", "aac", "-movflags", "+faststart", "-t", "30"]));
     expect(args[args.indexOf("-fs") + 1]).toBe("1000");
     expect(args.join(" ")).toContain("scale=853:480:force_original_aspect_ratio=decrease:force_divisible_by=2");
+    // The encoder gets its own thread limit: an input-side -threads only bounds decoding.
+    const afterInput = args.slice(args.indexOf("-i") + 1);
+    const outThreads = afterInput.indexOf("-threads");
+    expect(outThreads).toBeGreaterThan(-1);
+    expect(afterInput[outThreads + 1]).toBe("1");
+    expect(outThreads).toBeLessThan(afterInput.lastIndexOf("-f"));
   });
 
   it("compact fails clearly when even the smallest rendition exceeds maxBytes", async () => {

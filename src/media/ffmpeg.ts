@@ -379,6 +379,9 @@ export function createFfmpeg(config: FfmpegConfig = {}): Ffmpeg {
             "-i", input, "-t", String(clipSeconds),
             "-vf", `${boundedScale(Math.round((rendition.height * 16) / 9), rendition.height)},fps=10`,
             "-c:v", "libx264", "-preset", "veryfast", "-crf", String(rendition.crf), "-pix_fmt", "yuv420p",
+            // Output-side: the -threads 1 in inputArgs only bounds decoding;
+            // without this libx264 sizes its own pool to the machine.
+            "-threads", "1",
             "-c:a", "aac", "-b:a", "48k", "-ac", "1",
             "-movflags", "+faststart", "-fs", String(options.maxBytes), "-f", "mp4", out,
           ],

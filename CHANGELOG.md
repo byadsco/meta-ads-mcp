@@ -7,6 +7,25 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Fixed
+
+- **The H.264 encoder in the compact video transcode is limited to one
+  thread.** The `-threads 1` that the ffmpeg wrapper passes before `-i` only
+  bounds decoding and filtering; libx264 sized its own thread pool to the
+  machine, so one `delivery=inline` transcode could occupy every core the
+  instance had. An output-side `-threads 1` now bounds the encoder too.
+  Measured on a 20-second 1080p clip with ffmpeg 9.0.1, peak threads drop
+  from 28 to 9; the remaining ones are ffmpeg's own pipeline threads for
+  demuxing, muxing and each stream. SECURITY.md said "single-threaded"
+  until 4.0.0 corrected it; it now describes the limit as implemented.
+- **`ads_get_video_media`'s description states both inline caps.** It gave
+  only the HTTP cap and said Claude Code and Claude Desktop reject large
+  results, which confused the transport with the client: the 6 MiB limit
+  is a property of stdio, where MCP SDK clients close the connection above
+  10 MiB by default, and the advice to use frames is a property of models
+  that read images rather than video. Agents read this text on every
+  `tools/list`, and Context7 quotes it.
+
 ## [4.0.0] — 2026-09-18
 
 ### Why this release
