@@ -6,7 +6,10 @@
 #   below says what has to change before it is lifted.
 # - github-actions: weekly, all in one PR so SHA-pinned actions can be
 #   upgraded in lockstep.
-# - docker: weekly for the base image referenced in the Dockerfile.
+# - docker: weekly for the base image referenced in the Dockerfile; Node
+#   majors are ignored there, since the runtime moves by hand with engines.
+#   Docker has version updates only; the security updates below do not
+#   cover the image.
 #
 # Security updates run continuously regardless of this schedule (driven by
 # GitHub Advisory Database). Verified via `gh api repos/byadsco/meta-ads-mcp/automated-security-fixes`.
@@ -93,3 +96,19 @@ updates:
     labels:
       - dependencies
       - docker
+    ignore:
+      # The Node major in the image is the runtime, and moving it is a
+      # decision taken with engines.node, the workflows' node-version and the
+      # docs, in one PR, the way the move to 22 was. Dependabot's docker
+      # ecosystem has no notion of LTS: it proposed node:26 while 26 was
+      # still Current, months before it becomes LTS. This rule is permanent:
+      # bump the runtime by hand when adopting the next LTS and keep the
+      # rule, since removing it reopens automatic majors. Two things it does
+      # not change: Dependabot does not compare tags across these Alpine
+      # suffixes, so a bump from 22-alpine3.24 to 22-alpine3.25 is a manual
+      # edit regardless; and Node minors and patches inside the floating "22"
+      # tag arrive with the next image build, not through a PR. Docker gets
+      # version updates only, no advisory-driven security updates, so a fix
+      # published under the same tag also needs a rebuild and redeploy.
+      - dependency-name: "node"
+        update-types: ["version-update:semver-major"]
