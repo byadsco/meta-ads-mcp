@@ -11,7 +11,7 @@ import { resolveTenantId } from "../auth/tenant.js";
 import { sanitizeMetadataUrl, textBlock, type ContentBlock } from "../media/content-blocks.js";
 import {
   deliverVideos as defaultDeliverVideos,
-  DEFAULT_VIDEO_TOTAL_BYTES_BUDGET,
+  responseBytesBudget,
   VIDEO_EXPIRY_WARNING,
   type DeliveredVideo,
   type VideoDeliveryDeps,
@@ -391,9 +391,12 @@ export function registerCreativeMediaTools(server: McpServer, deps: CreativeMedi
       }
 
       // Shared with the dossier so both attach images under the same caps.
+      // Over stdio the whole result must fit the SDK's message limit, so the
+      // image budget is bounded by the response budget as well.
+      const responseBudget = responseBytesBudget(deps.transport);
       const imageResult = await fetchCreativeImageBlocks(imageAssets, {
         maxImages: max_images,
-        totalBytesBudget: TOTAL_BYTES_BUDGET,
+        totalBytesBudget: Math.min(TOTAL_BYTES_BUDGET, responseBudget),
         signal: extra?.signal,
         download,
       });
@@ -423,7 +426,7 @@ export function registerCreativeMediaTools(server: McpServer, deps: CreativeMedi
             title: v.title,
           }));
         // Images already attached count against the same response budget as the video media.
-        const remainingBudget = Math.max(0, DEFAULT_VIDEO_TOTAL_BYTES_BUDGET - totalBytes);
+        const remainingBudget = Math.max(0, responseBudget - totalBytes);
         const delivery = await deliverVideos(
           sources,
           { delivery: video_delivery, frame_count, frame_layout: "grid" },

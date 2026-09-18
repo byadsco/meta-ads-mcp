@@ -15,7 +15,7 @@
   ],
   "type": "module",
   "engines": {
-    "node": ">=20.10.0"
+    "node": ">=22.13.0"
   },
   "main": "dist/index.js",
   "bin": {
@@ -46,12 +46,12 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@google-cloud/firestore": "^8.5.0",
-    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@google-cloud/firestore": "^9.1.0",
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
     "express": "^5.2.1",
-    "jose": "^6.0.0",
+    "jose": "^6.2.12",
     "pino": "^9.6.0",
     "pino-pretty": "^13.0.0",
     "zod": "^3.24.0"
@@ -65,12 +65,12 @@
     "@types/cookie-parser": "^1.4.10",
     "@types/cors": "^2.8.17",
     "@types/express": "^5.0.0",
-    "@types/node": "^22.0.0",
-    "eslint": "^10.0.2",
-    "tsx": "^4.19.0",
+    "@types/node": "^22.20.2",
+    "eslint": "^10.10.0",
+    "tsx": "^4.23.13",
     "typescript": "^5.7.0",
-    "typescript-eslint": "^8.56.1",
-    "vitest": "^4.0.18"
+    "typescript-eslint": "^8.70.0",
+    "vitest": "^5.0.0"
   },
   "keywords": [
     "mcp",
