@@ -14,7 +14,7 @@ import { fetchCreativeImageBlocks as defaultFetchImages, type DownloadableImage 
 import { sanitizeMetadataUrl, textBlock, type ContentBlock } from "../media/content-blocks.js";
 import {
   deliverVideos as defaultDeliverVideos,
-  DEFAULT_VIDEO_TOTAL_BYTES_BUDGET,
+  responseBytesBudget,
   type DeliveredVideo,
   type VideoDeliveryDeps,
 } from "../media/video-delivery.js";
@@ -653,9 +653,10 @@ export function registerAdDossierTools(server: McpServer, deps: AdDossierDeps = 
             }
           }
 
+          const responseBudget = responseBytesBudget(deps.transport);
           const imageResult = await fetchImages(images, {
             maxImages: max_images,
-            totalBytesBudget: MAX_IMAGE_BYTES_BUDGET,
+            totalBytesBudget: Math.min(MAX_IMAGE_BYTES_BUDGET, responseBudget),
             signal,
           });
           blocks.push(...imageResult.blocks);
@@ -683,7 +684,7 @@ export function registerAdDossierTools(server: McpServer, deps: AdDossierDeps = 
               { delivery: video_delivery, frame_count, frame_layout: "grid" },
               deps,
               { tenantId: resolveVideoTenant(), signal },
-              { totalBytesBudget: Math.max(0, DEFAULT_VIDEO_TOTAL_BYTES_BUDGET - imageResult.bytes) },
+              { totalBytesBudget: Math.max(0, responseBudget - imageResult.bytes) },
             );
             const offset = blocks.length + 1;
             blocks.push(...delivery.blocks);
