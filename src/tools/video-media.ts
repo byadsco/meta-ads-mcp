@@ -156,7 +156,7 @@ export function registerVideoMediaTools(server: McpServer, deps: VideoMediaDeps 
       description:
         "Fetch an ad video so a model can actually analyze it — own-account videos (video_id / ad_id / creative_id) or Meta Ad Library videos (dataset_id + ad_archive_id). " +
         "delivery=frames (default): the server extracts real keyframes with ffmpeg and returns them as image blocks any multimodal model can see (grid contact sheet by default; frame_layout=individual for one image per frame; include_audio adds an audio/aac block). " +
-        "delivery=inline: embeds the MP4 itself as a resource blob (video/mp4) for clients whose model ingests video natively, e.g. Gemini CLI or agents on the Gemini API — no intermediary needed. Payloads are large: up to 20 MiB per video over HTTP, and 6 MiB for the whole result over stdio, where MCP SDK clients close the connection above 10 MiB by default. Use frames for models that read images rather than video. " +
+        "delivery=inline: embeds the MP4 itself as a resource blob (video/mp4) for clients whose model ingests video natively, e.g. Gemini CLI or agents on the Gemini API — no intermediary needed. Payloads are large: up to 20 MiB per video over HTTP; over stdio this server caps a whole result at 6 MiB of raw media, because clients on the TypeScript MCP SDK close the connection on a message above 10 MiB by default. Use frames for models that read images rather than video. " +
         "delivery=url: only signed CDN links (short-lived) as resource_link blocks. delivery=thumbnail: poster image only. " +
         "Returns a text summary, the media blocks, then JSON metadata (duration, dimensions, fps, audio, block indexes, expiry).",
       inputSchema: {

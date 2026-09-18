@@ -27,6 +27,15 @@ function fakeExec(stdout = "", exitError?: Error): { exec: ExecFileFn; calls: Ar
   return { exec, calls };
 }
 
+/** The encoder's own limit: an input-side -threads only bounds decoding. */
+function expectEncoderThreadCap(args: string[]): void {
+  const afterInput = args.slice(args.indexOf("-i") + 1);
+  const outThreads = afterInput.indexOf("-threads");
+  expect(outThreads).toBeGreaterThan(-1);
+  expect(afterInput[outThreads + 1]).toBe("1");
+  expect(outThreads).toBeLessThan(afterInput.lastIndexOf("-f"));
+}
+
 describe("parseProbeOutput", () => {
   it("extracts duration, dimensions, fps and audio presence", () => {
     const probe = parseProbeOutput(PROBE_JSON, 4200000);
@@ -176,6 +185,7 @@ describe("createFfmpeg (unit, execFile injected)", () => {
     expect(args.join(" ")).toContain("scale=640:640:force_original_aspect_ratio=decrease");
     expect(calls[0].opts.cwd).toBe(outDir);
     expect(calls[0].opts.env).toEqual({ PATH: process.env.PATH });
+    expectEncoderThreadCap(args);
   });
 
   it("contactSheet tiles the frames into one jpeg and caps output size with -fs", async () => {
@@ -199,6 +209,7 @@ describe("createFfmpeg (unit, execFile injected)", () => {
     expect(sheet.columns).toBe(3);
     const joined = calls[0].args.join(" ");
     expect(joined).toContain("tile=3x2");
+    expectEncoderThreadCap(calls[0].args);
     expect(joined).toContain("scale=512:512:force_original_aspect_ratio=decrease");
     expect(calls[0].args).toEqual(expect.arrayContaining(["-fs"]));
   });
@@ -225,12 +236,7 @@ describe("createFfmpeg (unit, execFile injected)", () => {
     expect(args).toEqual(expect.arrayContaining(["-c:v", "libx264", "-c:a", "aac", "-movflags", "+faststart", "-t", "30"]));
     expect(args[args.indexOf("-fs") + 1]).toBe("1000");
     expect(args.join(" ")).toContain("scale=853:480:force_original_aspect_ratio=decrease:force_divisible_by=2");
-    // The encoder gets its own thread limit: an input-side -threads only bounds decoding.
-    const afterInput = args.slice(args.indexOf("-i") + 1);
-    const outThreads = afterInput.indexOf("-threads");
-    expect(outThreads).toBeGreaterThan(-1);
-    expect(afterInput[outThreads + 1]).toBe("1");
-    expect(outThreads).toBeLessThan(afterInput.lastIndexOf("-f"));
+    expectEncoderThreadCap(args);
   });
 
   it("compact fails clearly when even the smallest rendition exceeds maxBytes", async () => {

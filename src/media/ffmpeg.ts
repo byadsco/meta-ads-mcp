@@ -43,6 +43,10 @@ const FRAME_TIMEOUT_MS = 30_000;
 const TRANSCODE_TIMEOUT_MS = 150_000;
 const STDIO_MAX_BUFFER = 1024 * 1024;
 const FRAME_OUTPUT_CAP_BYTES = 4 * 1024 * 1024;
+// Output-side, so it binds the encoder. The -threads 1 in inputArgs sits
+// before -i and only bounds decoding; libx264 and the MJPEG encoder otherwise
+// size their own pools to the machine.
+const ENCODER_THREADS = ["-threads", "1"];
 const AUDIO_OUTPUT_CAP_BYTES = 8 * 1024 * 1024;
 
 export class VideoProbeError extends Error {
@@ -335,6 +339,7 @@ export function createFfmpeg(config: FfmpegConfig = {}): Ffmpeg {
             ...inputArgs(options.demuxer),
             "-ss", String(timestamps[i]), "-i", input,
             "-frames:v", "1", "-vf", boundedScale(options.maxWidth, options.maxWidth), "-q:v", "4",
+            ...ENCODER_THREADS,
             "-fs", String(FRAME_OUTPUT_CAP_BYTES), "-f", "image2", out,
           ],
           { timeout: FRAME_TIMEOUT_MS, cwd: options.outDir, signal: options.signal, tool: "ffmpeg" },
@@ -357,6 +362,7 @@ export function createFfmpeg(config: FfmpegConfig = {}): Ffmpeg {
           "-ss", String(timestamps[0]), "-i", input,
           "-vf", `fps=1/${interval},${boundedScale(options.tileWidth, options.tileWidth)},tile=${columns}x${rows}:padding=4:margin=4:color=black`,
           "-frames:v", "1", "-q:v", "4",
+          ...ENCODER_THREADS,
           "-fs", String(FRAME_OUTPUT_CAP_BYTES * 2), "-f", "image2", out,
         ],
         { timeout: TRANSCODE_TIMEOUT_MS, cwd: options.outDir, signal: options.signal, tool: "ffmpeg" },
@@ -379,9 +385,7 @@ export function createFfmpeg(config: FfmpegConfig = {}): Ffmpeg {
             "-i", input, "-t", String(clipSeconds),
             "-vf", `${boundedScale(Math.round((rendition.height * 16) / 9), rendition.height)},fps=10`,
             "-c:v", "libx264", "-preset", "veryfast", "-crf", String(rendition.crf), "-pix_fmt", "yuv420p",
-            // Output-side: the -threads 1 in inputArgs only bounds decoding;
-            // without this libx264 sizes its own pool to the machine.
-            "-threads", "1",
+            ...ENCODER_THREADS,
             "-c:a", "aac", "-b:a", "48k", "-ac", "1",
             "-movflags", "+faststart", "-fs", String(options.maxBytes), "-f", "mp4", out,
           ],
