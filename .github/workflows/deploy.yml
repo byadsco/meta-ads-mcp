@@ -334,9 +334,9 @@ jobs:
           # identically when redeployed. Pinned to gen2 that same image answers
           # /health in under half a second with ffmpeg available. The root
           # cause of the change in the unset behaviour is not established.
-          # Dropping the volume also lets it start, but ffmpeg then does not
-          # execute: frame extraction warns and falls back to thumbnails, and
-          # inline delivery only works when the original already fits the cap.
+          # Dropping the volume would also let it start, but the volume is
+          # what turns an oversize scratch write into ENOMEM instead of a dead
+          # instance, so it stays.
           flags: >-
             --allow-unauthenticated
             --service-account=${{ secrets.GCP_RUNTIME_SERVICE_ACCOUNT }}

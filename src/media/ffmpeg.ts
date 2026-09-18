@@ -29,6 +29,7 @@ const MAX_STREAMS = 4;
 const MAX_ALLOC_BYTES = 268435456;
 const DEFAULT_MAX_SECONDS = 240;
 const PROBE_TIMEOUT_MS = 20_000;
+const VERSION_PROBE_TIMEOUT_MS = 10_000;
 const FRAME_TIMEOUT_MS = 30_000;
 const TRANSCODE_TIMEOUT_MS = 150_000;
 const STDIO_MAX_BUFFER = 1024 * 1024;
@@ -43,9 +44,15 @@ export class VideoProbeError extends Error {
 }
 
 export class FfmpegError extends Error {
-  constructor(message: string) {
+  // True when the failure says nothing about the binary itself: killed on
+  // timeout, or a spawn refused for want of a resource. Whoever is deciding
+  // whether ffmpeg exists must not remember such an answer.
+  readonly transient: boolean;
+
+  constructor(message: string, transient = false) {
     super(message);
     this.name = "FfmpegError";
+    this.transient = transient;
   }
 }
 
@@ -161,6 +168,8 @@ interface JobOptions {
 
 export interface Ffmpeg {
   isAvailable(): Promise<boolean>;
+  /** The settled answer without spawning anything; undefined until a probe was conclusive. */
+  lastKnownAvailability(): boolean | undefined;
   probe(input: string, options?: { maxSeconds?: number; signal?: AbortSignal }): Promise<VideoProbe>;
   extractFrames(input: string, options: JobOptions & { count: number; maxWidth: number }): Promise<FrameExtraction[]>;
   contactSheet(input: string, options: JobOptions & { count: number; columns: number; tileWidth: number }): Promise<ContactSheet>;
@@ -200,9 +209,14 @@ function boundedScale(maxWidth: number, maxHeight: number): string {
   return `scale=${maxWidth}:${maxHeight}:force_original_aspect_ratio=decrease:force_divisible_by=2`;
 }
 
+// Spawn errors that mean the binary is not usable at all, as opposed to
+// EAGAIN, EMFILE or ENOMEM, which mean it could not be started just now.
+const DEFINITIVE_SPAWN_ERRORS = new Set(["ENOENT", "EACCES", "ENOEXEC"]);
+
 function describeFailure(tool: string, err: unknown): FfmpegError {
   const e = err as { code?: unknown; signal?: unknown; killed?: boolean; message?: string };
-  if (e?.killed || e?.signal === "SIGKILL") return new FfmpegError(`${tool} timed out and was killed`);
+  if (e?.killed || e?.signal === "SIGKILL") return new FfmpegError(`${tool} timed out and was killed`, true);
+  if (typeof e?.code === "string") return new FfmpegError(`${tool} failed (${e.code})`, !DEFINITIVE_SPAWN_ERRORS.has(e.code));
   const code = typeof e?.code === "number" ? ` (exit code ${e.code})` : "";
   // stderr can contain file paths; keep it out of user-facing text.
   return new FfmpegError(`${tool} failed${code}`);
@@ -213,6 +227,7 @@ export function createFfmpeg(config: FfmpegConfig = {}): Ffmpeg {
   const ffmpegPath = config.ffmpegPath ?? "ffmpeg";
   const ffprobePath = config.ffprobePath ?? "ffprobe";
   let available: Promise<boolean> | undefined;
+  let known: boolean | undefined;
 
   const run = async (
     bin: string,
@@ -247,11 +262,30 @@ export function createFfmpeg(config: FfmpegConfig = {}): Ffmpeg {
   return {
     isAvailable() {
       if (!available) {
-        available = run(ffmpegPath, ["-version"], { timeout: 10_000, tool: "ffmpeg" })
-          .then(() => true)
-          .catch(() => false);
+        // A transient failure is forgotten so the next call asks again. Cloud
+        // Run throttles the CPU once the port is open and no request is in
+        // flight; a probe caught in that window outlived its own timeout, and
+        // remembering that as "no ffmpeg" disabled every video tool on the
+        // instance for as long as it lived.
+        available = run(ffmpegPath, ["-version"], { timeout: VERSION_PROBE_TIMEOUT_MS, tool: "ffmpeg" })
+          .then(() => {
+            known = true;
+            return true;
+          })
+          .catch((err: unknown) => {
+            if (err instanceof FfmpegError && err.transient) {
+              available = undefined;
+            } else {
+              known = false;
+            }
+            return false;
+          });
       }
       return available;
+    },
+
+    lastKnownAvailability() {
+      return known;
     },
 
     async probe(input, options = {}) {

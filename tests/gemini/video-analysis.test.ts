@@ -46,6 +46,7 @@ const ANALYSIS = {
 function fakeFfmpeg(overrides: Partial<Ffmpeg> = {}, available = true): Ffmpeg {
   return {
     isAvailable: async () => available,
+    lastKnownAvailability: () => available,
     probe: async () => ({ duration_seconds: 15, width: 720, height: 1280, fps: 30, has_audio: true, video_codec: "h264", bytes: 100, demuxer: "mov,mp4,m4a,3gp,3g2,mj2" }),
     extractFrames: async () => [],
     contactSheet: async () => ({ buffer: Buffer.alloc(0), timestamps_seconds: [], columns: 3, rows: 1 }),

@@ -23,6 +23,7 @@ const MP4 = Buffer.concat([Buffer.from([0, 0, 0, 16]), Buffer.from("ftypmp42"), 
 function fakeFfmpeg(available = true): Ffmpeg {
   return {
     isAvailable: async () => available,
+    lastKnownAvailability: () => available,
     probe: async () => ({ duration_seconds: 15.2, width: 1080, height: 1920, fps: 30, has_audio: true, video_codec: "h264", bytes: 16, demuxer: "mov,mp4,m4a,3gp,3g2,mj2" }),
     extractFrames: async (_i, o) => Array.from({ length: o.count }, (_, i) => ({ timestamp_seconds: i + 0.5, buffer: Buffer.from(`f${i}`) })),
     contactSheet: async (_i, o) => ({ buffer: Buffer.from("sheet"), timestamps_seconds: [1, 2], columns: o.columns, rows: 1 }),

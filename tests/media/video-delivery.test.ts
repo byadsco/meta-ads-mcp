@@ -33,6 +33,7 @@ function fakeFfmpeg(overrides: Partial<Ffmpeg> = {}, available = true): Ffmpeg &
   return {
     calls,
     isAvailable: async () => available,
+    lastKnownAvailability: () => available,
     probe: async () => {
       calls.push("probe");
       return PROBE;
