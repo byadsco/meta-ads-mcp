@@ -1,7 +1,9 @@
 # Dependabot config for meta-ads-mcp.
 #
 # - npm: weekly grouped updates; ignore major bumps for the MCP SDK
-#   (those need manual review of the protocol change).
+#   (those need manual review of the protocol change) and for three dev
+#   dependencies whose next major cannot be taken here yet; each entry
+#   below says what has to change before it is lifted.
 # - github-actions: weekly, all in one PR so SHA-pinned actions can be
 #   upgraded in lockstep.
 # - docker: weekly for the base image referenced in the Dockerfile.
@@ -42,6 +44,29 @@ updates:
           - "@eslint/*"
     ignore:
       - dependency-name: "@modelcontextprotocol/sdk"
+        update-types: ["version-update:semver-major"]
+      # A TypeScript major deserves a manual look like the MCP SDK's does,
+      # and right now one cannot even install: typescript-eslint's peer
+      # range is ">=4.8.4 <6.1.0" as of 8.70.0, so TypeScript 7 fails npm ci
+      # with ERESOLVE and takes the whole grouped PR down with it. This
+      # rule also holds back a 6.x, which that range would admit; lift it
+      # when typescript-eslint's peer range covers the major on offer and
+      # someone has read the release notes.
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
+      # vitest 5 needs Node ^22.12 || ^24 || >=26 and the workflows run Node
+      # 20, so the tests would not even start there. Lift when the workflows
+      # run a Node inside that range. Whether engines.node keeps promising
+      # 20 to whoever installs the package is a separate choice about what
+      # stays tested, not a prerequisite.
+      - dependency-name: "vitest"
+        update-types: ["version-update:semver-major"]
+      # @types/node 26 installs fine without a Node 26 anywhere: it declares
+      # APIs, it does not provide them. The image is node:22, engines allows
+      # 20, and 22 types over a 20 floor is already a gap tolerated because
+      # the image is what runs. Typing against Node 26 would widen it to
+      # APIs that exist nowhere the code runs. Lift with the runtime.
+      - dependency-name: "@types/node"
         update-types: ["version-update:semver-major"]
 
   - package-ecosystem: github-actions
