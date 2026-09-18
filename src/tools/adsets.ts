@@ -111,8 +111,8 @@ const targetingSchema = z
     excluded_publisher_categories: z.array(z.string()).optional().describe("dating, gambling, debated_social_issues, mature_audiences, tragedy_and_conflict"),
     excluded_publisher_list_ids: z.array(z.string()).optional().describe("Block list IDs to exclude specific publishers"),
 
-    flexible_spec: z.array(z.record(z.unknown())).optional().describe("Array of targeting groups combined with AND; items within each group use OR"),
-    exclusions: z.record(z.unknown()).optional(),
+    flexible_spec: z.array(z.record(z.string(), z.unknown())).optional().describe("Array of targeting groups combined with AND; items within each group use OR"),
+    exclusions: z.record(z.string(), z.unknown()).optional(),
 
     targeting_automation: z.object({
       advantage_audience: z.number().optional().describe("1 to enable Advantage+ audience, 0 to opt out. Meta requires an explicit 1 or 0 when creating an ad set whose age, gender, custom audiences or detailed targeting are not default and not relaxed (Marketing API v23.0+, and v26.0+ for Housing, Employment and Financial Products and Services campaigns). Default or relaxed setups default to 1."),
@@ -131,7 +131,7 @@ const cloneTargetAdSetSchema = z.object({
   lifetime_budget: z.number().optional().describe("Optional lifetime budget override in cents. Requires end_time."),
   end_time: z.string().optional().describe("ISO 8601 end time. Required when lifetime_budget is set."),
   destination_type: destinationTypeEnum.optional().describe("Optional destination_type override"),
-  promoted_object: z.record(z.unknown()).optional().describe("Optional promoted_object override"),
+  promoted_object: z.record(z.string(), z.unknown()).optional().describe("Optional promoted_object override"),
 });
 
 const creativeOverrideSchema = z.object({
@@ -829,7 +829,7 @@ export function registerAdSetTools(server: McpServer): void {
         targeting: targetingSchema,
         start_time: z.string().optional().describe("ISO 8601 start time"),
         end_time: z.string().optional().describe("ISO 8601 end time (required for lifetime_budget)"),
-        promoted_object: z.record(z.unknown()).optional().describe("Promoted object (e.g., { page_id: '123' } or { pixel_id: '456', custom_event_type: 'PURCHASE' })"),
+        promoted_object: z.record(z.string(), z.unknown()).optional().describe("Promoted object (e.g., { page_id: '123' } or { pixel_id: '456', custom_event_type: 'PURCHASE' })"),
       },
       annotations: { ...CREATE },
     },

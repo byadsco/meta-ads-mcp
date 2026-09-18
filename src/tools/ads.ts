@@ -253,7 +253,7 @@ export function registerAdTools(server: McpServer): void {
         creative_id: z.string().describe("Creative ID to use for this ad"),
         status: z.enum(["ACTIVE", "PAUSED"]).default("PAUSED"),
         tracking_specs: z
-          .array(z.record(z.unknown()))
+          .array(z.record(z.string(), z.unknown()))
           .optional()
           .describe("Tracking specifications"),
       },

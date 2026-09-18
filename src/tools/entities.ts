@@ -111,7 +111,7 @@ export function registerEntityTools(server: McpServer): void {
         ),
         entity_id: z.string().describe("ID of the entity to update"),
         updates: z
-          .record(z.unknown())
+          .record(z.string(), z.unknown())
           .describe(
             "Fields to update (e.g. { name, status, daily_budget }). See entity-specific update tools for valid keys per type. Complex fields (targeting, creative, evaluation_spec) are JSON-encoded automatically.",
           ),
