@@ -331,8 +331,8 @@ jobs:
           # never opened the port and emitted no output, so three deploys in a
           # row died on the 240s startup probe with nothing in the logs. The
           # merged code is not what broke it: the last known good image failed
-          # identically when redeployed. Pinned to gen2 that same image answers
-          # /health in under half a second with ffmpeg available. The root
+          # identically when redeployed. Pinned to gen2 that same image starts
+          # and answers /health in under half a second. The root
           # cause of the change in the unset behaviour is not established.
           # Dropping the volume would also let it start, but the volume is
           # what turns an oversize scratch write into ENOMEM instead of a dead

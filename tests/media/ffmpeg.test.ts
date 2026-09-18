@@ -280,35 +280,51 @@ describe("createFfmpeg (unit, execFile injected)", () => {
     expect(ffmpeg.lastKnownAvailability()).toBe(false);
   });
 
-  it("a probe killed on timeout is not remembered: the next call asks again and can succeed", async () => {
+  it("a probe killed on timeout is not remembered: after the cooldown the next call asks again and can succeed", async () => {
     const calls: string[][] = [];
     const exec: ExecFileFn = async (_bin, args) => {
       calls.push([...args]);
       if (calls.length === 1) throw Object.assign(new Error("killed"), { killed: true, signal: "SIGKILL" });
       return { stdout: Buffer.from("ffmpeg version 8.1"), stderr: Buffer.alloc(0) };
     };
-    const ffmpeg = createFfmpeg({ execFile: exec, ffprobePath: "ffprobe", ffmpegPath: "ffmpeg" });
+    let clock = 1_000_000;
+    const ffmpeg = createFfmpeg({ execFile: exec, ffprobePath: "ffprobe", ffmpegPath: "ffmpeg", now: () => clock });
 
     expect(await ffmpeg.isAvailable()).toBe(false);
     expect(ffmpeg.lastKnownAvailability()).toBeUndefined();
+
+    // Inside the cooldown: degraded answer, no new process.
+    expect(await ffmpeg.isAvailable()).toBe(false);
+    expect(calls).toHaveLength(1);
+
+    clock += 5_000;
     expect(await ffmpeg.isAvailable()).toBe(true);
     expect(ffmpeg.lastKnownAvailability()).toBe(true);
     expect(await ffmpeg.isAvailable()).toBe(true);
     expect(calls).toHaveLength(2);
   });
 
-  it("a spawn refused for want of a resource is not remembered either", async () => {
+  it("a spawn refused for want of a resource is not remembered either, and retries once per cooldown", async () => {
     let attempts = 0;
     const exec: ExecFileFn = async () => {
       attempts += 1;
-      if (attempts === 1) throw Object.assign(new Error("spawn EAGAIN"), { code: "EAGAIN" });
+      if (attempts < 3) throw Object.assign(new Error("spawn EAGAIN"), { code: "EAGAIN" });
       return { stdout: Buffer.from("ffmpeg version 8.1"), stderr: Buffer.alloc(0) };
     };
-    const ffmpeg = createFfmpeg({ execFile: exec, ffprobePath: "ffprobe", ffmpegPath: "ffmpeg" });
+    let clock = 0;
+    const ffmpeg = createFfmpeg({ execFile: exec, ffprobePath: "ffprobe", ffmpegPath: "ffmpeg", now: () => clock });
 
-    expect(await ffmpeg.isAvailable()).toBe(false);
-    expect(await ffmpeg.isAvailable()).toBe(true);
+    for (let i = 0; i < 50; i += 1) expect(await ffmpeg.isAvailable()).toBe(false);
+    expect(attempts).toBe(1);
+
+    clock += 5_000;
+    for (let i = 0; i < 50; i += 1) expect(await ffmpeg.isAvailable()).toBe(false);
     expect(attempts).toBe(2);
+
+    clock += 5_000;
+    expect(await ffmpeg.isAvailable()).toBe(true);
+    expect(attempts).toBe(3);
+    expect(ffmpeg.lastKnownAvailability()).toBe(true);
   });
 
   it("concurrent callers share one in-flight probe", async () => {

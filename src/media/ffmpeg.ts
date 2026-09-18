@@ -30,6 +30,7 @@ const MAX_ALLOC_BYTES = 268435456;
 const DEFAULT_MAX_SECONDS = 240;
 const PROBE_TIMEOUT_MS = 20_000;
 const VERSION_PROBE_TIMEOUT_MS = 10_000;
+const VERSION_PROBE_RETRY_AFTER_MS = 5_000;
 const FRAME_TIMEOUT_MS = 30_000;
 const TRANSCODE_TIMEOUT_MS = 150_000;
 const STDIO_MAX_BUFFER = 1024 * 1024;
@@ -181,6 +182,7 @@ export interface FfmpegConfig {
   execFile?: ExecFileFn;
   ffmpegPath?: string;
   ffprobePath?: string;
+  now?: () => number;
 }
 
 /** Evenly spaced sample points, each at the middle of its interval. */
@@ -226,8 +228,10 @@ export function createFfmpeg(config: FfmpegConfig = {}): Ffmpeg {
   const execFile = config.execFile ?? (nodeExecFileAsync as unknown as ExecFileFn);
   const ffmpegPath = config.ffmpegPath ?? "ffmpeg";
   const ffprobePath = config.ffprobePath ?? "ffprobe";
+  const now = config.now ?? Date.now;
   let available: Promise<boolean> | undefined;
   let known: boolean | undefined;
+  let retryNotBefore = 0;
 
   const run = async (
     bin: string,
@@ -262,11 +266,14 @@ export function createFfmpeg(config: FfmpegConfig = {}): Ffmpeg {
   return {
     isAvailable() {
       if (!available) {
-        // A transient failure is forgotten so the next call asks again. Cloud
+        // A transient failure is forgotten so a later call asks again. Cloud
         // Run throttles the CPU once the port is open and no request is in
         // flight; a probe caught in that window outlived its own timeout, and
         // remembering that as "no ffmpeg" disabled every video tool on the
-        // instance for as long as it lived.
+        // instance for as long as it lived. The cooldown keeps an instance
+        // under pressure from spawning on every call: a refused spawn returns
+        // at once, unlike a timeout, and would otherwise retry without pause.
+        if (now() < retryNotBefore) return Promise.resolve(false);
         available = run(ffmpegPath, ["-version"], { timeout: VERSION_PROBE_TIMEOUT_MS, tool: "ffmpeg" })
           .then(() => {
             known = true;
@@ -275,6 +282,7 @@ export function createFfmpeg(config: FfmpegConfig = {}): Ffmpeg {
           .catch((err: unknown) => {
             if (err instanceof FfmpegError && err.transient) {
               available = undefined;
+              retryNotBefore = now() + VERSION_PROBE_RETRY_AFTER_MS;
             } else {
               known = false;
             }

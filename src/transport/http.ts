@@ -490,17 +490,17 @@ export async function startHttpTransport(
     }
   }
 
-  // Awaited before the port opens on purpose. Cloud Run treats startup as over
-  // the moment the port is listening and throttles the CPU until a request
-  // arrives; a probe left running into that window took longer than its own
-  // timeout and was remembered as "no ffmpeg". Startup CPU boost only covers
-  // the time before listen. The health check reads the settled answer and
-  // never spawns a process per request.
+  // Awaited before the port opens on purpose. Once the port is listening and
+  // no request is in flight, Cloud Run may throttle the CPU; a probe left
+  // running into that window took 7 to 10 seconds where it takes 60 ms with
+  // CPU, outlived its timeout, and was remembered as "no ffmpeg". Before the
+  // port opens the instance has the CPU it needs. The health check reads the
+  // settled answer and never spawns a process per request.
   const ffmpegRuntime = getFfmpeg();
   await ffmpegRuntime.isAvailable();
   const ffmpegAtStartup = ffmpegRuntime.lastKnownAvailability();
   if (ffmpegAtStartup === undefined) {
-    logger.warn("ffmpeg probe did not finish in time; it will be retried on first use");
+    logger.warn("ffmpeg probe was inconclusive (killed on timeout, or the spawn was refused for want of a resource); it will be retried on first use");
   } else {
     logger.info(
       { ffmpeg_available: ffmpegAtStartup },

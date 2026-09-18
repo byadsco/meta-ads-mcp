@@ -444,7 +444,10 @@ export async function analyzeVideoWithGemini(
       let transcoded = false;
       if (payloadBytes > maxUploadBytes) {
         if (!probe) {
-          throw new Error(`The video is ${payloadBytes} bytes, above the ${maxUploadBytes}-byte upload cap, and ffmpeg is not installed to compact it. Try quality=sd, or install ffmpeg.`);
+          const remedy = ffmpeg.lastKnownAvailability() === false
+            ? "ffmpeg is not installed to compact it. Try quality=sd, or install ffmpeg."
+            : "ffmpeg did not respond just now, so it could not be compacted. Try again shortly, or quality=sd.";
+          throw new Error(`The video is ${payloadBytes} bytes, above the ${maxUploadBytes}-byte upload cap, and ${remedy}`);
         }
         await report(2, 4, "Compacting the video");
         const compact = await ffmpeg.compact(file.path, {

@@ -85,8 +85,8 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - **`ads_get_creative_media` gains `video_delivery`** (`thumbnail` by default,
   unchanged; `frames` appends keyframes; `url` appends signed links), and
   `ads_get_video_details` / `ads_get_ad_videos` now request `permalink_url`.
-- **`/health` reports `ffmpeg: true|false`** once the startup probe has
-  settled, and omits the key until it has.
+- **`/health` reports `ffmpeg: true|false`** once a probe has been
+  conclusive, and omits the key until one has.
 - `is_adset_budget_sharing_enabled` on `ads_update_campaign`. Meta documents
   turning budget sharing off on an existing campaign; turning it on for a
   running campaign is rejected (error 3858418).
@@ -255,10 +255,14 @@ no code here but change delivery:
   installed, and frame extraction, inline compaction and the Gemini compact
   path all fell back for as long as that instance lived. The probe is now
   awaited before `listen`, where startup CPU boost still applies, and a probe
-  that was killed on timeout or refused a resource is not remembered: the next
-  use asks again. Only a definitive answer is kept, either the version string
-  or a spawn error that says the binary is not there. While no probe has
-  settled, `/health` omits the `ffmpeg` key rather than guess.
+  that was killed on timeout or refused a resource is not remembered: after a
+  five second cooldown the next use asks again, so an instance under pressure
+  spawns at most one probe per cooldown rather than one per call. Only a
+  definitive answer is kept: the version string, a spawn error that says the
+  binary is not there or not executable, or a non-zero exit from the binary
+  itself. While no probe has been conclusive, `/health` omits the `ffmpeg`
+  key rather than guess, and the tools say the probe did not complete rather
+  than that ffmpeg is not installed.
 
 ### Security
 
