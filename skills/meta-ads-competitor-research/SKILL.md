@@ -44,7 +44,7 @@ Step 3 is where you decide what deserves step 4. Pulling details for every ad in
 - **`expires_at`** — the CDN links are signed and short-lived. Analyze now, or re-scrape later.
 - **Error records** — the actor pushes `{ error: "ADS_NOT_FOUND" }` for ads that vanished. They come back as `{ offset, error }` rather than as empty rows.
 
-For a video, the video-analysis skill applies unchanged: `ads_get_video_media` takes `dataset_id` plus `ad_archive_id`, and `video_index` picks one video out of a carousel.
+For a video, the video-analysis skill applies unchanged: `ads_get_video_media` takes `dataset_id` plus `ad_archive_id`, and `video_index` picks one video out of a carousel. `ads_analyze_video` accepts the same pair, so a scraped competitor video can be watched by Gemini exactly like one of your own, at the same cost to the tenant's key.
 
 ## What to look for
 

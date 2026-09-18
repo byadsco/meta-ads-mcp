@@ -1,6 +1,20 @@
 {
+  "$schema": "https://context7.com/schema/context7.json",
   "url": "https://context7.com/byadsco/meta-ads-mcp",
   "public_key": "pk_HZ7MG8rJbZtgZam6cGouY",
-  "folders": ["docs", "src/tools", "src/meta", "src/auth"],
-  "excludeFolders": ["node_modules", "dist", "tests"]
+  "projectTitle": "Meta Ads MCP",
+  "description": "Self-hosted multi-tenant MCP server for the Meta Marketing API: 142 ads_* and whatsapp_* tools, OAuth 2.1, Ad Library research, video keyframes, Gemini analysis, ad dossier, skills.",
+  "folders": ["docs", "skills"],
+  "excludeFolders": ["node_modules", "dist", "tests"],
+  "excludeFiles": ["CLAUDE.md"],
+  "rules": [
+    "Tools are named ads_* or whatsapp_*; no meta_ prefix since v3.0.0, and ad_set is spelled with an underscore.",
+    "A tool whose description starts with a warning sign changes live ads, spends money or touches stored credentials; confirm with the user before calling it.",
+    "Video: ads_get_video_media delivery=frames for image-capable models; delivery=inline (20 MiB per video over HTTP, 6 MiB per result over stdio) only for video-capable ones.",
+    "Over stdio a result carries at most 6 MiB of media in total, images and poster included; prefer frames there.",
+    "ads_analyze_video uses the tenant's own Gemini key and costs about 0.02 USD per call; a repeat may hit a short-lived per-instance cache, which is not guaranteed.",
+    "ads_library_* scrape the Ad Library through the tenant's Apify account, about 0.75 USD per 1,000 ads. Re-reading a dataset is free; a repeated scrape runs and bills again.",
+    "Ad account ids take the act_ prefix and other Meta ids are numeric strings; Apify run and dataset ids are alphanumeric. Self-hosting needs Node.js 22.13+; ffmpeg is optional, the image has it."
+  ],
+  "previousVersions": [{ "tag": "v3.6.0", "title": "3.6.0" }]
 }

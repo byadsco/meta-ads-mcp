@@ -47,7 +47,13 @@ Storage mirrors the Meta and Apify credentials:
 
 Users register their own key on `/auth/connections` or with
 `ads_register_gemini_key`. Either path validates it live against
-`GET /v1beta/models?pageSize=1` before storing anything.
+`GET /v1beta/models?pageSize=1` before storing anything. Keys issued by AI
+Studio since September 2026 start with `AQ.`; the older `AIza…` shape is
+still accepted by the input check, and the live validation is what decides.
+The repository's gitleaks config recognises both shapes and a key-shaped
+`GEMINI_API_KEY=` assignment; the local pre-deploy guard blocks such a
+commit, and CI fails an internal PR that carries one (PRs from forks are
+not scanned in CI and rely on the maintainer's local guard).
 
 ## Cost and privacy
 
@@ -90,6 +96,12 @@ creatives.
   The single exception is one prompt-only attempt after a 400 that names the
   schema field, which Google does not bill; the response then carries
   `schema_enforced: false`.
+- **One model, chosen by the operator.** `GEMINI_MODEL` defaults to
+  `gemini-3.8-flash` and only accepts identifiers matching `gemini-…`; anything
+  else falls back to the default rather than being interpolated into a URL.
+  `detail=standard` and `detail=deep` select the media resolution, not the
+  model; both levels use the one configured model, so there is a single
+  identifier to keep current when Google retires one.
 
 ## Handling the model's output as data
 

@@ -245,6 +245,19 @@ page and use the **"Registrar System User token"** form, which posts to
 `/me` on Graph API, encrypted and saved alongside the user token. Switch the
 active token from the same UI.
 
+The same page, also reachable as `/auth/connections`, is where a user
+registers the two credentials that the paid tools need: an **Apify token**
+for the `ads_library_*` scraping tools and a **Gemini API key** for
+`ads_analyze_video`. Each is validated against its provider with a short
+timeout, encrypted with the same AES-256-GCM layer under its own AAD
+namespace, and stored per user; the tool calls then resolve the credential
+from the OAuth identity of the caller and fail closed when there is none, so
+one advertiser's scrapes and analyses are never billed to another's account.
+The registration posts are same-origin only and rate-limited, because each
+one makes an outbound validation call. The equivalent MCP tools are
+`ads_library_register_apify_token` and `ads_register_gemini_key`, with a
+status and a delete tool for each.
+
 ## Token lifecycle and rotation
 
 | Event | What the server does |
@@ -269,6 +282,14 @@ via `mcpAuthRouter()` from the official MCP SDK plus custom handlers:
 | `/auth/meta` | GET | custom | Kick off Facebook Login |
 | `/auth/meta/callback` | GET | custom | Exchange FB code → long-lived token |
 | `/auth/register-system-token` | POST | custom | Persist System User token |
+| `/auth/select-token` | POST | custom | Choose which stored Meta token is active |
+| `/auth/delete-token` | POST | custom | Remove a stored Meta token |
+| `/auth/connections` | GET | custom | Connections page: Meta tokens, Apify token, Gemini key |
+| `/auth/register-apify-token` | POST | custom | Validate and store the user's Apify token (encrypted); same-origin, rate-limited |
+| `/auth/delete-apify-token` | POST | custom | Remove the stored Apify token |
+| `/auth/register-gemini-key` | POST | custom | Validate and store the user's Gemini key (encrypted); same-origin, rate-limited |
+| `/auth/delete-gemini-key` | POST | custom | Remove the stored Gemini key |
+| `/auth/logout` | POST | custom | End the browser session |
 | `/token` | POST | `mcpAuthRouter` | Code → JWT exchange, 60 req / 15 min |
 | `/revoke` | POST | `mcpAuthRouter` | Revoke MCP refresh token |
 | `/mcp` | POST | StreamableHTTP transport | All `tools/call` |

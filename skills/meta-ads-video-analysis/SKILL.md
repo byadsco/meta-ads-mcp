@@ -18,7 +18,7 @@ Ask what your own model can ingest, then pick once. Getting this wrong wastes ei
 | Text only, or you want a written verdict on file | `ads_analyze_video` | the tenant's Gemini quota, about 0.02 USD |
 | You only need the link | `delivery: "url"` | none |
 
-`inline` embeds the MP4 as a resource blob, so a video-capable model watches the actual ad with no intermediary. It is measured in megabytes and Claude clients reject results that large, so do not reach for it by default.
+`inline` embeds the MP4 as a resource blob, so a video-capable model watches the actual ad with no intermediary. It is measured in megabytes: up to 20 MiB per video over HTTP, and 6 MiB for the whole result over stdio (Claude Desktop, and Claude Code when it runs the server locally), because MCP SDK clients close the connection on a message above 10 MiB. The budget is about the transport, not the model; on those two clients the Claude models read images rather than video anyway, so use `frames` and never reach for `inline` by default.
 
 `frames` extracts real keyframes with ffmpeg and returns them as image blocks. A contact sheet by default, which is the cheapest useful view; `frame_layout: "individual"` when timing matters; `include_audio: true` adds the audio track for a model that hears.
 
