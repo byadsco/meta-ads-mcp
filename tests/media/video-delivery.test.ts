@@ -1,7 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { deliverVideos, type VideoDeliveryDeps } from "../../src/media/video-delivery.js";
+import { deliverVideos, responseBytesBudget, type VideoDeliveryDeps } from "../../src/media/video-delivery.js";
 import type { VideoSource } from "../../src/media/video-sources.js";
 import type { Ffmpeg, VideoProbe } from "../../src/media/ffmpeg.js";
 import { createVideoJobRunner } from "../../src/media/video-jobs.js";
@@ -183,14 +183,36 @@ describe("deliverVideos", () => {
     expect(result.videos[0].delivered.transcoded).toBe(false);
   });
 
-  it("caps max_inline_bytes at 20 MB over http and 50 MB over stdio", async () => {
+  it("caps max_inline_bytes at 20 MB over http and 6 MB over stdio", async () => {
     const http = fakeDeps({ transport: "http" });
     await deliverVideos([SOURCE], { delivery: "inline", max_inline_bytes: 200_000_000 }, http, CTX);
     expect((http.ffmpeg as ReturnType<typeof fakeFfmpeg>).calls).toContain(`compact:${20 * 1024 * 1024}`);
 
     const stdio = fakeDeps({ transport: "stdio" });
     await deliverVideos([SOURCE], { delivery: "inline", max_inline_bytes: 200_000_000 }, stdio, CTX);
-    expect((stdio.ffmpeg as ReturnType<typeof fakeFfmpeg>).calls).toContain(`compact:${50 * 1024 * 1024}`);
+    expect((stdio.ffmpeg as ReturnType<typeof fakeFfmpeg>).calls).toContain(`compact:${6 * 1024 * 1024}`);
+  });
+
+  it("exposes the whole-response budget per transport for the tools that attach images first", () => {
+    expect(responseBytesBudget("http")).toBe(30 * 1024 * 1024);
+    expect(responseBytesBudget("stdio")).toBe(6 * 1024 * 1024);
+  });
+
+  it("caps the per-call media budget at 6 MB over stdio even when the caller asks for more", async () => {
+    // A compact rendition that ignores the cap it was given and comes back at 7 MB.
+    const sevenMb = async (_input: string, o: { outDir: string; height: number }) => {
+      const out = path.join(o.outDir, "compact.mp4");
+      await fs.writeFile(out, Buffer.alloc(7 * 1024 * 1024, 1));
+      return { path: out, bytes: 7 * 1024 * 1024, height: o.height };
+    };
+
+    const http = fakeDeps({ transport: "http", ffmpeg: fakeFfmpeg({ compact: sevenMb }) });
+    const overHttp = await deliverVideos([SOURCE], { delivery: "inline" }, http, CTX, { totalBytesBudget: 200 * 1024 * 1024 });
+    expect(overHttp.videos[0].delivered.mode).toBe("inline");
+
+    const stdio = fakeDeps({ transport: "stdio", ffmpeg: fakeFfmpeg({ compact: sevenMb }) });
+    const overStdio = await deliverVideos([SOURCE], { delivery: "inline" }, stdio, CTX, { totalBytesBudget: 200 * 1024 * 1024 });
+    expect(overStdio.videos[0].delivered.mode).toBe("skipped_size_budget");
   });
 
   it("degrades frames to thumbnail with a warning when ffmpeg is unavailable", async () => {

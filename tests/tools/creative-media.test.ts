@@ -559,6 +559,29 @@ describe("ads_get_creative_media video_delivery", () => {
     expect(limits.totalBytesBudget).toBe(24 * 1024 * 1024);
   });
 
+  it("over stdio, sizes the images and the pipeline from the 6 MiB response budget together", async () => {
+    const server = createMockMcpServer();
+    const download = vi.fn(async (url: string, options?: { maxBytes?: number }) => ({
+      buffer: Buffer.alloc(4 * 1024 * 1024),
+      contentType: "image/jpeg",
+      extension: ".jpg" as const,
+      finalUrl: new URL(url),
+      maxBytesOffered: options?.maxBytes,
+    }));
+    const deliverVideos = vi.fn(async () => ({ blocks: [], videos: [], warnings: [], bytes: 0 }));
+    registerCreativeMediaTools(server as never, { download: download as never, deliverVideos: deliverVideos as never, transport: "stdio" });
+    vi.stubGlobal("fetch", videoCreativeFetch());
+
+    await server._registeredTools[0].handler({ creative_id: "40123", video_delivery: "frames" });
+
+    // The image loop was never offered more than the whole stdio budget.
+    const offered = download.mock.calls[0][1] as { maxBytes?: number };
+    expect(offered.maxBytes).toBeLessThanOrEqual(6 * 1024 * 1024);
+    // And the pipeline gets only what the 4 MiB image left of those 6 MiB.
+    const limits = deliverVideos.mock.calls[0][4] as { totalBytesBudget: number };
+    expect(limits.totalBytesBudget).toBe(2 * 1024 * 1024);
+  });
+
   it("does not offer inline delivery on this tool", () => {
     const server = createMockMcpServer();
     registerCreativeMediaTools(server as never, { download: fakeDownload() as never });

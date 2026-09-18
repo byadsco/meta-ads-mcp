@@ -158,7 +158,7 @@ and cannot operate across multiple advertiser accounts.
 
 ## Compatibility
 
-- Node 20+
+- Node 20+ for the 3.x line. From 4.0.0 the floor is Node 22.13+.
 - `@modelcontextprotocol/sdk` ^1.29 (annotations + `registerTool` API).
 - HTTP and stdio transports unchanged.
 - Per-user OAuth, System User token registry, server-to-server API key,

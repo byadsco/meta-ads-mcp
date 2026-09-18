@@ -167,7 +167,7 @@ export function registerVideoMediaTools(server: McpServer, deps: VideoMediaDeps 
         frame_width: z.number().int().min(160).max(1280).default(640).describe("Width of individual frames in px"),
         include_audio: z.boolean().default(false).describe("Also return the audio track as an audio/aac block (frames mode; only useful for audio-capable models)"),
         quality: z.enum(["compact", "original"]).default("compact").describe("inline mode: compact = 480p/10fps h264 transcode that fits max_inline_bytes; original = embed the CDN file untouched if it fits"),
-        max_inline_bytes: z.number().int().min(1_048_576).max(52_428_800).default(20_971_520).describe("inline mode size cap in bytes (hard cap 20 MB over HTTP, 50 MB over stdio)"),
+        max_inline_bytes: z.number().int().min(1_048_576).max(52_428_800).default(20_971_520).describe("inline mode size cap in bytes; clamped to 20 MiB over HTTP and 6 MiB over stdio, where MCP SDK clients read through a 10 MiB buffer by default"),
         max_videos: z.number().int().min(1).max(3).default(3).describe("Cap on videos processed per call (carousels / asset feeds)"),
       },
       annotations: { ...READ },
