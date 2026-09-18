@@ -324,9 +324,23 @@ jobs:
           service: ${{ env.SERVICE_NAME }}
           region: ${{ secrets.GCP_REGION }}
           image: ${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/meta-ads-mcp/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          # --execution-environment must stay pinned to gen2 and must not be
+          # dropped. Left unset the platform chooses, and on 2026-09-17 that
+          # choice stopped being able to start this container at all with the
+          # in-memory /tmp volume below mounted: the instance was created,
+          # never opened the port and emitted no output, so three deploys in a
+          # row died on the 240s startup probe with nothing in the logs. The
+          # merged code is not what broke it: the last known good image failed
+          # identically when redeployed. Pinned to gen2 that same image answers
+          # /health in under half a second with ffmpeg available. The root
+          # cause of the change in the unset behaviour is not established.
+          # Dropping the volume also lets it start, but ffmpeg then does not
+          # execute: frame extraction warns and falls back to thumbnails, and
+          # inline delivery only works when the original already fits the cap.
           flags: >-
             --allow-unauthenticated
             --service-account=${{ secrets.GCP_RUNTIME_SERVICE_ACCOUNT }}
+            --execution-environment=gen2
             --memory=2Gi
             --cpu=2
             --concurrency=40
