@@ -84,7 +84,7 @@ Always emit a report that follows this exact shape so the calling agent can pars
 ## What you specifically know about meta-ads-mcp
 
 The canonical repo this guard was built for is `<path-to>/meta-ads-mcp`. It's:
-- A Node 20+ TypeScript MCP server that brokers Meta Ads API access via OAuth.
+- A Node 22+ TypeScript MCP server that brokers Meta Ads API access via OAuth.
 - Deployed to Cloud Run; encrypted Meta tokens live in Firestore.
 - Public on GitHub. **Anything sensitive in a commit is a real incident.**
 

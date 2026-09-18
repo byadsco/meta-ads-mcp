@@ -6,7 +6,7 @@
 
 [![License: MIT](https://img.shields.io/github/license/byadsco/meta-ads-mcp)](LICENSE)
 [![CI](https://img.shields.io/github/actions/workflow/status/byadsco/meta-ads-mcp/ci.yml?branch=main&label=CI)](https://github.com/byadsco/meta-ads-mcp/actions/workflows/ci.yml)
-[![Node](https://img.shields.io/badge/node-%3E%3D20-339933?logo=node.js&logoColor=white)](https://nodejs.org)
+[![Node](https://img.shields.io/badge/node-%3E%3D22.13-339933?logo=node.js&logoColor=white)](https://nodejs.org)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.7-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![MCP](https://img.shields.io/badge/MCP-1.29-7c3aed)](https://modelcontextprotocol.io)
 [![Cloud Run ready](https://img.shields.io/badge/Cloud_Run-ready-4285F4?logo=googlecloud&logoColor=white)](https://cloud.google.com/run)
@@ -305,7 +305,7 @@ Tool definitions live under [src/tools/](src/tools/), wired together in [src/too
 
 ### Prerequisites
 
-- **Node.js 20.10+** (the project uses Import Attributes for JSON imports). Node 22 is used in the Docker image.
+- **Node.js 22.13+** (the project uses Import Attributes for JSON imports). The Docker image runs the same major.
 - A **Meta access token** with `ads_management` and `ads_read` permissions, *or* a Meta App configured for Facebook Login (see below).
 
 ### Install & run
