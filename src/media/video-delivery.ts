@@ -34,7 +34,12 @@ export type InlineQuality = "compact" | "original";
 const MB = 1024 * 1024;
 export const DEFAULT_MAX_INLINE_BYTES = 20 * MB;
 export const HTTP_MAX_INLINE_BYTES = 20 * MB;
-export const STDIO_MAX_INLINE_BYTES = 50 * MB;
+// The MCP SDK reads stdio through a buffer that closes the transport on any
+// single message above 10 MB (STDIO_DEFAULT_MAX_BUFFER_SIZE, since 1.30.0),
+// on the client side too, so the whole result has to fit under that: base64
+// adds a third, and the poster block and the JSON share the message.
+export const STDIO_MAX_INLINE_BYTES = 6 * MB;
+export const STDIO_VIDEO_TOTAL_BYTES_BUDGET = 6 * MB;
 export const DEFAULT_VIDEO_TOTAL_BYTES_BUDGET = 30 * MB;
 const DEFAULT_MAX_VIDEOS = 3;
 const HARD_MAX_VIDEOS = 3;
@@ -183,7 +188,11 @@ export async function deliverVideos(
   const blocks: ContentBlock[] = [];
   const videos: DeliveredVideo[] = [];
   const warnings: string[] = [];
-  const budget: Budget = { total: limits.totalBytesBudget ?? DEFAULT_VIDEO_TOTAL_BYTES_BUDGET, used: 0 };
+  const requestedBudget = limits.totalBytesBudget ?? DEFAULT_VIDEO_TOTAL_BYTES_BUDGET;
+  const budget: Budget = {
+    total: transport === "stdio" ? Math.min(requestedBudget, STDIO_VIDEO_TOTAL_BYTES_BUDGET) : requestedBudget,
+    used: 0,
+  };
 
   const maxVideos = Math.min(options.max_videos ?? DEFAULT_MAX_VIDEOS, HARD_MAX_VIDEOS);
   const selected = sources.slice(0, maxVideos);

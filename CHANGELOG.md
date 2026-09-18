@@ -227,6 +227,16 @@ no code here but change delivery:
 
 ### Fixed
 
+- **`inline` video delivery over stdio is capped at 6 MB, down from 50.** MCP
+  SDK 1.30.0 reads stdio through a buffer that closes the transport on any
+  single message above 10 MB, and it does so on the client side, where the
+  tool result arrives. A client on that SDK could never have received the
+  50 MB the tool advertised; the connection would have dropped instead. The
+  cap now leaves room for base64, which adds a third, and for the poster
+  block and the JSON that share the message, and the per-call media budget
+  over stdio is capped the same way. HTTP is unchanged at 20 MB. Clients that
+  raise the SDK's `maxBufferSize` gain nothing here yet; the cap is a
+  constant, not a setting.
 - **Cloud Run deploys are pinned to the second generation execution
   environment.** Three consecutive deploys failed with nothing to go on: the
   revision was created, instances started in a loop, no instance ever opened
