@@ -1,12 +1,12 @@
 # meta-ads-mcp — agent guide
 
-Project memory for Claude Code (and any other AI assistant). This file is committed and shared with everyone working on the repo.
+Project memory for Claude Code, Codex and any other AI assistant. `CLAUDE.md` and `AGENTS.md` are the same document, kept identical; edit both. This file is committed and shared with everyone working on the repo.
 
 ## What this project is
 
 A Model Context Protocol server that brokers Meta Ads API access for advertising agencies. Multi-tenant, OAuth-gated, with encrypted-at-rest token storage in Firestore. Deployed to Google Cloud Run.
 
-- **Stack**: Node 22.13+, TypeScript (ESM), Express 5, vitest, Pino, Zod, Firestore. MCP SDK 1.29 (`registerTool` API + `ToolAnnotations`).
+- **Stack**: Node 22.13+, TypeScript (ESM), Express 5, vitest, Pino, zod 4, Firestore. MCP SDK 1.30 (`registerTool` API + `ToolAnnotations`). ffmpeg in the image for the video tools.
 - **Entry**: [src/index.ts](src/index.ts) → [src/transport/http.ts](src/transport/http.ts).
 - **Deploy**: push to `main` triggers [.github/workflows/deploy.yml](.github/workflows/deploy.yml). PRs trigger [.github/workflows/ci.yml](.github/workflows/ci.yml).
 - **License**: MIT. **Repository is public on GitHub.**

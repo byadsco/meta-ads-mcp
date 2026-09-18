@@ -9,7 +9,7 @@ Reading is free; writing is not. A tool whose description starts with ⚠️ cha
 
 Several tools exist so you do not have to make ten calls and stitch the answers together. ads_get_ad_dossier returns everything about one of your ads — ad, ad set, campaign, creative, targeting, performance and media — in a single call. ads_diagnose_underperformance combines anomaly detection, auction rankings, pixel health and active issues.
 
-To actually look at an ad: ads_get_creative_media returns the images as blocks a multimodal model reads directly. For video, choose by what your own model can ingest — ads_get_video_media with delivery=inline embeds the MP4 for a video-capable model, delivery=frames extracts real keyframes for an image-capable one, and both are free. ads_analyze_video has the server watch it with Gemini and costs the advertiser about 0.02 USD, so reach for it only when your model cannot see video at all.
+To actually look at an ad: ads_get_creative_media returns the images as blocks a multimodal model reads directly. For video, choose by what your own model can ingest — ads_get_video_media with delivery=inline embeds the MP4 for a video-capable model, delivery=frames extracts real keyframes for an image-capable one, and both are free. Over stdio a result carries at most 6 MiB of media in total, so prefer frames there. ads_analyze_video has the server watch it with Gemini and costs the advertiser about 0.02 USD, so reach for it only when your model cannot see video at all.
 
 Competitor research through ads_library_* reads the public Meta Ad Library and spends the advertiser's Apify credit, roughly 0.75 USD per 1,000 ads. List existing runs before starting a new scrape: reading a dataset again is free.
 

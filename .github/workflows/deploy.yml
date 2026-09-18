@@ -483,6 +483,31 @@ jobs:
           echo "created=true" >> "$GITHUB_OUTPUT"
           echo "Released $TAG at $DEPLOYED_SHA. The follow-up publish job will ship npm + ghcr artifacts."
 
+      # Context7 indexes this repository's documentation for coding agents
+      # (context7.com/byadsco/meta-ads-mcp) and only re-reads it when asked.
+      # Runs on every push to main, not only on a release, so a docs-only
+      # merge refreshes the index too. Needs an owner API key stored as the
+      # CONTEXT7_API_KEY secret; without it the step says so and exits 0.
+      # continue-on-error keeps a Context7 outage from failing this job,
+      # which would block the publish job that depends on it.
+      - name: Refresh Context7 index
+        continue-on-error: true
+        env:
+          CONTEXT7_API_KEY: ${{ secrets.CONTEXT7_API_KEY }}
+        run: |
+          set -eu
+          if [ -z "${CONTEXT7_API_KEY}" ]; then
+            echo "CONTEXT7_API_KEY is not set; skipping the Context7 refresh."
+            exit 0
+          fi
+          curl --fail --silent --show-error --max-time 30 \
+            -X POST https://context7.com/api/v1/refresh \
+            -H "Authorization: Bearer ${CONTEXT7_API_KEY}" \
+            -H "Content-Type: application/json" \
+            -d '{"libraryName":"/byadsco/meta-ads-mcp"}'
+          echo
+          echo "Context7 refresh requested."
+
   publish:
     # Trigger publish.yml explicitly via workflow_call. We can't rely on the
     # `release: published` event because GitHub blocks recursive triggers from

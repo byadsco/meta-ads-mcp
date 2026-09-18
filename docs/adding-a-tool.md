@@ -377,10 +377,11 @@ The full checklist lives in [.github/PULL_REQUEST_TEMPLATE.md](../.github/PULL_R
 
 - [ ] New file under `src/tools/` plus mirror test under `tests/tools/`.
 - [ ] Registered in [src/tools/index.ts](../src/tools/index.ts) with a `registerXxxTools(server)` call **and** total tool count bumped in [tests/tools/registration.test.ts](../tests/tools/registration.test.ts).
+- [ ] Listed in [skills/meta-ads-mcp-guide/references/tool-map.md](../skills/meta-ads-mcp-guide/references/tool-map.md) under the intent it serves, with a ⚠️ mark if and only if it is a write tool, and the "N in total; M are read-only" line updated. [tests/skills/tool-map.test.ts](../tests/skills/tool-map.test.ts) fails when a registered tool is missing from the map, when the map names a tool that does not exist, or when a ⚠️ mark disagrees with the tool's annotations.
 - [ ] Tool name uses `ads_*` prefix, with `ad_set` (not `adset`) where applicable.
 - [ ] `annotations` declared with the right constant from [src/tools/_register.ts](../src/tools/_register.ts); write-tool descriptions prefixed with `WRITE_WARNING`.
 - [ ] Zod schema with `.describe()` on every field; narrow enums where possible.
-- [ ] All Graph API calls go through `metaApiClient` — no direct `fetch`. (Apify calls go through `apifyApiClient`; any other upstream needs its own client.)
+- [ ] All Graph API calls go through `metaApiClient` — no direct `fetch`. (Apify calls go through `apifyApiClient` in [src/apify/client.ts](../src/apify/client.ts); Gemini calls go through the client in [src/gemini/client.ts](../src/gemini/client.ts); video and image downloads go through [src/media/](../src/media/); any other upstream needs its own client with the same DNS pinning and host allowlist.)
 - [ ] IDs validated with `normalizeAccountId` / `validateMetaId`.
 - [ ] If the endpoint hits `/insights`, `enforceInsightsGuardrails(...)` is called.
 - [ ] No raw token in logs (`hashToken` / `maskToken`).

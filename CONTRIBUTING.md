@@ -53,10 +53,11 @@ A separate CI job runs [gitleaks](https://github.com/gitleaks/gitleaks) against 
 - **TypeScript strict mode.** No `any` unless you can justify it in review.
 - **Zod schemas** for every tool input. The MCP SDK relies on them for both validation and the JSON Schema served to clients.
 - **Pino structured logs.** Use `event=...` keys for anything an operator might grep for; never log a Meta token in plaintext (`maskToken()` exists for this).
+- **ffmpeg for the keyframe tests.** [tests/media/ffmpeg.integration.test.ts](tests/media/ffmpeg.integration.test.ts) runs the real binary on a synthetic clip and skips itself when `ffmpeg` is not on your PATH. CI installs it and sets `FFMPEG_REQUIRED=1`, which turns that skip into a failure, so a missing binary is caught there, not on your machine.
 
 ## Adding a new tool
 
-If you want to expose a Meta Marketing API endpoint that the 93 built-in tools don't cover, see the full walkthrough in [docs/adding-a-tool.md](docs/adding-a-tool.md). Quick summary:
+If you want to expose a Meta Marketing API endpoint that the 142 built-in tools don't cover, see the full walkthrough in [docs/adding-a-tool.md](docs/adding-a-tool.md). Quick summary:
 
 - New file under [src/tools/](src/tools/) (or extend an existing category) exporting a `register*Tools(server)` function that calls `server.registerTool(name, { description, inputSchema, annotations }, handler)`.
 - Use the `ads_*` naming convention (no `meta_` prefix) and the modern `registerTool` API. The legacy `server.tool(...)` form is deprecated upstream and removed from this repo in v3.0.0.
@@ -111,31 +112,21 @@ Two automated paths run independently:
 
 ### Cutting a new release
 
-1. **Open a PR that bumps `version` in [package.json](package.json) only.** Use semver — `2.0.2` for fix-only, `2.1.0` for new features, `3.0.0` for breaking changes. Edit the `version` field by hand. **Do not run `npm version` locally** — it creates the git tag at the same time, which collides with the tag `gh release create` will make on the squash-merge commit and leaves the repo half-bumped.
+1. **Open a PR that bumps the version.** It touches three files and nothing else: the `version` field in [package.json](package.json), the two `version` fields at the top of [package-lock.json](package-lock.json) (the root entry and `packages[""]`), and [CHANGELOG.md](CHANGELOG.md), where you leave `## [Unreleased]` in place with an empty body and insert `## [X.Y.Z] — YYYY-MM-DD` right below it so the existing body becomes the release's. Use semver: a patch for fixes only, a minor for new features, a major for anything that breaks an installer or a client, which includes raising `engines.node` and changing the published tool schemas. Edit the fields by hand. **Do not run `npm version` locally**: it creates a tag at the same time, which collides with the tag the release job makes on the squash-merge commit and leaves the repo half-bumped.
 2. **Merge the PR.** Branch protection requires a CODEOWNERS review; since you can't review your own PR, admin bypass is fine for a version-only change.
-3. **Create the release on the merged commit:**
+3. **Let [deploy.yml](.github/workflows/deploy.yml) do the rest.** On the push to `main` it deploys, then its `release` job reads the version from `package.json` and, if no GitHub Release exists for `vX.Y.Z`, creates one at the deployed commit with `--generate-notes` (the body lists the merged PRs since the previous tag). Its `publish` job then runs [publish.yml](.github/workflows/publish.yml), which pushes the npm package to `npm.pkg.github.com` and the image to `ghcr.io/byadsco/meta-ads-mcp` tagged `X.Y.Z`, `X.Y`, `X` and `latest`. Pushes that do not change the version skip both jobs. If the repository has a `CONTEXT7_API_KEY` secret, the same job also asks Context7 to re-index the documentation; without the secret that step is skipped.
+4. **Watch it and verify the artifacts:**
 
     ```bash
-    git checkout main && git pull
-    gh release create vX.Y.Z --target main --generate-notes
-    ```
-
-    `--target main` tells `gh release create` to make the tag at the latest commit on `main` (the squash merge from step 2). `--generate-notes` populates the release body from the merged PRs since the previous tag. If a release for that tag already exists `gh` errors out with HTTP 422, which is the collision check we want — do **not** add `--verify-tag`, that flag does the opposite (aborts when the tag does *not* exist remotely).
-
-4. **Watch `publish.yml`:**
-
-    ```bash
-    gh run list --workflow="Publish to GitHub Packages" --limit 1
-    ```
-
-    When it goes green, verify the artifacts:
-
-    ```bash
+    gh run list --workflow="Deploy to Cloud Run" --limit 1
+    gh release view vX.Y.Z
     docker pull ghcr.io/byadsco/meta-ads-mcp:X.Y.Z
     npm view @byadsco/meta-ads-mcp@X.Y.Z --registry=https://npm.pkg.github.com
     ```
 
-For a **prerelease** (`v3.0.0-rc.1`, `v3.0.0-beta.2`), pass `--prerelease` to `gh release create`. `publish.yml` detects the flag and (a) publishes the npm package under the `next` dist-tag instead of `latest`, and (b) skips emitting the `:latest` Docker tag — the semver-shaped tags still ship.
+The manual path still works if the automation ever fails: `gh release create vX.Y.Z --target main --generate-notes` on the merged commit creates the release, and `publish.yml` runs on the `release: published` event. Do **not** add `--verify-tag`; that flag aborts when the tag does *not* exist remotely, the opposite of what you want.
+
+For a **prerelease**, put the pre-release identifier in the version itself (`4.1.0-rc.1`). The release job detects the hyphen and marks the GitHub Release as a prerelease; `publish.yml` then publishes the npm package under the `next` dist-tag instead of `latest` and skips the `:latest` Docker tag, while the semver-shaped tags still ship.
 
 ## Questions
 

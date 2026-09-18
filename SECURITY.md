@@ -79,6 +79,11 @@ The runtime defences below are summarised in the [Security section of the README
 - **In-process rate limiting** — `/register` (20 req / 15 min) and `/token` (60 req / 15 min) per IP.
 - **Token masking in logs** — `maskToken()` is the only allowed way to refer to a Meta token in logs; raw tokens never appear.
 - **Deploy auth** — Workload Identity Federation. **No service-account JSON keys** are ever committed or stored as GitHub secrets.
+- **Media pipeline** — a video is only ever downloaded from a host whose suffix is on the allowlist (`VIDEO_ALLOWED_HOST_SUFFIXES`, Meta's CDNs by default), through a DNS-pinned connection that re-validates every redirect, streamed to a per-video scratch directory on tmpfs rather than buffered in memory. ffmpeg and ffprobe run through `execFile` with no shell, a `file`-only protocol whitelist, a format whitelist, single-threaded, with an output size cap and a hard kill on timeout. A per-instance semaphore, a per-call time budget, a per-tenant hourly limit and a per-result byte budget bound what one caller can make the server do. See [src/media/safe-video-download.ts](src/media/safe-video-download.ts), [src/media/ffmpeg.ts](src/media/ffmpeg.ts) and [src/media/video-jobs.ts](src/media/video-jobs.ts).
+- **Gemini keys** — a tenant's Gemini API key is encrypted with the same AES-256-GCM layer under its own AAD namespace (`gemini_key:<user>:default`), so a ciphertext can never be decrypted as a different kind of credential or for a different user. The key travels only in the `x-goog-api-key` header, never in a URL; the resumable upload URL Google returns is checked for scheme, host and path before any bytes are sent; uploaded files are deleted after analysis; and the key is scrubbed from every error. Tenant resolution fails closed: in multi-tenant mode a call without an OAuth identity gets no key at all. See [src/gemini/client.ts](src/gemini/client.ts), [src/store/gemini-key-repo.ts](src/store/gemini-key-repo.ts) and [src/auth/tenant.ts](src/auth/tenant.ts).
+- **Apify tokens** — same per-tenant encrypted store and the same fail-closed tenant rule, so one advertiser's Ad Library scrape can never be billed to another's account or to the operator's. Every scrape carries a hard cost cap. See [src/store/apify-token-repo.ts](src/store/apify-token-repo.ts).
+- **Skill loader** — the skills published as MCP resources are read from a fixed root with `lstat`, so a symlink is never followed, and only `SKILL.md` and `references/*.md` are eligible, each under a size cap, with a file-count cap and an entry-count cap. Resource URIs are static; there is no path variable for a traversal to hide in. See [src/skills/loader.ts](src/skills/loader.ts).
+- **Credential-registration routes** — `POST /auth/register-apify-token` and `POST /auth/register-gemini-key` are same-origin only and rate-limited per IP, because each one makes an outbound validation call and would otherwise be an oracle for testing stolen credentials.
 
 ## Sensitive variables
 
@@ -92,6 +97,8 @@ The following environment variables are treated as hard secrets. If any of them 
 | `SESSION_COOKIE_SECRET` | Forge in-flight authenticating sessions. |
 | `TOKEN_ENCRYPTION_KEY` | Decrypt every Meta token at rest in Firestore. **Catastrophic.** |
 | `MCP_API_KEY` | Bypass OAuth entirely. |
+| `APIFY_TOKEN` | Full control of the Apify account: run any actor, drain credits, read every dataset. Fallback only; per-tenant tokens live encrypted in Firestore. |
+| `GEMINI_API_KEY` | Full use of the Google AI Studio project: burn paid quota and read anything uploaded to its Files API. Fallback only; per-tenant keys live encrypted in Firestore. |
 | GCP credentials (WIF / service account) | Deploy malicious revisions, read Firestore, escalate via IAM. |
 
 ## Pre-commit / pre-push secret scanning
@@ -101,6 +108,7 @@ Every PR and every push to `main` runs [gitleaks](https://github.com/gitleaks/gi
 - Meta access tokens (`EAA[A-Za-z0-9]{20,}`).
 - The full multi-tenant token map (`META_TOKENS={…EAA…}`).
 - Our named secrets (`META_APP_SECRET=`, `OAUTH_SECRET=`, `OAUTH_APPROVAL_PIN=`, `SESSION_COOKIE_SECRET=`, `TOKEN_ENCRYPTION_KEY=`, `MCP_API_KEY=`).
+- Apify API tokens (`apify_api_…`) and Gemini API keys (the `AQ.` prefix, and any `GEMINI_API_KEY=` assignment).
 - Google API keys (`AIza…`), OAuth tokens (`ya29.…`), service-account JSON.
 - Generic patterns: `-----BEGIN PRIVATE KEY-----`, GitHub PATs (`gh[pousr]_…`), AWS keys (`AKIA…`). <!-- gitleaks:allow -->
 
