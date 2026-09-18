@@ -192,7 +192,7 @@ consume:
 | `delivery` | What comes back | For |
 |---|---|---|
 | `frames` (default) | Evenly spaced keyframes as MCP `image` blocks — one contact sheet by default, `frame_layout=individual` for one image per frame, `include_audio` for an `audio/aac` block | Claude, GPT and any image-capable model |
-| `inline` | The MP4 itself as an MCP `resource` blob (`video/mp4`), transcoded to a compact 480p rendition that fits `max_inline_bytes` (20 MB cap over HTTP; 6 MB over stdio, where MCP SDK clients since 1.30 close the transport on any message above 10 MB) | Video-capable clients such as Gemini CLI or agents on the Gemini API — no intermediary needed |
+| `inline` | The MP4 itself as an MCP `resource` blob (`video/mp4`), transcoded to a compact 480p rendition that fits `max_inline_bytes` (20 MiB cap over HTTP; 6 MiB over stdio, shared with the poster and any images in the same result, because MCP SDK clients since 1.30 close the transport on any message above 10 MiB unless they raise the buffer) | Video-capable clients such as Gemini CLI or agents on the Gemini API — no intermediary needed |
 | `url` | Signed CDN links as `resource_link` blocks, with their expiry | Clients that fetch media themselves |
 | `thumbnail` | Poster image only | Cheap previews |
 

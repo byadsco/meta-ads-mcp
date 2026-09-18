@@ -42,7 +42,7 @@ import { imageBlock, safeHostname, sanitizeMetadataUrl, textBlock, type ContentB
 import { assertAllowedVideoHost, resolveAllowedVideoHostSuffixes } from "../media/safe-video-download.js";
 import {
   deliverVideos as defaultDeliverVideos,
-  DEFAULT_VIDEO_TOTAL_BYTES_BUDGET,
+  responseBytesBudget,
   type DeliveredVideo,
   type VideoDeliveryDeps,
 } from "../media/video-delivery.js";
@@ -771,7 +771,7 @@ export function registerAdsLibraryTools(server: McpServer, deps: AdLibraryToolDe
             meta.error = err instanceof Error ? err.message : String(err);
             continue;
           }
-          const remaining = IMAGE_BYTES_BUDGET - imageBytes;
+          const remaining = Math.min(IMAGE_BYTES_BUDGET, responseBytesBudget(deps.transport)) - imageBytes;
           if (remaining <= 0) {
             meta.skipped = "size_budget";
             continue;
@@ -801,7 +801,7 @@ export function registerAdsLibraryTools(server: McpServer, deps: AdLibraryToolDe
           { delivery: video_delivery, frame_count, frame_layout: "grid" },
           deps,
           { tenantId: resolveApifyTenantId(), signal: extra?.signal },
-          { totalBytesBudget: Math.max(0, DEFAULT_VIDEO_TOTAL_BYTES_BUDGET - imageBytes) },
+          { totalBytesBudget: Math.max(0, responseBytesBudget(deps.transport) - imageBytes) },
         );
         const shift = 1 + imageBlocks.length;
         videoBlocks = delivery.blocks;

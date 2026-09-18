@@ -34,13 +34,28 @@ export type InlineQuality = "compact" | "original";
 const MB = 1024 * 1024;
 export const DEFAULT_MAX_INLINE_BYTES = 20 * MB;
 export const HTTP_MAX_INLINE_BYTES = 20 * MB;
-// The MCP SDK reads stdio through a buffer that closes the transport on any
-// single message above 10 MB (STDIO_DEFAULT_MAX_BUFFER_SIZE, since 1.30.0),
-// on the client side too, so the whole result has to fit under that: base64
-// adds a third, and the poster block and the JSON share the message.
+// The MCP SDK reads stdio through a buffer that, by default, closes the
+// transport on any single message above 10 MiB (STDIO_DEFAULT_MAX_BUFFER_SIZE,
+// since 1.30.0), on the client side too. The whole tool result has to fit
+// under it: base64 adds a third, and images, posters, frames and the JSON
+// all share the one message. 6 MiB of raw media leaves the rest as room.
 export const STDIO_MAX_INLINE_BYTES = 6 * MB;
-export const STDIO_VIDEO_TOTAL_BYTES_BUDGET = 6 * MB;
+export const STDIO_RESPONSE_BYTES_BUDGET = 6 * MB;
 export const DEFAULT_VIDEO_TOTAL_BYTES_BUDGET = 30 * MB;
+
+function detectTransport(): "http" | "stdio" {
+  return isStdioTransport(process.argv) ? "stdio" : "http";
+}
+
+/**
+ * Raw media bytes one tool result may carry in total, images included. The
+ * tools that attach images before calling deliverVideos size their image
+ * budget from this too, so a composite response stays under the transport's
+ * message limit rather than only the video part of it.
+ */
+export function responseBytesBudget(transport: "http" | "stdio" = detectTransport()): number {
+  return transport === "stdio" ? STDIO_RESPONSE_BYTES_BUDGET : DEFAULT_VIDEO_TOTAL_BYTES_BUDGET;
+}
 const DEFAULT_MAX_VIDEOS = 3;
 const HARD_MAX_VIDEOS = 3;
 const DEFAULT_FRAME_COUNT = 6;
@@ -183,14 +198,15 @@ export async function deliverVideos(
   const downloadImage = deps.downloadImage ?? downloadSafePublicImage;
   const ffmpeg = deps.ffmpeg ?? getFfmpeg();
   const runner = deps.runner ?? getVideoJobRunner();
-  const transport = deps.transport ?? (isStdioTransport(process.argv) ? "stdio" : "http");
+  const transport = deps.transport ?? detectTransport();
 
   const blocks: ContentBlock[] = [];
   const videos: DeliveredVideo[] = [];
   const warnings: string[] = [];
-  const requestedBudget = limits.totalBytesBudget ?? DEFAULT_VIDEO_TOTAL_BYTES_BUDGET;
+  const ceiling = responseBytesBudget(transport);
+  const requestedBudget = limits.totalBytesBudget ?? ceiling;
   const budget: Budget = {
-    total: transport === "stdio" ? Math.min(requestedBudget, STDIO_VIDEO_TOTAL_BYTES_BUDGET) : requestedBudget,
+    total: transport === "stdio" ? Math.min(requestedBudget, ceiling) : requestedBudget,
     used: 0,
   };
 

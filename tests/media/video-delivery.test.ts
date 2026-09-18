@@ -1,7 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { deliverVideos, type VideoDeliveryDeps } from "../../src/media/video-delivery.js";
+import { deliverVideos, responseBytesBudget, type VideoDeliveryDeps } from "../../src/media/video-delivery.js";
 import type { VideoSource } from "../../src/media/video-sources.js";
 import type { Ffmpeg, VideoProbe } from "../../src/media/ffmpeg.js";
 import { createVideoJobRunner } from "../../src/media/video-jobs.js";
@@ -191,6 +191,11 @@ describe("deliverVideos", () => {
     const stdio = fakeDeps({ transport: "stdio" });
     await deliverVideos([SOURCE], { delivery: "inline", max_inline_bytes: 200_000_000 }, stdio, CTX);
     expect((stdio.ffmpeg as ReturnType<typeof fakeFfmpeg>).calls).toContain(`compact:${6 * 1024 * 1024}`);
+  });
+
+  it("exposes the whole-response budget per transport for the tools that attach images first", () => {
+    expect(responseBytesBudget("http")).toBe(30 * 1024 * 1024);
+    expect(responseBytesBudget("stdio")).toBe(6 * 1024 * 1024);
   });
 
   it("caps the per-call media budget at 6 MB over stdio even when the caller asks for more", async () => {

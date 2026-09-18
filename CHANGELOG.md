@@ -227,16 +227,21 @@ no code here but change delivery:
 
 ### Fixed
 
-- **`inline` video delivery over stdio is capped at 6 MB, down from 50.** MCP
-  SDK 1.30.0 reads stdio through a buffer that closes the transport on any
-  single message above 10 MB, and it does so on the client side, where the
-  tool result arrives. A client on that SDK could never have received the
-  50 MB the tool advertised; the connection would have dropped instead. The
-  cap now leaves room for base64, which adds a third, and for the poster
-  block and the JSON that share the message, and the per-call media budget
-  over stdio is capped the same way. HTTP is unchanged at 20 MB. Clients that
-  raise the SDK's `maxBufferSize` gain nothing here yet; the cap is a
-  constant, not a setting.
+- **Tool results over stdio are budgeted to fit the MCP SDK's read buffer.**
+  SDK 1.30.0 reads stdio through a buffer that, by default, closes the
+  transport on any single message above 10 MiB, and it does so on the client
+  side, where the tool result arrives. `inline` video advertised up to 50 MiB
+  over stdio; a client on that SDK could never have received it, the
+  connection would have dropped instead. The raw media budget for a whole
+  result over stdio is now 6 MiB, shared by everything in the message: the
+  inline video or the frames, the poster, and the images that
+  `ads_get_creative_media`, `ads_library_get_ad_details` and
+  `ads_get_ad_dossier` attach before the video part, which used to size their
+  images against the 30 MiB HTTP budget regardless of transport. Base64 adds
+  a third on top, and the JSON block shares the message too, which is what
+  the remaining room is for. HTTP budgets are unchanged, 20 MiB per inline
+  video and 30 MiB per result. Clients that raise the SDK's `maxBufferSize`
+  gain nothing here yet; the budget is a constant, not a setting.
 - **Cloud Run deploys are pinned to the second generation execution
   environment.** Three consecutive deploys failed with nothing to go on: the
   revision was created, instances started in a loop, no instance ever opened
