@@ -119,6 +119,32 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Changed
 
+- **zod 3 → 4.** Eight `z.record` calls gain the key schema zod 4 requires,
+  and one test that read zod 3's private internals to find an enum now reads
+  the JSON Schema a client sees. Nothing else in the code changed and the
+  full suite passes. Three runtime differences come with zod 4 itself, all
+  tightenings: `.int()` rejects integers beyond ±2^53−1, which no Meta id or
+  offset reaches; `z.number()` rejects ±Infinity, which JSON only produces
+  from an overflowing literal such as `1e400`; and `.url()` strips
+  surrounding whitespace and embedded tab, CR and LF, so a WhatsApp website
+  or endpoint is sent trimmed. What clients see also changes, because the MCP SDK
+  converts tool schemas with zod's own converter on zod 4 instead of
+  `zod-to-json-schema`, and the two differ. Compared field by field across
+  all 142 tools: `additionalProperties: false` disappears from 138 top-level
+  schemas and 43 nested objects (four tools have no properties and never had
+  it), which was a promise the runtime never kept, since `z.object` strips
+  unknown keys rather than rejecting them in both majors. MCP allows the
+  keyword to be omitted. The one place it mattered is OpenAI's strict
+  function calling, which requires it alongside every field being required;
+  109 tools have optional fields and never qualified, and the 33 whose fields
+  are all required did qualify and no longer do, an accepted change; 23
+  `$ref`s to reused sub-schemas are inlined, which
+  clients that do not resolve references can now read; the 12 free-form
+  records gain `propertyNames: {type: string}`; integer fields gain
+  safe-integer bounds; the email field gains a `pattern` next to its
+  `format`; and `.passthrough()` objects say `additionalProperties: {}`
+  rather than `true`, which mean the same. Serialized compactly, the
+  `tools/list` payload shrinks by 1%.
 - The server's version now comes from `package.json` rather than a constant
   that had already drifted (it reported 3.0.0 while the package was at 3.6.0).
 - The image download loop moved out of `ads_get_creative_media` into
