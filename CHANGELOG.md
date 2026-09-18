@@ -242,6 +242,14 @@ no code here but change delivery:
 
 ### Fixed
 
+- **The ffmpeg startup probe gets 30 seconds instead of 10.** On a fresh
+  Cloud Run node the first run of ffmpeg waits for the image layer that holds
+  it, which Cloud Run streams in on demand, and that fetch alone took the
+  startup probe past 10 seconds with CPU to spare; the instance then reported
+  no `ffmpeg` in `/health` until the first video call re-probed. The probe
+  that runs before the port opens now gets 30 seconds, well inside the 240
+  second startup budget and with nothing waiting on it; on-demand probes keep
+  10. The retry on first use stays as it was.
 - **Tool results over stdio are budgeted to fit the MCP SDK's read buffer.**
   SDK 1.30.0 reads stdio through a buffer that, by default, closes the
   transport on any single message above 10 MiB, and it does so on the client

@@ -52,7 +52,7 @@ import {
 import { isFirestoreEnabled } from "../store/firestore.js";
 import { logger } from "../utils/logger.js";
 import { unsafeIpReason } from "../utils/url-guard.js";
-import { getFfmpeg } from "../media/ffmpeg.js";
+import { STARTUP_VERSION_PROBE_TIMEOUT_MS, getFfmpeg } from "../media/ffmpeg.js";
 import { sweepStaleVideoDirs } from "../media/video-jobs.js";
 
 interface PendingAuth {
@@ -490,17 +490,24 @@ export async function startHttpTransport(
     }
   }
 
-  // Awaited before the port opens on purpose. Once the port is listening and
-  // no request is in flight, Cloud Run may throttle the CPU; a probe left
-  // running into that window took 7 to 10 seconds where it takes 60 ms with
-  // CPU, outlived its timeout, and was remembered as "no ffmpeg". Before the
-  // port opens the instance has the CPU it needs. The health check reads the
+  // Awaited before the port opens on purpose, and with a longer timeout than
+  // an on-demand probe gets. Once the port is listening and no request is in
+  // flight, Cloud Run may throttle the CPU; a probe left running into that
+  // window took 7 to 10 seconds where it takes 60 ms with CPU. And even
+  // before the port opens, the first run of ffmpeg on a fresh node waits for
+  // Cloud Run to stream in the image layer that holds it, which took a probe
+  // past 10 s with CPU to spare. There is a 240 s startup budget here and
+  // nothing waiting on the answer, so 30 s costs nothing in the common case
+  // and settles the answer in the slow one. The health check reads the
   // settled answer and never spawns a process per request.
   const ffmpegRuntime = getFfmpeg();
-  await ffmpegRuntime.isAvailable();
+  await ffmpegRuntime.isAvailable({ timeoutMs: STARTUP_VERSION_PROBE_TIMEOUT_MS });
   const ffmpegAtStartup = ffmpegRuntime.lastKnownAvailability();
   if (ffmpegAtStartup === undefined) {
-    logger.warn("ffmpeg probe was inconclusive (killed on timeout, or the spawn was refused for want of a resource); it will be retried on the first use after a short cooldown");
+    logger.warn(
+      { timeout_ms: STARTUP_VERSION_PROBE_TIMEOUT_MS },
+      "ffmpeg startup probe was inconclusive (killed on timeout, or the spawn was refused for want of a resource); it will be retried on the first use after a short cooldown",
+    );
   } else {
     logger.info(
       { ffmpeg_available: ffmpegAtStartup },
