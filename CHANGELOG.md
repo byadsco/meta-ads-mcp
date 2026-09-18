@@ -268,6 +268,19 @@ no code here but change delivery:
 
 ### Fixed
 
+- **The ffmpeg startup probe may run for 30 seconds without holding the port
+  for more than 10.** On a fresh Cloud Run node the first run of ffmpeg has
+  taken more than 10 seconds even with startup CPU, where a warm node answers
+  in about one; the likeliest reason is that Cloud Run streams image layers
+  on demand and the first execution waits for the layer that holds ffmpeg,
+  which is probable but not confirmed. Such an instance reported no `ffmpeg`
+  in `/health` until the first video call re-probed. The probe started at
+  boot now gets 30 seconds, but `listen` waits for it at most 10, as before:
+  with `min-instances` at zero a request is waiting on that cold start, so
+  the port is not held longer. If the probe is still running, it finishes in
+  the background and settles the answer when it completes; if it ends
+  inconclusively, killed at its timeout, the first video call re-probes after
+  the cooldown, as before. On-demand probes keep 10 seconds.
 - **Tool results over stdio are budgeted to fit the MCP SDK's read buffer.**
   SDK 1.30.0 reads stdio through a buffer that, by default, closes the
   transport on any single message above 10 MiB, and it does so on the client
