@@ -224,6 +224,30 @@ no code here but change delivery:
   needs regular bumps, planned from the retirement dates Meta publishes. The
   new warning log only confirms that a bump is already overdue.
 
+### Fixed
+
+- **Cloud Run deploys are pinned to the second generation execution
+  environment.** Three consecutive deploys failed with nothing to go on: the
+  revision was created, instances started in a loop, no instance ever opened
+  port 3000, and the container produced not a single line of output, so Cloud
+  Run could only report the generic 240s startup-probe timeout. The three
+  merged changes are not what broke it: the last known good image, byte for
+  byte the one already serving production, failed to start the same way when
+  redeployed, while every other service in the same project and region kept
+  starting instances normally. What separates a revision that starts from one
+  that does not is the execution environment, which the workflow had left
+  unset for the platform to choose: with the in-memory `/tmp` volume mounted
+  and the choice left open the container never starts, and pinned to `gen2`
+  the same image answers `/health` in under half a second and reports ffmpeg
+  available. The root cause of the change in the unset behaviour on
+  2026-09-17 is not established here; only the fix is. `gen2` is
+  also the setting that keeps both halves working, because dropping the volume
+  is enough to make the container start but ffmpeg then does not execute, so
+  frame extraction warns and falls back to thumbnails and inline delivery only
+  works when the original file already fits under `max_inline_bytes`. Delivery
+  by URL, thumbnails and the Gemini analysis of a compatible original are
+  unaffected either way.
+
 ### Security
 
 - The advertiser's own ad copy in the dossier is delimited as untrusted content
