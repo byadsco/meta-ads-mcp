@@ -65,11 +65,11 @@
     "@types/cookie-parser": "^1.4.10",
     "@types/cors": "^2.8.17",
     "@types/express": "^5.0.0",
-    "@types/node": "^22.0.0",
-    "eslint": "^10.0.2",
-    "tsx": "^4.19.0",
+    "@types/node": "^22.20.2",
+    "eslint": "^10.10.0",
+    "tsx": "^4.23.13",
     "typescript": "^5.7.0",
-    "typescript-eslint": "^8.56.1",
+    "typescript-eslint": "^8.70.0",
     "vitest": "^4.0.18"
   },
   "keywords": [
