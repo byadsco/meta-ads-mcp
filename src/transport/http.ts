@@ -53,6 +53,7 @@ import { isFirestoreEnabled } from "../store/firestore.js";
 import { logger } from "../utils/logger.js";
 import { unsafeIpReason } from "../utils/url-guard.js";
 import { STARTUP_VERSION_PROBE_TIMEOUT_MS, getFfmpeg } from "../media/ffmpeg.js";
+import { withDeadline } from "../utils/with-deadline.js";
 import { sweepStaleVideoDirs } from "../media/video-jobs.js";
 
 interface PendingAuth {
@@ -490,29 +491,41 @@ export async function startHttpTransport(
     }
   }
 
-  // Awaited before the port opens on purpose, and with a longer timeout than
-  // an on-demand probe gets. Once the port is listening and no request is in
-  // flight, Cloud Run may throttle the CPU; a probe left running into that
-  // window took 7 to 10 seconds where it takes 60 ms with CPU. And even
-  // before the port opens, the first run of ffmpeg on a fresh node waits for
-  // Cloud Run to stream in the image layer that holds it, which took a probe
-  // past 10 s with CPU to spare. There is a 240 s startup budget here and
-  // nothing waiting on the answer, so 30 s costs nothing in the common case
-  // and settles the answer in the slow one. The health check reads the
-  // settled answer and never spawns a process per request.
+  // Started before the port opens, so it gets startup CPU, and waited for a
+  // bounded time only: with min-instances at zero, a request that caused
+  // this cold start is waiting on listen, and every second here is a second
+  // added to it. On a warm node the probe answers in about a second. On a
+  // fresh node the first run of ffmpeg has taken more than 10 s even with
+  // CPU, most likely because Cloud Run streams image layers on demand and
+  // the first execution waits for the layer that holds it. For that case
+  // the probe itself gets 30 s and is left to finish in the background
+  // after listen; it settles the answer when it completes, and if it ends
+  // inconclusively, killed at its timeout, the first video call re-probes
+  // after the cooldown. The health check reads the settled answer and never
+  // spawns a process per request.
+  const STARTUP_PROBE_WAIT_MS = 10_000;
   const ffmpegRuntime = getFfmpeg();
-  await ffmpegRuntime.isAvailable({ timeoutMs: STARTUP_VERSION_PROBE_TIMEOUT_MS });
-  const ffmpegAtStartup = ffmpegRuntime.lastKnownAvailability();
-  if (ffmpegAtStartup === undefined) {
-    logger.warn(
-      { timeout_ms: STARTUP_VERSION_PROBE_TIMEOUT_MS },
-      "ffmpeg startup probe was inconclusive (killed on timeout, or the spawn was refused for want of a resource); it will be retried on the first use after a short cooldown",
-    );
+  const startupProbe = ffmpegRuntime.isAvailable({ timeoutMs: STARTUP_VERSION_PROBE_TIMEOUT_MS });
+  const logProbeOutcome = (phase: "at startup" | "after listen"): void => {
+    const known = ffmpegRuntime.lastKnownAvailability();
+    if (known === undefined) {
+      logger.warn(
+        { timeout_ms: STARTUP_VERSION_PROBE_TIMEOUT_MS, phase },
+        "ffmpeg startup probe was inconclusive (killed on timeout, or the spawn was refused for want of a resource); it will be retried on the first use after a short cooldown",
+      );
+    } else {
+      logger.info(
+        { ffmpeg_available: known, phase },
+        known ? "ffmpeg detected; video keyframe extraction enabled" : "ffmpeg not found; video tools fall back to thumbnails",
+      );
+    }
+  };
+  const waited = await withDeadline(startupProbe, STARTUP_PROBE_WAIT_MS);
+  if (waited.settled) {
+    logProbeOutcome("at startup");
   } else {
-    logger.info(
-      { ffmpeg_available: ffmpegAtStartup },
-      ffmpegAtStartup ? "ffmpeg detected; video keyframe extraction enabled" : "ffmpeg not found; video tools fall back to thumbnails",
-    );
+    logger.info({ waited_ms: STARTUP_PROBE_WAIT_MS }, "ffmpeg startup probe still running; opening the port and letting it finish in the background");
+    void startupProbe.then(() => logProbeOutcome("after listen"));
   }
   void sweepStaleVideoDirs().then((removed) => {
     if (removed > 0) logger.info({ removed }, "Removed stale video scratch directories");
