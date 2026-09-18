@@ -50,8 +50,9 @@ Users register their own key on `/auth/connections` or with
 `GET /v1beta/models?pageSize=1` before storing anything. Keys issued by AI
 Studio since September 2026 start with `AQ.`; the older `AIza…` shape is
 still accepted by the input check, and the live validation is what decides.
-The repository's gitleaks config recognises both shapes and any
-`GEMINI_API_KEY=` assignment, so a key cannot be committed by accident.
+The repository's gitleaks config recognises both shapes and a key-shaped
+`GEMINI_API_KEY=` assignment; the local pre-deploy guard blocks such a
+commit, and CI fails a PR that carries one.
 
 ## Cost and privacy
 
@@ -98,7 +99,8 @@ creatives.
   `gemini-3.8-flash` and only accepts identifiers matching `gemini-…`; anything
   else falls back to the default rather than being interpolated into a URL.
   `detail=standard` and `detail=deep` select the media resolution, not the
-  model, so a preview model id Google retires cannot break one of the two.
+  model; both levels use the one configured model, so there is a single
+  identifier to keep current when Google retires one.
 
 ## Handling the model's output as data
 

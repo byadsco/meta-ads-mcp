@@ -12,7 +12,8 @@ Node 22.13 or later.
   `>=22.13.0`; npm warns on older Node by default and refuses under
   `engine-strict`.
 - **Tool names and parameters are unchanged.** Every `ads_*` and `whatsapp_*`
-  tool accepts the same input it did in 3.6.0.
+  tool accepts the same valid input it did in 3.6.0; the only inputs zod 4
+  now rejects are ones no real call sends (see the runtime tightenings).
 - **The published JSON Schemas changed** because the server now uses zod 4,
   whose converter emits different JSON Schema than the one zod 3 used. The
   differences are listed below; none of them changes what the server accepts.
@@ -56,9 +57,12 @@ field. What a client sees differently:
 Serialized compactly, the `tools/list` payload shrinks by about 1%.
 
 **OpenAI strict function calling.** Strict mode requires
-`additionalProperties: false` together with every field being required. 109
-tools have optional fields and never qualified. The 33 tools whose fields are
-all required did qualify and no longer do. No MCP client is known to expose
+`additionalProperties: false` on every object together with every field being
+required. 102 tools have optional fields and never qualified. The other 40
+(36 with every top-level field required, 4 with no parameters at all) carried
+the keyword at the top level and no longer do; whether any of them satisfied
+strict mode in full also depended on their nested objects and free-form
+records, which strict mode needs closed too. No MCP client is known to expose
 tools that way; if yours does, add `additionalProperties: false` on the client
 side when building the function definition.
 
@@ -74,9 +78,9 @@ Validation error messages changed wording; the field, the options and
 
 SDK 1.30.0 reads stdio through a buffer that, by default, closes the
 transport on any single message above 10 MiB, and it does so on the client
-side, where a tool result arrives. In 3.6.0 `ads_get_video_media` advertised
-`inline` video up to 50 MiB over stdio; a client on that SDK could never have
-received it.
+side, where a tool result arrives. `ads_get_video_media` is new since 3.6.0,
+and its first version advertised `inline` video up to 50 MiB over stdio; a
+client on that SDK could never have received it.
 
 The raw media budget for one result over stdio is now 6 MiB, shared by
 everything in the message: the inline video or the frames, the poster, and the
@@ -87,9 +91,10 @@ for. HTTP is unchanged: 20 MiB per inline video and 30 MiB per result.
 
 What to do about it:
 
-- Claude Code and Claude Desktop connect over stdio and their model does not
-  ingest video anyway: use `delivery=frames`, which returns a contact sheet of
-  keyframes well under the budget.
+- Any client connected over stdio (Claude Desktop, and Claude Code when it
+  runs the server locally) should use `delivery=frames`, which returns a
+  contact sheet of keyframes well under the budget; their model does not
+  ingest video anyway.
 - A `max_inline_bytes` above the transport's cap is clamped, not rejected;
   existing calls keep working and get a smaller file.
 - Clients that raise the SDK's `maxBufferSize` gain nothing yet; the budget is
@@ -110,9 +115,12 @@ which helps long tool calls such as video extraction survive idle proxies.
   stopped starting this container on 2026-09-17; the deploy workflow now pins
   `--execution-environment=gen2`. If you deploy with your own command, add
   that flag.
-- **The image contains ffmpeg and `skills/`.** ffmpeg is what `frames` and
-  the compact transcode need; without it the video tools fall back to
-  thumbnails and say so. The skills are published as MCP resources at runtime.
+- **The image contains ffmpeg and `skills/`.** ffmpeg is what `frames`, the
+  compact `inline` transcode and the compaction before a Gemini upload need.
+  Without it, `frames` falls back to thumbnails with a warning, `inline` only
+  delivers an original that already fits the cap, and `ads_analyze_video`
+  cannot shrink a video that is over its upload limit. The skills are
+  published as MCP resources at runtime.
 - **`docker-compose.yml` mounts a tmpfs on `/tmp`** sized like the Cloud Run
   volume, and wires every `VIDEO_*` and `GEMINI_*` variable.
 - **`/health` reports `ffmpeg: true|false`** once the startup probe has been
@@ -131,12 +139,15 @@ before had drifted: it reported 3.0.0 while the package was at 3.6.0.
 - Per-user OAuth, System User token registry, server-to-server API key,
   Firestore-backed encrypted token store: all unchanged.
 - The `register*Tools(server)` exports remain stable, and no tool name changed.
-- ffmpeg is optional; only `delivery=frames` and inline transcodes use it.
+- ffmpeg is optional; `delivery=frames`, the compact `inline` transcode and
+  the pre-upload compaction for Gemini use it, and each degrades as described
+  above without it.
 
 ## Why no compatibility shim for the schemas?
 
-The old schemas claimed a strictness the server never enforced. Restoring
-`additionalProperties: false` would mean `z.strictObject`, which changes the
-runtime to reject unknown keys, a behaviour change this release should not
-make. The schemas now describe what the server does, and every call that
-worked on 3.6.0 works on 4.0.0.
+The old schemas claimed a strictness the server never enforced. The keyword
+could be put back by post-processing the converter's output without touching
+validation, but that would restore a claim the runtime does not honour, and
+making the runtime honour it (`z.strictObject`) would reject unknown keys, a
+behaviour change this release should not make. The schemas now describe what
+the server does, and every call that worked on 3.6.0 works on 4.0.0.

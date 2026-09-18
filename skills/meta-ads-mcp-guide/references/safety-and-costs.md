@@ -43,7 +43,7 @@ Media is expensive in context, not in money. An image block or a video frame cos
 
 - Prefer `image_size: "small"` when the question is "what is this ad", not "read the fine print".
 - `max_images` and `frame_count` are there to be lowered.
-- `delivery=inline` on a video is measured in megabytes; only use it for a client whose model ingests video. Over HTTP an inline video is capped at 20 MiB and a whole result at 30 MiB of raw media. Over stdio, which is how Claude Code and Claude Desktop connect, a whole result is capped at 6 MiB shared by the video, the poster and any images, because MCP SDK clients close the connection on a message above 10 MiB; there, use `frames`.
+- `delivery=inline` on a video is measured in megabytes; only use it for a client whose model ingests video. Over HTTP an inline video is capped at 20 MiB and a whole result at 30 MiB of raw media. Over stdio (Claude Desktop, and Claude Code when it runs the server locally) a whole result is capped at 6 MiB shared by the video, the poster and any images, because MCP SDK clients close the connection on a message above 10 MiB; there, use `frames`.
 - The server caps every response, and says so in a warning when it had to cut something. A `max_inline_bytes` above the cap is clamped, not rejected.
 
 ## ID and permission rules

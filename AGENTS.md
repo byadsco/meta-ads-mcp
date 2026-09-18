@@ -40,7 +40,7 @@ Before **any** `git commit -m`, `git push`, `gcloud run deploy`, `docker push`, 
    - Apify API tokens: `apify_api_[A-Za-z0-9]{20,}`
    - `META_TOKENS` as a JSON map of `EAA…` tokens (multi-tenant)
    - Google: `AIza[A-Za-z0-9_-]{35}`, `ya29\.[A-Za-z0-9_-]+`, GCP service account JSON
-   - Gemini keys: `AQ\.[A-Za-z0-9_-]{20,}` and any `GEMINI_API_KEY=` assignment
+   - Gemini keys: `AQ\.[A-Za-z0-9_-]{20,}` and a `GEMINI_API_KEY=` assignment whose value is key-shaped (20 or more key characters)
    - Generic: `-----BEGIN … PRIVATE KEY-----`, GitHub PATs (`gh[pousr]_`), AWS keys (`AKIA`)
 8. `.gitignore` covers `.env`, `.env.local`, `*.key`, `*.pem`, `credentials.json`, `service-account*.json`, `dist/`, `node_modules/`.
 

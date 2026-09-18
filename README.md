@@ -306,7 +306,7 @@ Tool definitions live under [src/tools/](src/tools/), wired together in [src/too
 ### Prerequisites
 
 - **Node.js 22.13+** (the project uses Import Attributes for JSON imports). The Docker image runs the same major.
-- **ffmpeg** (optional) — only needed for `delivery=frames` and the compact transcode in `ads_get_video_media`; without it the video tools fall back to thumbnails and say so. The Docker image installs it.
+- **ffmpeg** (optional) — used by `delivery=frames`, by the compact `inline` transcode and by the compaction before a Gemini upload. Without it, `frames` falls back to thumbnails with a warning, `inline` only delivers an original that already fits the cap, and `ads_analyze_video` cannot shrink a video over its upload limit. The Docker image installs it.
 - A **Meta access token** with `ads_management` and `ads_read` permissions, *or* a Meta App configured for Facebook Login (see below).
 
 ### Install & run
@@ -681,7 +681,7 @@ private async backoff(attempt: number): Promise<void> {
 
 ### Docker
 
-Pre-built images are published to **GitHub Container Registry** (`ghcr.io/byadsco/meta-ads-mcp`) on every release — tagged with the semver version (`4.0.0`, `4.0`, `4`) and `latest`.
+Pre-built images are published to **GitHub Container Registry** (`ghcr.io/byadsco/meta-ads-mcp`) on every release — tagged with the semver version (`4.0.0`, `4.0`, `4`) and `latest`; a prerelease gets only its full tag.
 
 ```bash
 # pull a published release
@@ -693,7 +693,7 @@ docker compose up
 
 The provided [Dockerfile](Dockerfile) is a multi-stage build on `node:22-alpine3.24`: the builder stage runs `npm ci --ignore-scripts` and `tsc`; the runtime stage installs `ffmpeg` (for keyframes and compact transcodes), copies `dist/`, `node_modules/` and the `skills/` directory (the skills are published as MCP resources at runtime), exposes port 3000, runs as the non-root `node` user and declares a `/health` health check. The file is short and is the source of truth; it is linked rather than copied here so this page cannot drift from it.
 
-For local development the repository ships a [docker-compose.yml](docker-compose.yml) that wires every supported env var, including the `VIDEO_*` and `GEMINI_*` knobs, and mounts a tmpfs on `/tmp` like the Cloud Run deployment does. Drop a `.env` next to it and run `docker compose up`.
+For local development the repository ships a [docker-compose.yml](docker-compose.yml) that wires every env var the server reads, including the `VIDEO_*` and `GEMINI_*` knobs, and mounts a tmpfs on `/tmp` like the Cloud Run deployment does. Drop a `.env` next to it and run `docker compose up`.
 
 A minimum `.env` for a multi-tenant local run:
 
@@ -717,7 +717,7 @@ META_API_VERSION=v26.0                # optional; this is the default
 2. **Validate secrets** — fails the deploy if any of `OAUTH_SECRET`, `TOKEN_ENCRYPTION_KEY`, `SESSION_COOKIE_SECRET`, `META_APP_ID`, `META_APP_SECRET`, `SERVER_URL`, `FIRESTORE_PROJECT_ID`, `GCP_RUNTIME_SERVICE_ACCOUNT` or any allowlist source is missing or has placeholder content. Format-checks `SERVER_URL` (public `https://`), `TOKEN_ENCRYPTION_KEY` (64 hex chars), `META_APP_ID`, `META_APP_SECRET`, runtime SA email, and minimum lengths for the other secrets.
 3. **Auth to GCP** — Workload Identity Federation; **no service-account JSON keys** are committed or stored as GitHub secrets.
 4. **Build & push** to Artifact Registry, tagged with the commit SHA + `latest`.
-5. **Deploy** to Cloud Run (second generation execution environment / 2 GiB / 2 vCPU / concurrency 40 / request timeout 300 s / in-memory `/tmp` of 768 MiB / min 0 / max 10 / port 3000) with all env vars wired from GitHub secrets.
+5. **Deploy** to Cloud Run (second generation execution environment / 2 GiB / 2 vCPU / concurrency 40 / request timeout 300 s / in-memory `/tmp` of 768 MiB / min 0 / max 10 / port 3000). Plain settings such as `META_API_VERSION` and the video and Gemini limits are literals in the workflow; identifiers and allowlists come from GitHub secrets; the six real secrets are Secret Manager references the runtime service account resolves at start.
 6. **Smoke test** the deployed `/health` and `/.well-known/oauth-authorization-server` endpoints (URL stays masked in logs).
 
 To bootstrap a fresh GCP project, see [scripts/setup-gcloud.sh](scripts/setup-gcloud.sh).
@@ -803,7 +803,7 @@ Quick summary of the runtime defences:
 - HTTPS-only redirect in production.
 - In-process rate limiting on `/register` and `/token`.
 - Tokens never logged in plaintext (`maskToken()` everywhere).
-- [gitleaks](https://github.com/gitleaks/gitleaks) preflight in CI with a [custom config](.gitleaks.toml) covering Meta tokens (`EAA…`), Apify tokens (`apify_api_…`), Gemini keys (`AQ.…` and any `GEMINI_API_KEY=` assignment), GCP keys, and our own named secrets — blocks pushes that would leak a credential.
+- [gitleaks](https://github.com/gitleaks/gitleaks) preflight in CI with a [custom config](.gitleaks.toml) covering Meta tokens (`EAA…`), Apify tokens (`apify_api_…`), Gemini keys (`AQ.…` and key-shaped `GEMINI_API_KEY=` assignments), GCP keys, and our own named secrets. The local pre-deploy guard blocks the commit before it exists; CI runs after the push and fails the PR, so a leak is caught before it can merge, not before it can be pushed.
 - Workload Identity Federation for Cloud Run deploys: no service-account keys to leak.
 
 ### Public repo, private deployment

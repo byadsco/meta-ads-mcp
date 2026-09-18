@@ -15,10 +15,12 @@ services:
       - SESSION_COOKIE_SECRET=${SESSION_COOKIE_SECRET:-}
       - OAUTH_SECRET=${OAUTH_SECRET:-}
       - FIRESTORE_PROJECT_ID=${FIRESTORE_PROJECT_ID:-}
+      - FIRESTORE_EMULATOR_HOST=${FIRESTORE_EMULATOR_HOST:-}
       - GOOGLE_APPLICATION_CREDENTIALS=${GOOGLE_APPLICATION_CREDENTIALS:-}
       - META_ACCESS_TOKEN=${META_ACCESS_TOKEN:-}
       - META_TOKENS=${META_TOKENS:-}
       - MCP_API_KEY=${MCP_API_KEY:-}
+      - APIFY_TOKEN=${APIFY_TOKEN:-}
       - META_API_VERSION=${META_API_VERSION:-v26.0}
       - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-}
       - FFMPEG_PATH=${FFMPEG_PATH:-}
@@ -38,7 +40,7 @@ services:
       - LOG_LEVEL=${LOG_LEVEL:-info}
       - NODE_ENV=production
     # Scratch space for video jobs, in memory and size-limited like the Cloud
-    # Run volume, so an oversize write fails with ENOMEM instead of filling disk.
+    # Run volume, so an oversize write fails with ENOSPC instead of filling disk.
     tmpfs:
       - /tmp:size=768m
     restart: unless-stopped
