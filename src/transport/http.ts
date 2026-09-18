@@ -500,7 +500,7 @@ export async function startHttpTransport(
   await ffmpegRuntime.isAvailable();
   const ffmpegAtStartup = ffmpegRuntime.lastKnownAvailability();
   if (ffmpegAtStartup === undefined) {
-    logger.warn("ffmpeg probe was inconclusive (killed on timeout, or the spawn was refused for want of a resource); it will be retried on first use");
+    logger.warn("ffmpeg probe was inconclusive (killed on timeout, or the spawn was refused for want of a resource); it will be retried on the first use after a short cooldown");
   } else {
     logger.info(
       { ffmpeg_available: ffmpegAtStartup },

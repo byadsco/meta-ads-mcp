@@ -273,7 +273,7 @@ export async function deliverVideos(
       const missing = ffmpeg.lastKnownAvailability() === false;
       const cause = missing
         ? "ffmpeg is not installed on this server"
-        : "ffmpeg did not respond on this server just now and will be probed again on the next call";
+        : "ffmpeg did not respond on this server just now and will be probed again after a short cooldown";
       const hint = missing ? " Set FFMPEG_PATH or install ffmpeg to enable frame extraction." : "";
       warnings.push(
         options.delivery === "frames"

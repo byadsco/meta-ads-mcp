@@ -466,7 +466,10 @@ export async function analyzeVideoWithGemini(
 
       const data = await fs.readFile(payloadPath);
       if (!probe && !looksLikeMp4(data)) {
-        throw new Error("Downloaded file is not a valid MP4 (missing ftyp header), and ffmpeg is not installed to inspect it.");
+        const why = ffmpeg.lastKnownAvailability() === false
+          ? "ffmpeg is not installed to inspect it"
+          : "ffmpeg did not respond just now, so it could not be inspected; try again shortly";
+        throw new Error(`Downloaded file is not a valid MP4 (missing ftyp header), and ${why}.`);
       }
       const mimeType = transcoded ? "video/mp4" : mimeTypeFor(probe);
 
