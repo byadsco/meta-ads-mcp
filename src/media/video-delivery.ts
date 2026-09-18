@@ -268,10 +268,17 @@ export async function deliverVideos(
   if (needsPipeline) {
     ffmpegAvailable = await ffmpeg.isAvailable();
     if (!ffmpegAvailable) {
+      // false with no settled answer is a probe that did not complete, not a
+      // missing binary; the message must not send anyone to install it.
+      const missing = ffmpeg.lastKnownAvailability() === false;
+      const cause = missing
+        ? "ffmpeg is not installed on this server"
+        : "ffmpeg did not respond on this server just now and will be probed again after a short cooldown";
+      const hint = missing ? " Set FFMPEG_PATH or install ffmpeg to enable frame extraction." : "";
       warnings.push(
         options.delivery === "frames"
-          ? "ffmpeg is not installed on this server, so frames could not be extracted; falling back to thumbnails. Set FFMPEG_PATH or install ffmpeg to enable frame extraction."
-          : "ffmpeg is not installed on this server, so videos cannot be transcoded; inline delivery only works when the original file already fits max_inline_bytes.",
+          ? `${cause}, so frames could not be extracted; falling back to thumbnails.${hint}`
+          : `${cause}, so videos cannot be transcoded; inline delivery only works when the original file already fits max_inline_bytes.`,
       );
     }
   }

@@ -85,7 +85,8 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - **`ads_get_creative_media` gains `video_delivery`** (`thumbnail` by default,
   unchanged; `frames` appends keyframes; `url` appends signed links), and
   `ads_get_video_details` / `ads_get_ad_videos` now request `permalink_url`.
-- **`/health` reports `ffmpeg: true|false`**, probed once at startup.
+- **`/health` reports `ffmpeg: true|false`** once a probe has been
+  conclusive, and omits the key until one has.
 - `is_adset_budget_sharing_enabled` on `ads_update_campaign`. Meta documents
   turning budget sharing off on an existing campaign; turning it on for a
   running campaign is rejected (error 3858418).
@@ -240,13 +241,28 @@ no code here but change delivery:
   and the choice left open the container never starts, and pinned to `gen2`
   the same image answers `/health` in under half a second and reports ffmpeg
   available. The root cause of the change in the unset behaviour on
-  2026-09-17 is not established here; only the fix is. `gen2` is
-  also the setting that keeps both halves working, because dropping the volume
-  is enough to make the container start but ffmpeg then does not execute, so
-  frame extraction warns and falls back to thumbnails and inline delivery only
-  works when the original file already fits under `max_inline_bytes`. Delivery
-  by URL, thumbnails and the Gemini analysis of a compatible original are
-  unaffected either way.
+  2026-09-17 is not established here; only the fix is. Dropping the volume
+  would also let the container start, but the volume is what turns an
+  oversize scratch write into `ENOMEM` instead of a dead instance, so it
+  stays.
+- **A startup probe of ffmpeg that timed out was remembered as "no ffmpeg" for
+  the life of the instance.** The probe was spawned just before the port
+  opened and never awaited, so on Cloud Run it ran on into the window after
+  startup where the CPU is throttled until a request arrives; `ffmpeg -version`
+  then took longer than its own 10 second timeout, the failure was cached, and
+  every later `isAvailable()` call, in requests that did have CPU, returned the
+  stale answer. `/health` reported `ffmpeg: false` on a revision with ffmpeg
+  installed, and frame extraction, inline compaction and the Gemini compact
+  path all fell back for as long as that instance lived. The probe is now
+  awaited before `listen`, where startup CPU boost still applies, and a probe
+  that was killed on timeout or refused a resource is not remembered: after a
+  five second cooldown the next use asks again, so an instance under pressure
+  spawns at most one probe per cooldown rather than one per call. Only a
+  definitive answer is kept: the version string, a spawn error that says the
+  binary is not there or not executable, or a non-zero exit from the binary
+  itself. While no probe has been conclusive, `/health` omits the `ffmpeg`
+  key rather than guess, and the tools say the probe did not complete rather
+  than that ffmpeg is not installed.
 
 ### Security
 

@@ -490,18 +490,29 @@ export async function startHttpTransport(
     }
   }
 
-  // Probed once at startup; the health check must never spawn a process per request.
-  let ffmpegAvailable: boolean | undefined;
-  void getFfmpeg().isAvailable().then((available) => {
-    ffmpegAvailable = available;
-    logger.info({ ffmpeg_available: available }, available ? "ffmpeg detected; video keyframe extraction enabled" : "ffmpeg not found; video tools fall back to thumbnails");
-  });
+  // Awaited before the port opens on purpose. Once the port is listening and
+  // no request is in flight, Cloud Run may throttle the CPU; a probe left
+  // running into that window took 7 to 10 seconds where it takes 60 ms with
+  // CPU, outlived its timeout, and was remembered as "no ffmpeg". Before the
+  // port opens the instance has the CPU it needs. The health check reads the
+  // settled answer and never spawns a process per request.
+  const ffmpegRuntime = getFfmpeg();
+  await ffmpegRuntime.isAvailable();
+  const ffmpegAtStartup = ffmpegRuntime.lastKnownAvailability();
+  if (ffmpegAtStartup === undefined) {
+    logger.warn("ffmpeg probe was inconclusive (killed on timeout, or the spawn was refused for want of a resource); it will be retried on the first use after a short cooldown");
+  } else {
+    logger.info(
+      { ffmpeg_available: ffmpegAtStartup },
+      ffmpegAtStartup ? "ffmpeg detected; video keyframe extraction enabled" : "ffmpeg not found; video tools fall back to thumbnails",
+    );
+  }
   void sweepStaleVideoDirs().then((removed) => {
     if (removed > 0) logger.info({ removed }, "Removed stale video scratch directories");
   });
 
   app.get("/health", (_req, res) => {
-    res.json(healthPayload({ ffmpeg: ffmpegAvailable }));
+    res.json(healthPayload({ ffmpeg: ffmpegRuntime.lastKnownAvailability() }));
   });
 
   if (config.multiTenantEnabled) {

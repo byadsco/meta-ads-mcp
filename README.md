@@ -212,11 +212,12 @@ one scratch directory per video on tmpfs, removed before the next one starts;
 and a 30 MB response budget shared with the images. Without `ffmpeg` on the
 server the tool degrades to thumbnails and says so. The production image
 installs `ffmpeg` and Cloud Run runs with 2 GiB / 2 vCPU and a size-limited
-in-memory `/tmp`; `/health` reports `ffmpeg: true|false`. That deployment is
-pinned to the **second generation execution environment**. Leaving the
-generation for the platform to choose has already cost three deploys: with the
-in-memory `/tmp` volume mounted the container never opened its port and logged
-nothing at all, and without the volume it starts but `ffmpeg` does not run.
+in-memory `/tmp`; `/health` reports `ffmpeg: true|false` once a probe has
+been conclusive and omits the key until then. That deployment is pinned to
+the **second generation execution environment**. Leaving the generation for
+the platform to choose has already cost three deploys: with the in-memory
+`/tmp` volume mounted the container never opened its port and logged nothing
+at all.
 
 ### Server-side analysis with Gemini
 

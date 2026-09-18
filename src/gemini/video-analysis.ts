@@ -444,7 +444,10 @@ export async function analyzeVideoWithGemini(
       let transcoded = false;
       if (payloadBytes > maxUploadBytes) {
         if (!probe) {
-          throw new Error(`The video is ${payloadBytes} bytes, above the ${maxUploadBytes}-byte upload cap, and ffmpeg is not installed to compact it. Try quality=sd, or install ffmpeg.`);
+          const remedy = ffmpeg.lastKnownAvailability() === false
+            ? "ffmpeg is not installed to compact it. Try quality=sd, or install ffmpeg."
+            : "ffmpeg did not respond just now, so it could not be compacted. Try again shortly, or quality=sd.";
+          throw new Error(`The video is ${payloadBytes} bytes, above the ${maxUploadBytes}-byte upload cap, and ${remedy}`);
         }
         await report(2, 4, "Compacting the video");
         const compact = await ffmpeg.compact(file.path, {
@@ -463,7 +466,10 @@ export async function analyzeVideoWithGemini(
 
       const data = await fs.readFile(payloadPath);
       if (!probe && !looksLikeMp4(data)) {
-        throw new Error("Downloaded file is not a valid MP4 (missing ftyp header), and ffmpeg is not installed to inspect it.");
+        const why = ffmpeg.lastKnownAvailability() === false
+          ? "ffmpeg is not installed to inspect it"
+          : "ffmpeg did not respond just now, so it could not be inspected; try again shortly";
+        throw new Error(`Downloaded file is not a valid MP4 (missing ftyp header), and ${why}.`);
       }
       const mimeType = transcoded ? "video/mp4" : mimeTypeFor(probe);
 
