@@ -7,20 +7,58 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [4.0.0] — 2026-09-18
+
+### Why this release
+
+Two things that installers and clients depend on changed since 3.6.0, and
+either alone makes this a major. The minimum Node.js is now 22.13: Node 20
+left support in April 2026, the production image had run Node 22 since the
+video pipeline landed while CI still tested on 20, and the two dependency
+majors that were waiting on the floor (`@google-cloud/firestore` 9 and
+vitest 5) are in this release. And the JSON Schemas the server publishes for its 142
+tools are now produced by zod 4's converter, which emits different output
+from the one zod 3 used; the differences are listed under Changed and in
+[docs/migration-v4.md](docs/migration-v4.md).
+
+The release also carries everything the four creative-analysis PRs built:
+a hardened video pipeline that hands a model real keyframes or the MP4
+itself, Ad Library media, server-side video analysis with Gemini on the
+tenant's own key, a one-call ad dossier, and four skills published as MCP
+resources, prompts and server instructions. Plus the deploy fixes that
+followed them: the Cloud Run execution environment pinned to gen2, results
+over stdio budgeted to the SDK's read buffer, and an ffmpeg startup probe
+that no longer caches a timeout as "no ffmpeg".
+
+What does not change: every tool name, every existing parameter and its
+meaning (several tools gained optional parameters), the authentication
+model, both transports, and the `register*Tools(server)` exports.
+
 ### Breaking changes
 
-- **Minimum Node.js is now 22.13; the next release is 4.0.0.** `engines.node`
-  moves from `>=20.10.0` to `>=22.13.0`, which npm treats as a warning by
-  default and as an install failure under `engine-strict`, so it is a major
-  for anyone installing the package. The production image has run Node 22
-  since the video pipeline landed while the workflows tested on Node 20, and
-  Node 20 left support in April 2026. 22.13 rather than 22 flat because the
-  dev toolchain already needs it: ESLint 10 requires `^22.13.0`, and vitest 5,
-  which is not adopted yet (the range is still `^4.0.18`), requires
-  `^22.12.0 || ^24.0.0 || >=26.0.0`. `@google-cloud/firestore` 9, also not
-  adopted yet (`^8.5.0`), requires Node 22 as its only breaking change. CI,
-  the deploy preflight and the publish workflow now run Node 22, and the
-  Dependabot config no longer holds vitest back at 4.
+- **Minimum Node.js is 22.13.** `engines.node` moved from `>=20.10.0` to
+  `>=22.13.0`, which npm treats as a warning by default and as an install
+  failure under `engine-strict`, so it is a major for anyone installing the
+  package. The production image had run Node 22 since the video pipeline
+  landed while the workflows tested on Node 20, and Node 20 left support in
+  April 2026. 22.13 rather than 22 flat because the toolchain needs it:
+  ESLint 10 requires `^22.13.0` on the 22 line; vitest 5 (#154), in this
+  release, requires `^22.12.0 || ^24.0.0 || >=26.0.0`; and
+  `@google-cloud/firestore` 9 (#149), also in this release, requires Node 22
+  as its only breaking change. CI, the deploy preflight and the publish
+  workflow run Node 22, and the Dependabot config no longer holds vitest
+  back at 4.
+- **The published tool JSON Schemas changed.** zod 4's converter drops
+  `additionalProperties: false` from every object, inlines reused
+  sub-schemas and adds a few informative keywords. No tool's accepted input
+  changed; the details and the consequence for OpenAI strict function calling
+  are under Changed and in [docs/migration-v4.md](docs/migration-v4.md).
+- **Tool results over stdio are budgeted to 6 MiB of media.** The unreleased
+  first version of `ads_get_video_media` advertised inline video up to
+  50 MiB over stdio, which no client using the SDK's default 10 MiB read
+  buffer can receive; the budget is now sized to that buffer. HTTP is
+  unchanged. Details
+  under Fixed.
 
 ### Added
 
@@ -243,6 +281,16 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   explicit value, including the v26.0 extension to Housing, Employment and
   Financial Products and Services campaigns.
 
+- **Dependencies.** `@modelcontextprotocol/sdk` 1.29 → 1.30 (#108), which
+  adds the 10 MiB stdio read buffer, validates the request `Content-Type` by
+  parsed media type and sends SSE keep-alive frames. `@google-cloud/firestore`
+  8.5 → 9.1 (#149), whose only breaking change is the Node 22 requirement.
+  `jose` 6.1 → 6.2 (#148). Dev toolchain: vitest 4 → 5, plus eslint, tsx,
+  typescript-eslint and `@types/node` (#154). GitHub Actions pinned to new
+  SHAs (#104). The Dependabot config now ignores majors of typescript and
+  `@types/node` until their blockers move (#145), and majors of the Node
+  image, which move by hand together with `engines` (#156).
+
 ### Upgrade notes
 
 Moving from v22.0 to v26.0 also brings Meta-side behaviour changes that need
@@ -395,6 +443,22 @@ no code here but change delivery:
   in-flight tool handlers.
 - The image downloader also tears down rejected responses and accepts an
   abort signal, so thumbnail fetches cancel with the job.
+
+### Migration
+
+Client-side notes, including what a client sees differently in the
+published schemas and what to do about the stdio budget, are in
+[docs/migration-v4.md](docs/migration-v4.md). The `register*Tools(server)`
+exports and every tool name are unchanged.
+
+### Compatibility
+
+- Node 22.13+.
+- `@modelcontextprotocol/sdk` ^1.30.
+- HTTP and stdio transports unchanged.
+- Per-user OAuth, System User token registry, server-to-server API key,
+  Firestore-backed encrypted token store: all unchanged.
+- ffmpeg optional; the Docker image includes it.
 
 ## [3.6.0] — 2026-09-15
 
