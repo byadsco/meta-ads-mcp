@@ -7,6 +7,31 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Fixed
+
+- **ffmpeg's encoders are limited to one thread.** The wrapper passed
+  `-threads 1` before `-i`, which bounds decoding, and `-filter_threads 1`,
+  which bounds filtering; the encoders were unbounded, so libx264 sized its
+  own pool to the machine and one `delivery=inline` transcode could occupy
+  every core the instance had. An output-side `-threads 1` now bounds the
+  H.264 encoder in `compact()` and the MJPEG encoder in `extractFrames()`
+  and `contactSheet()`. Measured with ffmpeg 9.0.1 on a 20-second 1080p
+  clip, peak threads for the transcode drop from 28 to 9, the remaining
+  ones being ffmpeg's own scheduler threads. On a 240-second 1080p clip, the
+  longest the server accepts, the transcode's wall time is unchanged at
+  11 seconds, because decoding the 1080p source, not encoding at 480p, is
+  the bottleneck; it used 26 seconds of CPU, far inside the 150-second
+  timeout even on a slower core. SECURITY.md now describes each limit as
+  implemented.
+- **`ads_get_video_media`'s description states both inline caps.** It gave
+  only the HTTP cap and said Claude Code and Claude Desktop reject large
+  results, which confused the transport with the client: the 6 MiB of raw
+  media is this server's budget for stdio, sized to the TypeScript MCP SDK
+  clients' default 10 MiB read buffer, and the advice to use frames is a
+  property of models
+  that read images rather than video. Agents read this text on every
+  `tools/list`, and Context7 quotes it.
+
 ## [4.0.0] — 2026-09-18
 
 ### Why this release
