@@ -30,10 +30,12 @@ export const ctaEnum = z.enum(CTA_TYPES);
 export const MAX_TEXT_OPTIONS = 5;
 export { MAX_HEADLINE_LENGTH };
 
-const optionText = () => z.string().refine((text) => text.trim() !== "", "must not be blank");
-export const textOptions = () => z.array(optionText()).min(1).max(MAX_TEXT_OPTIONS).optional();
+const notBlank = (text: string) => text.trim() !== "";
+export const textOptions = () =>
+  z.array(z.string().refine(notBlank, "must not be blank")).min(1).max(MAX_TEXT_OPTIONS).optional();
 export const headlineOptions = () =>
-  z.array(optionText().pipe(z.string().max(MAX_HEADLINE_LENGTH))).min(1).max(MAX_TEXT_OPTIONS).optional();
+  z.array(z.string().max(MAX_HEADLINE_LENGTH).refine(notBlank, "must not be blank"))
+    .min(1).max(MAX_TEXT_OPTIONS).optional();
 
 const AD_IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tiff"];
 const AD_IMAGE_FILE_NAME_MAX = 100;

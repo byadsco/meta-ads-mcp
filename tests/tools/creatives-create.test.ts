@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { z } from "zod";
 import { registerCreativeTools } from "../../src/tools/creatives.js";
 import {
   createMockMcpServer,
@@ -318,6 +319,15 @@ describe("ads_create_ad_creative request body", () => {
     expect(schema.primary_texts.safeParse(["1", "2", "3", "4", "5", "6"]).success).toBe(false);
     expect(schema.primary_texts.safeParse(["   ", "Texto"]).success).toBe(false);
     expect(schema.headlines.safeParse([" "]).success).toBe(false);
+  });
+
+  it("publishes the headline length limit in the input JSON Schema clients see", () => {
+    const server = createMockMcpServer();
+    registerCreativeTools(server as never);
+    const schema = server._registeredTools.find((t) => t.name === "ads_create_ad_creative")!.schema as Record<string, z.ZodType>;
+
+    const published = z.toJSONSchema(schema.headlines, { io: "input" }) as { items?: { maxLength?: number } };
+    expect(published.items?.maxLength).toBe(255);
   });
 
   it("requires page_id when building from scratch", async () => {
