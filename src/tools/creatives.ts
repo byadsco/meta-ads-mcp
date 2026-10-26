@@ -15,32 +15,27 @@ import { logger } from "../utils/logger.js";
 import { assertSafePublicUrl, UnsafeUrlError } from "../utils/url-guard.js";
 import { downloadSafePublicImage } from "../utils/safe-download.js";
 import { READ, CREATE, UPDATE, UPLOAD, WRITE_WARNING } from "./_register.js";
+import {
+  ADVANTAGE_CREATIVE_FEATURES,
+  CTA_TYPES,
+  FEATURE_NAME_PATTERN,
+  MAX_HEADLINE_LENGTH,
+  buildFeatureSpec,
+  buildStorySpec,
+} from "../meta/creative-spec.js";
+import { normalizeUrlTags } from "../utils/validation.js";
 
-export const ctaEnum = z.enum([
-  // Core actions
-  "LEARN_MORE", "SIGN_UP", "DOWNLOAD", "SUBSCRIBE", "CONTACT_US",
-  "APPLY_NOW", "GET_OFFER", "GET_QUOTE", "GET_STARTED", "OPEN_LINK",
-  "NO_BUTTON", "SEE_MORE",
-  // Shopping & commerce
-  "SHOP_NOW", "BUY_NOW", "ORDER_NOW", "START_ORDER", "ADD_TO_CART",
-  "VIEW_PRODUCT", "BUY_VIA_MESSAGE", "GET_PROMOTIONS",
-  // Booking & services
-  "BOOK_NOW", "BOOK_TRAVEL", "MAKE_AN_APPOINTMENT", "BOOK_A_CONSULTATION",
-  "ASK_ABOUT_SERVICES", "GET_A_QUOTE", "REQUEST_TIME",
-  // Communication
-  "SEND_MESSAGE", "MESSAGE_PAGE", "WHATSAPP_MESSAGE", "CHAT_WITH_US",
-  "CALL_NOW", "GET_IN_TOUCH",
-  // Media & entertainment
-  "WATCH_MORE", "WATCH_VIDEO", "LISTEN_NOW",
-  // App
-  "INSTALL_APP", "USE_APP",
-  // Page & social
-  "LIKE_PAGE", "FOLLOW_PAGE", "EVENT_RSVP", "DONATE_NOW",
-  // Local
-  "GET_DIRECTIONS",
-  // AI features (v25.0+)
-  "SHOP_WITH_AI", "TRY_ON_WITH_AI",
-]);
+export const ctaEnum = z.enum(CTA_TYPES);
+
+export const MAX_TEXT_OPTIONS = 5;
+export { MAX_HEADLINE_LENGTH };
+
+const notBlank = (text: string) => text.trim() !== "";
+export const textOptions = () =>
+  z.array(z.string().refine(notBlank, "must not be blank")).min(1).max(MAX_TEXT_OPTIONS).optional();
+export const headlineOptions = () =>
+  z.array(z.string().max(MAX_HEADLINE_LENGTH).refine(notBlank, "must not be blank"))
+    .min(1).max(MAX_TEXT_OPTIONS).optional();
 
 const AD_IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tiff"];
 const AD_IMAGE_FILE_NAME_MAX = 100;
@@ -76,6 +71,19 @@ export function adImageFileName(name: string | undefined, extension: string): st
 
   base = Array.from(base).slice(0, Math.max(0, AD_IMAGE_FILE_NAME_MAX - ext.length)).join("").trimEnd();
   return base ? `${base}${ext}` : fallback;
+}
+
+export function resolveTextOptions(
+  single: string | undefined,
+  options: string[] | undefined,
+  singleName: string,
+  optionsName: string,
+): string[] {
+  if (single !== undefined && options !== undefined) {
+    throw new Error(`Pass either ${singleName} or ${optionsName}, not both.`);
+  }
+  if (options) return options;
+  return single ? [single] : [];
 }
 
 export function asRecord(value: unknown): Record<string, unknown> | undefined {
@@ -264,7 +272,7 @@ export function registerCreativeTools(server: McpServer): void {
   server.registerTool(
     "ads_create_ad_creative",
     {
-      description: `${WRITE_WARNING}Create a new ad creative. Three modes: (1) Build from scratch with image/video + text via object_story_spec, (2) Promote an existing Facebook Page post via object_story_id ('Boost Post'), (3) Promote an existing Instagram post via source_instagram_media_id. The creative can then be used when creating ads. Important: scratch-built video creatives require a thumbnail via image_hash or image_url; Meta rejects video_id without one.`,
+      description: `${WRITE_WARNING}Create a new ad creative. Three modes: (1) Build from scratch with image/video + text via object_story_spec, (2) Promote an existing Facebook Page post via object_story_id ('Boost Post'), (3) Promote an existing Instagram post via source_instagram_media_id. The creative can then be used when creating ads. Built from scratch, it accepts up to ${MAX_TEXT_OPTIONS} primary texts, headlines and descriptions (primary_texts / headlines / descriptions), like Ads Manager's text options: Meta shows each person the combination likely to perform best. Pass either the single field (message / headline / description) or its list, not both. Important: scratch-built video creatives require a thumbnail via image_hash or image_url; Meta rejects video_id without one. Meta creates the ad's post only once an ad uses the creative, a few minutes later.`,
       inputSchema: {
         account_id: z.string().describe("Ad account ID"),
         name: z.string().min(1).describe("Creative name"),
@@ -277,18 +285,35 @@ export function registerCreativeTools(server: McpServer): void {
         video_id: z.string().optional().describe("Video ID"),
         link_url: z.string().optional().describe("Destination URL"),
         message: z.string().optional().describe("Primary text / body copy"),
-        headline: z.string().optional().describe("Headline text"),
+        headline: z.string().max(MAX_HEADLINE_LENGTH).optional().describe("Headline text"),
         description: z.string().optional().describe("Description text (shown below headline)"),
+        primary_texts: textOptions().describe(`Up to ${MAX_TEXT_OPTIONS} primary texts for the same ad. Use instead of message.`),
+        headlines: headlineOptions().describe(`Up to ${MAX_TEXT_OPTIONS} headlines (max ${MAX_HEADLINE_LENGTH} characters each). Use instead of headline.`),
+        descriptions: textOptions().describe(`Up to ${MAX_TEXT_OPTIONS} descriptions. Use instead of description.`),
         call_to_action_type: ctaEnum.optional().describe("Call-to-action button type"),
-        url_tags: z.string().optional().describe("Query string params appended to URLs clicked from the ad (e.g. 'utm_source=meta&utm_medium=paid')"),
+        url_tags: z.string().optional().describe("Query string params appended to URLs clicked from the ad (e.g. 'utm_source=meta&utm_medium=paid'). A leading '?' is stripped."),
+        advantage_creative: z
+          .record(z.string().regex(FEATURE_NAME_PATTERN), z.enum(["OPT_IN", "OPT_OUT"]))
+          .optional()
+          .describe(`Advantage+ creative features to turn on, e.g. { "text_optimizations": "OPT_IN" }. Every feature is OPT_OUT unless listed here, so Meta does not rewrite copy or edit media on its own. Known features: ${ADVANTAGE_CREATIVE_FEATURES.join(", ")}.`),
+        multi_advertiser_ads: z
+          .boolean()
+          .optional()
+          .describe("Let Meta show this ad alongside other advertisers' ads (multi-advertiser ads). Off unless true."),
       },
       annotations: { ...CREATE },
     },
     async ({
       account_id, name, page_id, object_story_id, instagram_actor_id, source_instagram_media_id,
       image_hash, image_url, video_id, link_url, message, headline, description,
-      call_to_action_type, url_tags,
+      primary_texts, headlines, descriptions, call_to_action_type, url_tags,
+      advantage_creative, multi_advertiser_ads,
     }) => {
+      const featureSpec = buildFeatureSpec(advantage_creative, multi_advertiser_ads === true);
+      const primaryTexts = resolveTextOptions(message, primary_texts, "message", "primary_texts");
+      const headlineOptions = resolveTextOptions(headline, headlines, "headline", "headlines");
+      const descriptionOptions = resolveTextOptions(description, descriptions, "description", "descriptions");
+      const warnings: string[] = [];
       const accountPath = normalizeAccountId(account_id);
       const pageIdValidated = page_id ? validateMetaId(page_id, "page") : undefined;
       const objectStoryIdValidated = object_story_id
@@ -305,6 +330,12 @@ export function registerCreativeTools(server: McpServer): void {
         : undefined;
 
       const body: Record<string, string | number | boolean> = { name };
+      const usesExistingPost = Boolean(sourceInstagramMediaIdValidated || objectStoryIdValidated);
+      const copyGiven = primaryTexts.length + headlineOptions.length + descriptionOptions.length > 0;
+      if (usesExistingPost && copyGiven) {
+        warnings.push("Ignored the ad copy: a creative that promotes an existing post shows that post's own text.");
+      }
+      let textOptionCounts: { primary: number; headlines: number; descriptions: number } | undefined;
 
       if (sourceInstagramMediaIdValidated) {
         body.source_instagram_media_id = sourceInstagramMediaIdValidated;
@@ -323,9 +354,6 @@ export function registerCreativeTools(server: McpServer): void {
         if (!pageIdValidated) {
           throw new Error("page_id is required when building a creative from scratch (no object_story_id or source_instagram_media_id provided).");
         }
-        if (videoIdValidated && !image_hash && !image_url) {
-          throw new Error("video creatives built from scratch require image_hash or image_url as a thumbnail.");
-        }
         if (image_url && !image_hash) {
           try {
             await assertSafePublicUrl(image_url);
@@ -336,46 +364,34 @@ export function registerCreativeTools(server: McpServer): void {
             throw err;
           }
         }
-        const objectStorySpec: Record<string, unknown> = { page_id: pageIdValidated };
-
-        if (videoIdValidated) {
-          const videoData: Record<string, unknown> = { video_id: videoIdValidated };
-          if (message) videoData.message = message;
-          if (image_hash) videoData.image_hash = image_hash;
-          if (image_url && !image_hash) videoData.image_url = image_url;
-          if (headline) videoData.title = headline;
-          if (call_to_action_type || link_url) {
-            videoData.call_to_action = {
-              type: call_to_action_type ?? "LEARN_MORE",
-              value: link_url ? { link: link_url } : undefined,
-            };
-          }
-          objectStorySpec.video_data = videoData;
-        } else {
-          const linkData: Record<string, unknown> = {};
-          if (image_hash) linkData.image_hash = image_hash;
-          if (image_url && !image_hash) linkData.picture = image_url;
-          if (link_url) linkData.link = link_url;
-          if (message) linkData.message = message;
-          if (headline) linkData.name = headline;
-          if (description) linkData.description = description;
-          if (call_to_action_type) {
-            linkData.call_to_action = {
-              type: call_to_action_type,
-              value: link_url ? { link: link_url } : undefined,
-            };
-          }
-          objectStorySpec.link_data = linkData;
+        const story = buildStorySpec({
+          pageId: pageIdValidated,
+          instagramUserId: instagramActorIdValidated,
+          imageHash: image_hash,
+          imageUrl: image_url,
+          videoId: videoIdValidated,
+          linkUrl: link_url,
+          primaryTexts,
+          headlines: headlineOptions,
+          descriptions: descriptionOptions,
+          callToActionType: call_to_action_type,
+        });
+        warnings.push(...story.warnings);
+        body.object_story_spec = JSON.stringify(story.objectStorySpec);
+        if (story.assetFeedSpec) {
+          body.asset_feed_spec = JSON.stringify(story.assetFeedSpec);
+          textOptionCounts = {
+            primary: (story.assetFeedSpec.bodies as unknown[] | undefined)?.length ?? 0,
+            headlines: (story.assetFeedSpec.titles as unknown[] | undefined)?.length ?? 0,
+            descriptions: (story.assetFeedSpec.descriptions as unknown[] | undefined)?.length ?? 0,
+          };
         }
-
-        if (instagramActorIdValidated) {
-          objectStorySpec.instagram_user_id = instagramActorIdValidated;
-        }
-
-        body.object_story_spec = JSON.stringify(objectStorySpec);
       }
 
-      if (url_tags) body.url_tags = url_tags;
+      const normalizedUrlTags = url_tags === undefined ? "" : normalizeUrlTags(url_tags);
+      if (normalizedUrlTags) body.url_tags = normalizedUrlTags;
+      body.degrees_of_freedom_spec = JSON.stringify(featureSpec.degrees_of_freedom_spec);
+      body.contextual_multi_ads = JSON.stringify(featureSpec.contextual_multi_ads);
 
       const result = await metaApiClient.postForm<{ id: string }>(
         `/${accountPath}/adcreatives`,
@@ -383,22 +399,41 @@ export function registerCreativeTools(server: McpServer): void {
       );
 
       let effectiveStoryId: string | undefined;
+      let featuresOn: string[] | undefined;
       try {
-        const created = await metaApiClient.get<{ id: string; effective_object_story_id?: string }>(
+        const created = await metaApiClient.get<Pick<AdCreative, "id" | "effective_object_story_id" | "degrees_of_freedom_spec">>(
           `/${validateMetaId(result.id, "creative")}`,
-          { fields: "id,effective_object_story_id" },
+          { fields: "id,effective_object_story_id,degrees_of_freedom_spec" },
         );
         effectiveStoryId = created.effective_object_story_id;
+        const reported = asRecord(asRecord(created.degrees_of_freedom_spec)?.["creative_features_spec"]);
+        if (reported) {
+          featuresOn = Object.entries(reported)
+            .filter(([, value]) => asRecord(value)?.["enroll_status"] === "OPT_IN")
+            .map(([feature]) => feature);
+        }
       } catch {
         // Non-critical
       }
 
+      const lines = [
+        `Creative created successfully!\nID: ${result.id}\nName: ${name}${pageIdValidated ? `\nPage: ${pageIdValidated}` : ""}${objectStoryIdValidated ? `\nBoosted Post: ${objectStoryIdValidated}` : ""}${sourceInstagramMediaIdValidated ? `\nIG Post: ${sourceInstagramMediaIdValidated}` : ""}${effectiveStoryId ? `\nPost ID: ${effectiveStoryId}` : ""}\nCTA: ${call_to_action_type ?? "N/A"}`,
+      ];
+      if (textOptionCounts) {
+        lines.push(`Text options: ${textOptionCounts.primary} primary text(s), ${textOptionCounts.headlines} headline(s), ${textOptionCounts.descriptions} description(s). Meta shows each person the combination likely to perform best.`);
+      }
+      if (!effectiveStoryId && !usesExistingPost) {
+        lines.push("Post ID: not created yet — Meta creates the ad's post a few minutes after an ad uses this creative.");
+      }
+      if (featuresOn) {
+        lines.push(`Advantage+ creative features on: ${featuresOn.length > 0 ? featuresOn.join(", ") : "none"}.`);
+      }
+      lines.push(`Multi-advertiser ads: ${multi_advertiser_ads === true ? "on" : "off"}.`);
+      if (warnings.length > 0) lines.push("", "Warnings:", ...warnings.map((w) => `• ${w}`));
+
       return {
         content: [
-          {
-            type: "text",
-            text: `Creative created successfully!\nID: ${result.id}\nName: ${name}${pageIdValidated ? `\nPage: ${pageIdValidated}` : ""}${objectStoryIdValidated ? `\nBoosted Post: ${objectStoryIdValidated}` : ""}${sourceInstagramMediaIdValidated ? `\nIG Post: ${sourceInstagramMediaIdValidated}` : ""}${effectiveStoryId ? `\nPost ID: ${effectiveStoryId}` : ""}\nCTA: ${call_to_action_type ?? "N/A"}`,
-          },
+          { type: "text", text: lines.join("\n") },
         ],
       };
     },

@@ -33,20 +33,20 @@ A ⚠️ marks a tool that changes live data, spends money or touches stored cre
 - `ads_get_ad_details` — One ad in full. For a review, prefer ads_get_ad_dossier.
 - `ads_create_ad` ⚠️ — Create an ad from an existing creative, in an ad set.
 - `ads_update_ad` ⚠️ — Change an ad's name, status or creative.
-- `ads_update_ad_url_tags` ⚠️ — Rewrite the UTM tags on an ad's creative without rebuilding it.
+- `ads_update_ad_url_tags` ⚠️ — Rewrite the UTM tags of live ads by cloning each creative onto the same post. Skips ads with several text options.
 - `ads_delete_ad` ⚠️ — Delete an ad. Pausing it with ads_activate_entity is reversible; this is not.
 
 ## Creatives and assets
 
 - `ads_get_ad_creatives` — List creatives for an ad or account, with their UTM tags.
 - `ads_get_creative_details` — One creative in full, including the derived effective landing URL.
-- `ads_create_ad_creative` ⚠️ — Create a creative from a page post, image, video or asset feed.
-- `ads_update_ad_creative` ⚠️ — Change a creative's name or its URL tags.
+- `ads_create_ad_creative` ⚠️ — Create a creative from a page post, image or video, with up to 5 primary texts, headlines and descriptions. Advantage+ AI features stay off unless requested.
+- `ads_update_ad_creative` ⚠️ — Rename a creative. Nothing else on a creative can change after creation.
 - `ads_upload_ad_image` ⚠️ — Upload an image and get the hash a creative needs.
 - `ads_get_ad_images` — List the images uploaded to an account, by hash.
 - `ads_get_ad_videos` — List the videos uploaded to an account.
 - `ads_get_video_details` — One video's metadata, including its signed source URL and permalink.
-- `ads_upload_ad_video` ⚠️ — Upload a video and wait for Meta to finish processing it.
+- `ads_upload_ad_video` ⚠️ — Upload a video from a URL or Instagram post. Returns at once; Meta keeps processing it.
 
 ## Looking at the creative
 
