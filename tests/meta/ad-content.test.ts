@@ -158,6 +158,21 @@ describe("planContentEdit — new post", () => {
     });
   });
 
+  it("compares a requested link with where the ad really lands, the creative-level override first", () => {
+    const overridden = singleImage({ link_url: "https://example.com/override" });
+
+    const toSpecLink = planContentEdit(overridden, { link_url: LINK }, true);
+    expect(toSpecLink.route).toBe("new_post");
+    expect(toSpecLink.body?.link_url).toBe(LINK);
+
+    expect(planContentEdit(overridden, { link_url: "https://example.com/override" }, true).reason).toBe("nothing to change");
+  });
+
+  it("compares only the image that would be written: the hash, when both hash and URL are given", () => {
+    const plan = planContentEdit(singleImage(), { image_hash: "h1", image_url: "https://cdn.example.com/other.jpg" }, true);
+    expect(plan.reason).toBe("nothing to change");
+  });
+
   it("replaces the source's creative-level link override with the new link", () => {
     const plan = planContentEdit(singleImage({ link_url: "https://example.com/old" }), { link_url: "https://example.com/new" }, true);
     expect(plan.body?.link_url).toBe("https://example.com/new");

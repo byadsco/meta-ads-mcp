@@ -1,5 +1,6 @@
 import { MAX_HEADLINE_LENGTH } from "./creative-spec.js";
 import { asRecord, carryOverFields, resolveInstagramUserId, withInstagramIdentity } from "./creative-rebuild.js";
+import { effectiveLinkUrl } from "./effective-link.js";
 import type { AdCreative } from "./types/index.js";
 
 const MAX_TEXT_OPTIONS = 5;
@@ -94,21 +95,35 @@ export function readCopy(creative: AdCreative): { source: CopySource; copy: Copy
   return { unsupported: "creative has no post, object_story_spec or text options to edit" };
 }
 
+export type PlanErrorCode = "text_not_found" | "blank_text" | "repeated_text" | "too_many_options" | "headline_too_long";
+
+// The message may quote ad copy; the code never does, so it is what can be
+// shown outside the untrusted-content fence.
+export class PlanError extends Error {
+  constructor(readonly code: PlanErrorCode, message: string) {
+    super(message);
+  }
+}
+
 function applyChange(current: string[], change: TextChange | undefined, label: string): string[] {
   if (!change) return current;
   let next = change.set ? [...change.set] : [...current];
   for (const text of change.remove ?? []) {
     const index = next.findIndex((existing) => existing.trim() === text.trim());
-    if (index === -1) throw new Error(`Cannot remove ${label} "${text}": the ad does not have it.`);
+    if (index === -1) throw new PlanError("text_not_found", `Cannot remove ${label} "${text}": the ad does not have it.`);
     next.splice(index, 1);
   }
   next = [...next, ...(change.add ?? [])];
   const keys = next.map((text) => text.trim());
-  if (keys.some((key) => key === "")) throw new Error(`A ${label} would be blank.`);
-  if (new Set(keys).size !== keys.length) throw new Error(`The ${label}s would repeat a text; Meta rejects duplicates.`);
-  if (next.length > MAX_TEXT_OPTIONS) throw new Error(`The ad would have ${next.length} ${label}s; the limit is ${MAX_TEXT_OPTIONS}.`);
+  if (keys.some((key) => key === "")) throw new PlanError("blank_text", `A ${label} would be blank.`);
+  if (new Set(keys).size !== keys.length) {
+    throw new PlanError("repeated_text", `The ${label}s would repeat a text; Meta rejects duplicates.`);
+  }
+  if (next.length > MAX_TEXT_OPTIONS) {
+    throw new PlanError("too_many_options", `The ad would have ${next.length} ${label}s; the limit is ${MAX_TEXT_OPTIONS}.`);
+  }
   if (label === "headline" && next.some((text) => text.length > MAX_HEADLINE_LENGTH)) {
-    throw new Error(`A headline would exceed ${MAX_HEADLINE_LENGTH} characters.`);
+    throw new PlanError("headline_too_long", `A headline would exceed ${MAX_HEADLINE_LENGTH} characters.`);
   }
   return next;
 }
@@ -126,7 +141,7 @@ function currentDestination(creative: AdCreative): {
   const ctaLink = asRecord(cta?.value)?.link;
   const pick = (value: unknown) => (typeof value === "string" ? value : undefined);
   return {
-    link: pick(linkData?.link) ?? pick(ctaLink) ?? creative.link_url,
+    link: effectiveLinkUrl(creative) ?? pick(ctaLink),
     ctaType: pick(cta?.type) ?? creative.call_to_action_type,
     imageHash: pick(target?.image_hash),
     imageUrl: pick(linkData?.picture) ?? pick(videoData?.image_url),
@@ -215,8 +230,10 @@ export function planContentEdit(creative: AdCreative, changes: ContentChanges, a
   const otherChanged =
     differs(changes.link_url, current.link) ||
     differs(changes.call_to_action_type, current.ctaType) ||
+    // image_hash wins when both are given, so only the medium that would be
+    // written is compared.
     differs(changes.image_hash, current.imageHash) ||
-    differs(changes.image_url, current.imageUrl) ||
+    (changes.image_hash === undefined && differs(changes.image_url, current.imageUrl)) ||
     differs(changes.video_id, current.videoId);
   const urlTagsChanged = changes.url_tags !== undefined && changes.url_tags !== (creative.url_tags ?? "");
 

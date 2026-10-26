@@ -114,6 +114,11 @@ describe("ads_update_ad_content", () => {
     expect(fetchCallSummary()).toEqual(["GET /3001", "GET /4001"]);
     expect(result.content[0].text).toMatch(/^Nothing was changed/);
     expect(result.content[0].text).toContain('Cannot remove primary text "No existe"');
+    // The JSON names the creative, the ads and a code, never the quoted text.
+    expect(JSON.parse(result.content[1].text).planning_errors).toEqual([
+      { creative_id: "4001", ad_ids: ["3001"], code: "text_not_found" },
+    ]);
+    expect(result.content[1].text).not.toContain("No existe");
   });
 
   it("changes nothing when another ad of the batch cannot even be read", async () => {
@@ -126,7 +131,11 @@ describe("ads_update_ad_content", () => {
 
     expect(fetchCallSummary()).toEqual(["GET /3001", "GET /3002", "GET /4001"]);
     expect(result.content[0].text).toMatch(/^Nothing was changed/);
-    expect(JSON.parse(result.content[1].text).aborted).toBe(true);
+    const report = JSON.parse(result.content[1].text);
+    expect(report.aborted).toBe(true);
+    // Meta's message stays in the fenced summary; the JSON says only what failed.
+    expect(report.failed).toEqual([{ ad_id: "3002", kind: "read_failed" }]);
+    expect(result.content[1].text).not.toContain("Unsupported get request");
   });
 
   it("keeps problem messages that quote ad copy on one line, inside the fence", async () => {

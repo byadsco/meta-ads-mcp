@@ -3,7 +3,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { validateMetaId } from "../utils/format.js";
 import { normalizeUrlTags } from "../utils/validation.js";
 import { assertSafePublicUrl, UnsafeUrlError } from "../utils/url-guard.js";
-import { planContentEdit, type ContentChanges, type ContentPlan } from "../meta/ad-content.js";
+import { PlanError, planContentEdit, type ContentChanges, type ContentPlan, type PlanErrorCode } from "../meta/ad-content.js";
 import {
   createReplacementCreative,
   deleteCreative,
@@ -31,6 +31,17 @@ const textChange = (label: string) =>
     .optional()
     .describe(`Changes to the ${label}s: set replaces all, then remove, then add. At most 5 remain.`);
 
+// The JSON block carries these without their messages, which can quote ad
+// copy; the messages appear only inside the fenced summary.
+interface PlanningProblem {
+  creative_id: string;
+  ad_ids: string[];
+  code: PlanErrorCode | "invalid_change";
+  message: string;
+}
+
+type KindedFailure = FailedAd & { kind: "read_failed" | "create_failed" | "repoint_failed" };
+
 interface GroupReport {
   creative_id: string;
   ad_ids: string[];
@@ -57,7 +68,7 @@ export function registerAdContentTools(server: McpServer): void {
         link_url: z.string().optional().describe("New destination URL"),
         call_to_action_type: ctaEnum.optional().describe("New button type"),
         image_hash: z.string().optional().describe("New image (from ads_upload_ad_image), or a video's new thumbnail"),
-        image_url: z.string().optional().describe("New image URL, or a video's new thumbnail"),
+        image_url: z.string().optional().describe("New image URL, or a video's new thumbnail. Ignored when image_hash is given."),
         video_id: z.string().optional().describe("New video for a video ad"),
         url_tags: z.string().optional().describe("New UTM query string, applied with the other changes. A leading '?' is stripped."),
         allow_new_post: z
@@ -91,24 +102,31 @@ export function registerAdContentTools(server: McpServer): void {
         }
       }
 
-      const { groups, failed } = await groupAdsByCreative(ad_ids);
+      const grouped = await groupAdsByCreative(ad_ids);
+      const { groups } = grouped;
+      const failed: KindedFailure[] = grouped.failed.map((f) => ({ ...f, kind: "read_failed" }));
       const reports: GroupReport[] = [];
       const actionable: Array<{ group: CreativeGroup; creative: AdCreative; body: Record<string, string> }> = [];
-      const planningErrors: string[] = [];
+      const planningErrors: PlanningProblem[] = [];
 
       for (const group of groups) {
         let creative: AdCreative;
         try {
           creative = await readCreativeForRebuild(group.creative_id, ["body", "title"]);
         } catch (err) {
-          for (const adId of group.ad_ids) failed.push({ ad_id: adId, error: errorMessage(err) });
+          for (const adId of group.ad_ids) failed.push({ ad_id: adId, error: errorMessage(err), kind: "read_failed" });
           continue;
         }
         let plan: ContentPlan;
         try {
           plan = planContentEdit(creative, changes, allow_new_post === true);
         } catch (err) {
-          planningErrors.push(`Creative ${group.creative_id} (ads ${group.ad_ids.join(", ")}): ${errorMessage(err)}`);
+          planningErrors.push({
+            creative_id: group.creative_id,
+            ad_ids: group.ad_ids,
+            code: err instanceof PlanError ? err.code : "invalid_change",
+            message: errorMessage(err),
+          });
           continue;
         }
         const report: GroupReport = {
@@ -145,7 +163,7 @@ export function registerAdContentTools(server: McpServer): void {
             ready.push({ group, newCreativeId: await createReplacementCreative(group.account_id, body) });
           } catch (err) {
             for (const adId of group.ad_ids) {
-              failed.push({ ad_id: adId, error: `Failed to create the replacement creative: ${errorMessage(err)}` });
+              failed.push({ ad_id: adId, error: `Failed to create the replacement creative: ${errorMessage(err)}`, kind: "create_failed" });
             }
             aborted = true;
             break;
@@ -158,7 +176,7 @@ export function registerAdContentTools(server: McpServer): void {
           for (const { group, newCreativeId } of ready) {
             const outcome = await repointGroup(group, newCreativeId);
             updated.push(...outcome.updated);
-            failed.push(...outcome.failed);
+            failed.push(...outcome.failed.map((f) => ({ ...f, kind: "repoint_failed" as const })));
             warnings.push(...outcome.warnings);
           }
         }
@@ -181,9 +199,9 @@ export function registerAdContentTools(server: McpServer): void {
               dry_run: preview,
               aborted,
               plans,
-              planning_errors: planningErrors.length,
+              planning_errors: planningErrors.map(({ message: _message, ...problem }) => problem),
               updated,
-              failed: failed.map((f) => ({ ...f, error: singleLine(f.error, 400) })),
+              failed: failed.map(({ error: _error, ...failure }) => failure),
               warnings,
             }, null, 2),
           },
@@ -213,7 +231,7 @@ function describeEngagement(engagement: Engagement | undefined): string {
 
 function summarize(
   reports: GroupReport[],
-  planningErrors: string[],
+  planningErrors: PlanningProblem[],
   updated: UpdatedAd[],
   failed: FailedAd[],
   preview: boolean,
@@ -247,7 +265,7 @@ function summarize(
   // Problems and Meta's errors can quote ad copy, so they stay one bounded
   // line each, inside the fence.
   if (planningErrors.length > 0) {
-    lines.push("", "Problems:", ADVERTISER_CONTENT_OPEN, ...planningErrors.map((error) => `• ${singleLine(error, 400)}`), ADVERTISER_CONTENT_CLOSE);
+    lines.push("", "Problems:", ADVERTISER_CONTENT_OPEN, ...planningErrors.map((p) => `• Creative ${p.creative_id} (ads ${p.ad_ids.join(", ")}): ${singleLine(p.message, 400)}`), ADVERTISER_CONTENT_CLOSE);
   }
   if (failed.length > 0) {
     lines.push("", "Failed:", ADVERTISER_CONTENT_OPEN, ...failed.map((f) => `• Ad ${f.ad_id}: ${singleLine(f.error, 400)}`), ADVERTISER_CONTENT_CLOSE);
