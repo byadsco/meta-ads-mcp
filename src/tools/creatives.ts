@@ -15,7 +15,13 @@ import { logger } from "../utils/logger.js";
 import { assertSafePublicUrl, UnsafeUrlError } from "../utils/url-guard.js";
 import { downloadSafePublicImage } from "../utils/safe-download.js";
 import { READ, CREATE, UPDATE, UPLOAD, WRITE_WARNING } from "./_register.js";
-import { CTA_TYPES, buildStorySpec } from "../meta/creative-spec.js";
+import {
+  ADVANTAGE_CREATIVE_FEATURES,
+  CTA_TYPES,
+  FEATURE_NAME_PATTERN,
+  buildFeatureSpec,
+  buildStorySpec,
+} from "../meta/creative-spec.js";
 import { normalizeUrlTags } from "../utils/validation.js";
 
 export const ctaEnum = z.enum(CTA_TYPES);
@@ -293,6 +299,14 @@ export function registerCreativeTools(server: McpServer): void {
           .describe(`Up to ${MAX_TEXT_OPTIONS} descriptions. Use instead of description.`),
         call_to_action_type: ctaEnum.optional().describe("Call-to-action button type"),
         url_tags: z.string().optional().describe("Query string params appended to URLs clicked from the ad (e.g. 'utm_source=meta&utm_medium=paid'). A leading '?' is stripped."),
+        advantage_creative: z
+          .record(z.string().regex(FEATURE_NAME_PATTERN), z.enum(["OPT_IN", "OPT_OUT"]))
+          .optional()
+          .describe(`Advantage+ creative features to turn on, e.g. { "text_optimizations": "OPT_IN" }. Every feature is OPT_OUT unless listed here, so Meta does not rewrite copy or edit media on its own. Known features: ${ADVANTAGE_CREATIVE_FEATURES.join(", ")}.`),
+        multi_advertiser_ads: z
+          .boolean()
+          .optional()
+          .describe("Let Meta show this ad alongside other advertisers' ads (multi-advertiser ads). Off unless true."),
       },
       annotations: { ...CREATE },
     },
@@ -300,7 +314,9 @@ export function registerCreativeTools(server: McpServer): void {
       account_id, name, page_id, object_story_id, instagram_actor_id, source_instagram_media_id,
       image_hash, image_url, video_id, link_url, message, headline, description,
       primary_texts, headlines, descriptions, call_to_action_type, url_tags,
+      advantage_creative, multi_advertiser_ads,
     }) => {
+      const featureSpec = buildFeatureSpec(advantage_creative, multi_advertiser_ads === true);
       const primaryTexts = resolveTextOptions(message, primary_texts, "message", "primary_texts");
       const headlineOptions = resolveTextOptions(headline, headlines, "headline", "headlines");
       const descriptionOptions = resolveTextOptions(description, descriptions, "description", "descriptions");
@@ -384,6 +400,8 @@ export function registerCreativeTools(server: McpServer): void {
 
       const normalizedUrlTags = url_tags === undefined ? "" : normalizeUrlTags(url_tags);
       if (normalizedUrlTags) body.url_tags = normalizedUrlTags;
+      body.degrees_of_freedom_spec = JSON.stringify(featureSpec.degrees_of_freedom_spec);
+      body.contextual_multi_ads = JSON.stringify(featureSpec.contextual_multi_ads);
 
       const result = await metaApiClient.postForm<{ id: string }>(
         `/${accountPath}/adcreatives`,
@@ -391,12 +409,19 @@ export function registerCreativeTools(server: McpServer): void {
       );
 
       let effectiveStoryId: string | undefined;
+      let featuresOn: string[] | undefined;
       try {
-        const created = await metaApiClient.get<{ id: string; effective_object_story_id?: string }>(
+        const created = await metaApiClient.get<Pick<AdCreative, "id" | "effective_object_story_id" | "degrees_of_freedom_spec">>(
           `/${validateMetaId(result.id, "creative")}`,
-          { fields: "id,effective_object_story_id" },
+          { fields: "id,effective_object_story_id,degrees_of_freedom_spec" },
         );
         effectiveStoryId = created.effective_object_story_id;
+        const reported = asRecord(asRecord(created.degrees_of_freedom_spec)?.["creative_features_spec"]);
+        if (reported) {
+          featuresOn = Object.entries(reported)
+            .filter(([, value]) => asRecord(value)?.["enroll_status"] === "OPT_IN")
+            .map(([feature]) => feature);
+        }
       } catch {
         // Non-critical
       }
@@ -410,6 +435,10 @@ export function registerCreativeTools(server: McpServer): void {
       if (!effectiveStoryId && !usesExistingPost) {
         lines.push("Post ID: not created yet — Meta creates the ad's post a few minutes after an ad uses this creative.");
       }
+      if (featuresOn) {
+        lines.push(`Advantage+ creative features on: ${featuresOn.length > 0 ? featuresOn.join(", ") : "none"}.`);
+      }
+      lines.push(`Multi-advertiser ads: ${multi_advertiser_ads === true ? "on" : "off"}.`);
       if (warnings.length > 0) lines.push("", "Warnings:", ...warnings.map((w) => `• ${w}`));
 
       return {

@@ -77,7 +77,7 @@ describe("ads_create_ad_creative request body", () => {
 
     expect(fetchCallSummary()).toEqual(["POST /act_123/adcreatives", "GET /4100"]);
     const body = sentBody();
-    expect(Object.keys(body).sort()).toEqual(["name", "object_story_spec", "url_tags"]);
+    expect(Object.keys(body).sort()).toEqual(["contextual_multi_ads", "degrees_of_freedom_spec", "name", "object_story_spec", "url_tags"]);
     expect(body.name).toBe("Image ad");
     expect(body.url_tags).toBe("utm_source=meta");
     expect(JSON.parse(body.object_story_spec)).toEqual({
@@ -150,7 +150,7 @@ describe("ads_create_ad_creative request body", () => {
     });
 
     const body = sentBody();
-    expect(Object.keys(body).sort()).toEqual(["instagram_user_id", "name", "object_story_id"]);
+    expect(Object.keys(body).sort()).toEqual(["contextual_multi_ads", "degrees_of_freedom_spec", "instagram_user_id", "name", "object_story_id"]);
     expect(body.object_story_id).toBe("6001_7777");
     expect(body.instagram_user_id).toBe("17841400000000001");
   });
@@ -171,7 +171,8 @@ describe("ads_create_ad_creative request body", () => {
 
     const body = sentBody();
     expect(Object.keys(body).sort()).toEqual([
-      "call_to_action", "instagram_user_id", "name", "object_id", "source_instagram_media_id",
+      "call_to_action", "contextual_multi_ads", "degrees_of_freedom_spec", "instagram_user_id", "name", "object_id",
+      "source_instagram_media_id",
     ]);
     expect(body.object_id).toBe("6001");
     expect(body.source_instagram_media_id).toBe("17900000000000001");
@@ -258,6 +259,52 @@ describe("ads_create_ad_creative request body", () => {
     }) as { content: Array<{ text: string }> };
 
     expect(result.content[0].text).toMatch(/Post ID: not created yet/);
+  });
+
+  it("turns Advantage+ creative features and multi-advertiser ads off unless asked", async () => {
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(mockFetchResponse({ id: "4100" }))
+      .mockResolvedValueOnce(mockFetchResponse({
+        id: "4100",
+        degrees_of_freedom_spec: { creative_features_spec: { image_touchups: { enroll_status: "OPT_OUT" } } },
+      })));
+    const result = await createHandler()({ ...EMPTY_INPUT, page_id: "6001", image_hash: "abc123hash" }) as { content: Array<{ text: string }> };
+
+    const body = sentBody();
+    const features = JSON.parse(body.degrees_of_freedom_spec).creative_features_spec as Record<string, { enroll_status: string }>;
+    expect(Object.keys(features)).toContain("text_optimizations");
+    expect(new Set(Object.values(features).map((f) => f.enroll_status))).toEqual(new Set(["OPT_OUT"]));
+    expect(JSON.parse(body.contextual_multi_ads)).toEqual({ enroll_status: "OPT_OUT" });
+    expect(result.content[0].text).toContain("Advantage+ creative features on: none.");
+    expect(result.content[0].text).toContain("Multi-advertiser ads: off.");
+  });
+
+  it("opts in only the features the caller lists", async () => {
+    stubCreateAndReadBack();
+    await createHandler()({
+      ...EMPTY_INPUT,
+      page_id: "6001",
+      image_hash: "abc123hash",
+      advantage_creative: { text_optimizations: "OPT_IN" },
+      multi_advertiser_ads: true,
+    });
+
+    const body = sentBody();
+    const features = JSON.parse(body.degrees_of_freedom_spec).creative_features_spec as Record<string, { enroll_status: string }>;
+    expect(features.text_optimizations).toEqual({ enroll_status: "OPT_IN" });
+    expect(features.image_touchups).toEqual({ enroll_status: "OPT_OUT" });
+    expect(JSON.parse(body.contextual_multi_ads)).toEqual({ enroll_status: "OPT_IN" });
+  });
+
+  it("refuses the deprecated standard_enhancements before calling Meta", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+    await expect(createHandler()({
+      ...EMPTY_INPUT,
+      page_id: "6001",
+      image_hash: "abc123hash",
+      advantage_creative: { standard_enhancements: "OPT_IN" },
+    })).rejects.toThrow(/standard_enhancements is deprecated/);
+    expect(vi.mocked(fetch)).not.toHaveBeenCalled();
   });
 
   it("accepts PLAY_GAME and rejects headlines over 255 characters in the schema", () => {
