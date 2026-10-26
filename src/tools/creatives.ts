@@ -19,6 +19,7 @@ import {
   ADVANTAGE_CREATIVE_FEATURES,
   CTA_TYPES,
   FEATURE_NAME_PATTERN,
+  MAX_HEADLINE_LENGTH,
   buildFeatureSpec,
   buildStorySpec,
 } from "../meta/creative-spec.js";
@@ -27,11 +28,12 @@ import { normalizeUrlTags } from "../utils/validation.js";
 export const ctaEnum = z.enum(CTA_TYPES);
 
 export const MAX_TEXT_OPTIONS = 5;
-export const MAX_HEADLINE_LENGTH = 255;
+export { MAX_HEADLINE_LENGTH };
 
-export const textOptions = () => z.array(z.string().min(1)).min(1).max(MAX_TEXT_OPTIONS).optional();
+const optionText = () => z.string().refine((text) => text.trim() !== "", "must not be blank");
+export const textOptions = () => z.array(optionText()).min(1).max(MAX_TEXT_OPTIONS).optional();
 export const headlineOptions = () =>
-  z.array(z.string().min(1).max(MAX_HEADLINE_LENGTH)).min(1).max(MAX_TEXT_OPTIONS).optional();
+  z.array(optionText().pipe(z.string().max(MAX_HEADLINE_LENGTH))).min(1).max(MAX_TEXT_OPTIONS).optional();
 
 const AD_IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tiff"];
 const AD_IMAGE_FILE_NAME_MAX = 100;
@@ -349,9 +351,6 @@ export function registerCreativeTools(server: McpServer): void {
       } else {
         if (!pageIdValidated) {
           throw new Error("page_id is required when building a creative from scratch (no object_story_id or source_instagram_media_id provided).");
-        }
-        if (videoIdValidated && !image_hash && !image_url) {
-          throw new Error("video creatives built from scratch require image_hash or image_url as a thumbnail.");
         }
         if (image_url && !image_hash) {
           try {

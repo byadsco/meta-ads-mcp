@@ -316,6 +316,8 @@ describe("ads_create_ad_creative request body", () => {
     expect(schema.headlines.safeParse(["h".repeat(255)]).success).toBe(true);
     expect(schema.headlines.safeParse(["h".repeat(256)]).success).toBe(false);
     expect(schema.primary_texts.safeParse(["1", "2", "3", "4", "5", "6"]).success).toBe(false);
+    expect(schema.primary_texts.safeParse(["   ", "Texto"]).success).toBe(false);
+    expect(schema.headlines.safeParse([" "]).success).toBe(false);
   });
 
   it("requires page_id when building from scratch", async () => {

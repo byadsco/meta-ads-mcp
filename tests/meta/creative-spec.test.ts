@@ -3,6 +3,7 @@ import {
   ADVANTAGE_CREATIVE_FEATURES,
   buildFeatureSpec,
   buildStorySpec,
+  dofFeedProblem,
 } from "../../src/meta/creative-spec.js";
 
 const NO_TEXT = { primaryTexts: [], headlines: [], descriptions: [] };
@@ -137,6 +138,24 @@ describe("buildStorySpec", () => {
     expect(result.warnings).toEqual([expect.stringMatching(/repeated primary text/i)]);
   });
 
+  it("drops blank options, so they never become an empty variant", () => {
+    const result = buildStorySpec({ pageId: "6001", imageHash: "h", primaryTexts: ["   ", "Texto"], headlines: [], descriptions: [] });
+
+    expect(result.assetFeedSpec).toBeUndefined();
+    expect(result.objectStorySpec.link_data).toEqual({ image_hash: "h", message: "Texto" });
+    expect(result.warnings).toEqual(["Dropped a blank primary text."]);
+  });
+
+  it("sends a single text exactly as given, whitespace included", () => {
+    const result = buildStorySpec({ pageId: "6001", imageHash: "h", primaryTexts: ["\nTexto\n"], headlines: [" Head "], descriptions: [] });
+    expect(result.objectStorySpec.link_data).toEqual({ image_hash: "h", message: "\nTexto\n", name: " Head " });
+  });
+
+  it("refuses a video without a thumbnail", () => {
+    expect(() => buildStorySpec({ pageId: "6001", videoId: "800123", ...NO_TEXT }))
+      .toThrow(/require image_hash or image_url as a thumbnail/);
+  });
+
   it("warns, without failing, when copy is longer than placements show in full", () => {
     const result = buildStorySpec({
       pageId: "6001",
@@ -148,6 +167,21 @@ describe("buildStorySpec", () => {
 
     expect(result.warnings).toHaveLength(3);
     expect(result.warnings.join(" ")).toMatch(/125/);
+  });
+});
+
+describe("dofFeedProblem", () => {
+  it("accepts a feed Meta accepts", () => {
+    expect(dofFeedProblem({ bodies: [{ text: "A" }, { text: "B" }], titles: [{ text: "T" }] })).toBeUndefined();
+  });
+
+  it.each([
+    ["all fields singular", { bodies: [{ text: "A" }], titles: [{ text: "T" }] }, /two or more texts/],
+    ["a repeated text", { bodies: [{ text: "A" }, { text: " A " }] }, /repeats a text/],
+    ["a blank text", { bodies: [{ text: "A" }, { text: "  " }] }, /blank text/],
+    ["a title over 255 characters", { bodies: [{ text: "A" }, { text: "B" }], titles: [{ text: "t".repeat(256) }] }, /over 255/],
+  ])("names %s", (_label, feed, problem) => {
+    expect(dofFeedProblem(feed)).toMatch(problem);
   });
 });
 

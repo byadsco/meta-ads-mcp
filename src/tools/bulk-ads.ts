@@ -172,12 +172,18 @@ export function registerBulkAdTools(server: McpServer): void {
         headlines: resolveTextOptions(headline, headlines, "headline", "headlines"),
         descriptions: resolveTextOptions(description, descriptions, "description", "descriptions"),
       };
+      // A video's own field wins whenever it is present, even empty: an empty
+      // description clears the shared one for that video, as it always has.
+      const ownOptions = (single: string | undefined, list: string[] | undefined, singleName: string, listName: string) =>
+        single === undefined && list === undefined
+          ? undefined
+          : resolveTextOptions(single, list, singleName, listName);
       const itemCopies = videos.map((video, index) => {
         const where = `videos[${index}]`;
         return {
-          primary: resolveTextOptions(video.message, video.primary_texts, `${where}.message`, `${where}.primary_texts`),
-          headlines: resolveTextOptions(video.headline, video.headlines, `${where}.headline`, `${where}.headlines`),
-          descriptions: resolveTextOptions(video.description, video.descriptions, `${where}.description`, `${where}.descriptions`),
+          primary: ownOptions(video.message, video.primary_texts, `${where}.message`, `${where}.primary_texts`),
+          headlines: ownOptions(video.headline, video.headlines, `${where}.headline`, `${where}.headlines`),
+          descriptions: ownOptions(video.description, video.descriptions, `${where}.description`, `${where}.descriptions`),
         };
       });
       const featureSpec = buildFeatureSpec(advantage_creative, multi_advertiser_ads === true);
@@ -248,9 +254,9 @@ export function registerBulkAdTools(server: McpServer): void {
             videoId: uploaded.id,
             imageUrl: thumbnailUrl,
             linkUrl: video.link_url ?? link_url,
-            primaryTexts: itemCopy.primary.length > 0 ? itemCopy.primary : sharedCopy.primary,
-            headlines: itemCopy.headlines.length > 0 ? itemCopy.headlines : sharedCopy.headlines,
-            descriptions: itemCopy.descriptions.length > 0 ? itemCopy.descriptions : sharedCopy.descriptions,
+            primaryTexts: itemCopy.primary ?? sharedCopy.primary,
+            headlines: itemCopy.headlines ?? sharedCopy.headlines,
+            descriptions: itemCopy.descriptions ?? sharedCopy.descriptions,
             callToActionType: video.call_to_action_type ?? call_to_action_type,
           });
           if (story.warnings.length > 0) result.warnings = story.warnings;

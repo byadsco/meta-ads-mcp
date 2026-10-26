@@ -5,7 +5,7 @@ import { normalizeAccountId, validateMetaId } from "../utils/format.js";
 import type { MetaApiResponse } from "../meta/types/index.js";
 import { READ } from "./_register.js";
 import { assertSafePublicUrl, UnsafeUrlError } from "../utils/url-guard.js";
-import { buildStorySpec } from "../meta/creative-spec.js";
+import { buildStorySpec, dofFeedProblem } from "../meta/creative-spec.js";
 import {
   ctaEnum,
   headlineOptions,
@@ -55,6 +55,17 @@ const adFormatEnum = z.enum([
 
 interface AdPreview {
   body: string;
+}
+
+async function guardImageUrl(url: string, field: string): Promise<void> {
+  try {
+    await assertSafePublicUrl(url);
+  } catch (err) {
+    if (err instanceof UnsafeUrlError) {
+      throw new Error(`Refusing to forward ${field} to Meta: ${err.message}`);
+    }
+    throw err;
+  }
 }
 
 export function registerPreviewTools(server: McpServer): void {
@@ -190,34 +201,38 @@ export function registerPreviewTools(server: McpServer): void {
       const warnings: string[] = [];
       let spec: Record<string, unknown>;
 
-      if (creative && page_id) {
-        throw new Error("Pass either the simple fields (page_id, ...) or creative, not both.");
+      const simpleFields = {
+        page_id, instagram_actor_id, image_hash, image_url, video_id, link_url, message, headline,
+        description, primary_texts, headlines, descriptions, call_to_action_type,
+      };
+      const simpleGiven = Object.entries(simpleFields).filter(([, value]) => value !== undefined).map(([key]) => key);
+      if (creative && simpleGiven.length > 0) {
+        throw new Error(`Pass either the simple fields or creative, not both (got creative and ${simpleGiven.join(", ")}).`);
       }
 
       if (creative) {
-        creative.object_story_spec.page_id = validateMetaId(creative.object_story_spec.page_id, "page");
-        const videoData = creative.object_story_spec.video_data;
+        const raw = structuredClone(creative);
+        raw.object_story_spec.page_id = validateMetaId(raw.object_story_spec.page_id, "page");
+        const linkData = raw.object_story_spec.link_data;
+        const videoData = raw.object_story_spec.video_data;
         if (videoData?.video_id) {
           videoData.video_id = validateMetaId(videoData.video_id, "video");
         }
+        if (linkData?.picture) await guardImageUrl(linkData.picture, "link_data.picture");
+        if (videoData?.image_url) await guardImageUrl(videoData.image_url, "video_data.image_url");
         // Meta reads a video's description from link_description and ignores
         // "description", which earlier versions of this tool documented.
         if (videoData?.description !== undefined) {
           videoData.link_description ??= videoData.description;
           delete videoData.description;
         }
-        spec = creative;
-      } else if (page_id) {
-        if (image_url && !image_hash) {
-          try {
-            await assertSafePublicUrl(image_url);
-          } catch (err) {
-            if (err instanceof UnsafeUrlError) {
-              throw new Error(`Refusing to forward image_url to Meta: ${err.message}`);
-            }
-            throw err;
-          }
+        if (raw.asset_feed_spec?.optimization_type === "DEGREES_OF_FREEDOM") {
+          const problem = dofFeedProblem(raw.asset_feed_spec);
+          if (problem) throw new Error(`Meta would reject this creative: ${problem}`);
         }
+        spec = raw;
+      } else if (page_id) {
+        if (image_url && !image_hash) await guardImageUrl(image_url, "image_url");
         const story = buildStorySpec({
           pageId: validateMetaId(page_id, "page"),
           instagramUserId: instagram_actor_id ? validateMetaId(instagram_actor_id, "instagram_actor") : undefined,

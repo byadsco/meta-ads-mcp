@@ -222,6 +222,22 @@ describe("registerBulkAdTools", () => {
       expect(feed.titles).toEqual([{ text: "titular" }]);
     });
 
+    it("lets an empty per-video field clear the shared copy for that video", async () => {
+      const tool = handlerFor("ads_bulk_create_video_ads");
+      const creativeBody = stubOneReadyVideo();
+
+      await tool.handler({
+        ...BASE_ARGS,
+        videos: [{ file_url: "https://cdn.example/b.mp4", description: "" }],
+        message: "compartido",
+        description: "Oferta compartida",
+      });
+
+      const videoData = JSON.parse(creativeBody().get("object_story_spec")!).video_data;
+      expect(videoData.message).toBe("compartido");
+      expect(videoData).not.toHaveProperty("link_description");
+    });
+
     it("refuses a single field together with its list before uploading anything", async () => {
       const tool = handlerFor("ads_bulk_create_video_ads");
       vi.stubGlobal("fetch", vi.fn());

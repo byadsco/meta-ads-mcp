@@ -68,19 +68,49 @@ export interface FeatureSpec {
   contextual_multi_ads: { enroll_status: EnrollStatus };
 }
 
+// Texts are compared trimmed but sent as given, so single-text callers keep
+// exactly the body they sent before.
 function dedupe(texts: string[], label: string, warnings: string[]): string[] {
   const seen = new Set<string>();
   const kept: string[] = [];
   for (const text of texts) {
     const key = text.trim();
+    if (key === "") {
+      warnings.push(`Dropped a blank ${label}.`);
+      continue;
+    }
     if (seen.has(key)) {
       warnings.push(`Dropped a repeated ${label} ("${key}"): Meta rejects duplicates.`);
       continue;
     }
     seen.add(key);
-    kept.push(key);
+    kept.push(text);
   }
   return kept;
+}
+
+export const MAX_HEADLINE_LENGTH = 255;
+
+// Rules Meta enforces on a DEGREES_OF_FREEDOM feed (measured on v26.0, see
+// docs/meta-creative-ground-truth.md). Returns the first problem, if any.
+export function dofFeedProblem(feed: {
+  bodies?: Array<{ text: string }>;
+  titles?: Array<{ text: string }>;
+  descriptions?: Array<{ text: string }>;
+}): string | undefined {
+  const fields = [["bodies", feed.bodies ?? []], ["titles", feed.titles ?? []], ["descriptions", feed.descriptions ?? []]] as const;
+  for (const [name, items] of fields) {
+    const keys = items.map((item) => item.text.trim());
+    if (keys.some((key) => key === "")) return `asset_feed_spec.${name} has a blank text.`;
+    if (new Set(keys).size !== keys.length) return `asset_feed_spec.${name} repeats a text; Meta rejects duplicates.`;
+  }
+  if ((feed.titles ?? []).some((title) => title.text.length > MAX_HEADLINE_LENGTH)) {
+    return `asset_feed_spec.titles has a title over ${MAX_HEADLINE_LENGTH} characters.`;
+  }
+  if (!fields.some(([, items]) => items.length > 1)) {
+    return "a DEGREES_OF_FREEDOM feed needs at least one field with two or more texts; with one text of each kind, put the copy in object_story_spec.";
+  }
+  return undefined;
 }
 
 function warnLength(texts: string[], label: string, limit: number, warnings: string[]): void {
@@ -95,6 +125,9 @@ function warnLength(texts: string[], label: string, limit: number, warnings: str
 // object_story_spec. Meta rejects such a feed when every field has a single
 // entry, so one text of each kind stays in link_data / video_data.
 export function buildStorySpec(input: StorySpecInput): StorySpec {
+  if (input.videoId && !input.imageHash && !input.imageUrl) {
+    throw new Error("video creatives built from scratch require image_hash or image_url as a thumbnail.");
+  }
   const warnings: string[] = [];
   const primaryTexts = dedupe(input.primaryTexts, "primary text", warnings);
   const headlines = dedupe(input.headlines, "headline", warnings);

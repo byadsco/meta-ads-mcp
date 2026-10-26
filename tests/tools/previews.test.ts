@@ -103,8 +103,65 @@ describe("ads_generate_preview", () => {
       page_id: "6001",
       creative: { object_story_spec: { page_id: "6001" } },
     })).rejects.toThrow(/not both/);
+    await expect(handler({
+      account_id: "act_123",
+      ad_format: "MOBILE_FEED_STANDARD",
+      primary_texts: ["Nuevo A", "Nuevo B"],
+      creative: { object_story_spec: { page_id: "6001", link_data: { message: "Texto anterior" } } },
+    })).rejects.toThrow(/not both \(got creative and primary_texts\)/);
     await expect(handler({ account_id: "act_123", ad_format: "MOBILE_FEED_STANDARD" }))
       .rejects.toThrow(/page_id with the simple creative fields/);
     expect(vi.mocked(fetch)).not.toHaveBeenCalled();
+  });
+
+  it("refuses a private image URL in the raw spec, as in the simple fields", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+    const handler = generatePreview();
+
+    await expect(handler({
+      account_id: "act_123",
+      ad_format: "MOBILE_FEED_STANDARD",
+      creative: { object_story_spec: { page_id: "6001", video_data: { video_id: "800123", image_url: "https://127.0.0.1/thumb.jpg" } } },
+    })).rejects.toThrow(/Refusing to forward video_data.image_url/);
+    await expect(handler({
+      account_id: "act_123",
+      ad_format: "MOBILE_FEED_STANDARD",
+      creative: { object_story_spec: { page_id: "6001", link_data: { picture: "https://127.0.0.1/a.jpg" } } },
+    })).rejects.toThrow(/Refusing to forward link_data.picture/);
+    expect(vi.mocked(fetch)).not.toHaveBeenCalled();
+  });
+
+  it("refuses a video without a thumbnail in the simple fields", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+    await expect(generatePreview()({
+      account_id: "act_123",
+      ad_format: "MOBILE_FEED_STANDARD",
+      page_id: "6001",
+      video_id: "800123",
+    })).rejects.toThrow(/thumbnail/);
+    expect(vi.mocked(fetch)).not.toHaveBeenCalled();
+  });
+
+  it("refuses a raw DEGREES_OF_FREEDOM feed Meta would reject", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+    await expect(generatePreview()({
+      account_id: "act_123",
+      ad_format: "MOBILE_FEED_STANDARD",
+      creative: {
+        object_story_spec: { page_id: "6001", link_data: { image_hash: "h" } },
+        asset_feed_spec: { bodies: [{ text: "A" }], titles: [{ text: "T" }], optimization_type: "DEGREES_OF_FREEDOM" },
+      },
+    })).rejects.toThrow(/Meta would reject this creative/);
+    expect(vi.mocked(fetch)).not.toHaveBeenCalled();
+  });
+
+  it("leaves the caller's raw spec untouched", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(mockFetchResponse(PREVIEW)));
+    const creative = { object_story_spec: { page_id: "6001", video_data: { video_id: "800123", image_hash: "t", description: "D" } } };
+    const before = structuredClone(creative);
+
+    await generatePreview()({ account_id: "act_123", ad_format: "MOBILE_FEED_STANDARD", creative });
+
+    expect(creative).toEqual(before);
   });
 });
