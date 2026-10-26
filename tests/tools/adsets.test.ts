@@ -410,6 +410,7 @@ describe("registerAdSetTools", () => {
           },
           contextual_multi_ads: { enroll_status: "OPT_OUT" },
           adlabels: [{ id: "900", name: "Label" }],
+          platform_customizations: { instagram: { image_hash: "h-ig" } },
         }))
         .mockResolvedValueOnce(mockFetchResponse({ id: "20001" }))
         .mockResolvedValueOnce(mockFetchResponse({ copied_ad_id: "30001" }))
@@ -439,6 +440,7 @@ describe("registerAdSetTools", () => {
       });
       expect(JSON.parse(body.get("contextual_multi_ads") ?? "{}")).toEqual({ enroll_status: "OPT_OUT" });
       expect(JSON.parse(body.get("adlabels") ?? "[]")).toEqual([{ id: "900" }]);
+      expect(JSON.parse(body.get("platform_customizations") ?? "{}")).toEqual({ instagram: { image_hash: "h-ig" } });
       expect(JSON.parse(result.content[1].text).warnings.join(" ")).toMatch(/Dropped standard_enhancements/);
     });
 

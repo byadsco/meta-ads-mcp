@@ -24,7 +24,7 @@ import {
 } from "../meta/creative-rebuild.js";
 import { readEngagement, type Engagement } from "../meta/post-engagement.js";
 import type { AdCreative } from "../meta/types/index.js";
-import { ADVERTISER_CONTENT_CLOSE, ADVERTISER_CONTENT_OPEN, singleLine } from "../utils/single-line.js";
+import { ADVERTISER_CONTENT_CLOSE, ADVERTISER_CONTENT_OPEN, exactLine, singleLine } from "../utils/single-line.js";
 import { ctaEnum } from "./creatives.js";
 import { UPDATE, WRITE_WARNING } from "./_register.js";
 
@@ -221,10 +221,12 @@ export function registerAdContentTools(server: McpServer): void {
   );
 }
 
-// Ad copy is advertiser content: it is rendered one bounded line per option,
-// inside the untrusted fence, never as framing.
+// The preview is what the person approves, so values are shown exactly (two
+// different values never look alike), one line each, inside the untrusted fence.
+const PREVIEW_VALUE_MAX = 1000;
+
 function listCopy(texts: string[]): string {
-  return texts.length === 0 ? "(none)" : texts.map((text) => `[${singleLine(text, 300)}]`).join(" ");
+  return texts.length === 0 ? "(none)" : `[${texts.map((text) => exactLine(text, PREVIEW_VALUE_MAX)).join(", ")}]`;
 }
 
 function describeEngagement(engagement: Engagement | undefined): string {
@@ -272,7 +274,8 @@ function summarize(
     lines.push(`Descriptions before: ${listCopy(report.before.descriptions)}`);
     lines.push(`Descriptions after: ${listCopy(report.after.descriptions)}`);
     for (const change of report.field_changes) {
-      lines.push(`${change.field}: ${singleLine(change.before, 300) || "(none)"} → ${singleLine(change.after, 300)}`);
+      const before = change.before === undefined ? "(none)" : exactLine(change.before, PREVIEW_VALUE_MAX);
+      lines.push(`${change.field}: ${before} → ${exactLine(change.after, PREVIEW_VALUE_MAX)}`);
     }
     lines.push(ADVERTISER_CONTENT_CLOSE);
   }
