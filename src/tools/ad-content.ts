@@ -46,7 +46,7 @@ export function registerAdContentTools(server: McpServer): void {
   server.registerTool(
     "ads_update_ad_content",
     {
-      description: `${WRITE_WARNING}Change the copy, link, button or media of live ads: add, remove or replace primary texts, headlines and descriptions, including removing one option of several. Meta creatives are immutable, so each ad gets a replacement creative and goes back through review; the ad keeps its ID, history and previous creative (point it back with ads_update_ad to undo, which brings its post back too). Likes, comments and shares live on the ad's post. When only primary texts change and at least two remain, the ad keeps its Facebook post and that engagement (its Instagram side starts over and the Facebook headline stays the post's own). Anything else creates a new post, which resets the visible engagement, and only happens with allow_new_post: true. dry_run defaults to true: the first call shows, per creative, the copy before and after, the route and the engagement at stake, without changing anything. Show that to the person and call again with dry_run: false once they agree. Carousels, dynamic creative and other asset feeds are not supported.`,
+      description: `${WRITE_WARNING}Change the copy, link, button or media of live ads: add, remove or replace primary texts, headlines and descriptions, including removing one option of several. Meta creatives are immutable, so each ad gets a replacement creative and goes back through review; the ad keeps its ID, history and previous creative (point it back with ads_update_ad to undo, which brings its post back too). Likes, comments and shares live on the ad's post. When only primary texts change and at least two remain, the ad keeps its Facebook post and that engagement (its Instagram side starts over and the Facebook headline stays the post's own). Anything else creates a new post, which resets the visible engagement, and only happens with allow_new_post: true. dry_run defaults to true: the first call shows, per creative, the copy before and after, the route and the engagement at stake, without changing anything. Show that to the person and call again with dry_run: false once they agree. Carousels, dynamic creative and other asset feeds are not supported. Meta lets an ad change creative at most once every 30 seconds (error 613): wait before changing the same ad again.`,
       inputSchema: {
         ad_ids: z.array(z.string()).min(1).max(50).describe("Ad IDs to change (1-50). Ads sharing a creative get one replacement."),
         primary_texts: textChange("primary text"),
@@ -128,7 +128,9 @@ export function registerAdContentTools(server: McpServer): void {
 
       const updated: UpdatedAd[] = [];
       const warnings: string[] = [];
-      const aborted = !preview && planningErrors.length > 0;
+      // Every ad has to be read and planned before anything is written, so a
+      // batch never half-applies: an ad that could not even be read counts.
+      const aborted = !preview && (planningErrors.length > 0 || failed.length > 0);
       if (!preview && !aborted) {
         for (const { group, body } of actionable) {
           let newCreativeId: string;
@@ -194,7 +196,7 @@ function summarize(
   for (const report of reports) {
     const ads = report.ad_ids.join(", ");
     if (!report.route) {
-      lines.push(`• Ads ${ads}: not changed — ${report.reason}`);
+      lines.push(`• Ads ${ads}: not changed — ${singleLine(report.reason, 400)}`);
       continue;
     }
     const proof = report.social_proof?.facebook === "kept"
@@ -211,8 +213,14 @@ function summarize(
     lines.push(`Descriptions after: ${listCopy(report.after.descriptions)}`);
     lines.push(ADVERTISER_CONTENT_CLOSE);
   }
-  if (planningErrors.length > 0) lines.push("", "Problems:", ...planningErrors.map((error) => `• ${error}`));
-  if (failed.length > 0) lines.push("", "Failed:", ...failed.map((f) => `• Ad ${f.ad_id}: ${f.error}`));
+  // Problems and Meta's errors can quote ad copy, so they stay one bounded
+  // line each, inside the fence.
+  if (planningErrors.length > 0) {
+    lines.push("", "Problems:", ADVERTISER_CONTENT_OPEN, ...planningErrors.map((error) => `• ${singleLine(error, 400)}`), ADVERTISER_CONTENT_CLOSE);
+  }
+  if (failed.length > 0) {
+    lines.push("", "Failed:", ADVERTISER_CONTENT_OPEN, ...failed.map((f) => `• Ad ${f.ad_id}: ${singleLine(f.error, 400)}`), ADVERTISER_CONTENT_CLOSE);
+  }
   if (!preview && updated.length > 0) {
     lines.push("", "Updated ads go back through Meta review. To undo, point an ad at its previous creative with ads_update_ad:");
     for (const u of updated) lines.push(`• Ad ${u.ad_id}: previous creative ${u.old_creative_id}, new ${u.new_creative_id}`);

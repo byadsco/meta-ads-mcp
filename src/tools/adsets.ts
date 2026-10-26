@@ -13,7 +13,7 @@ import { READ, CREATE, UPDATE, DELETE, WRITE_WARNING } from "./_register.js";
 import { getCloneBundleStore, STALE_IN_PROGRESS_MS } from "../store/clone-bundle-store.js";
 import { adaptCopiedTargetingForCreate } from "../meta/targeting-compat.js";
 import { ctaEnum } from "./creatives.js";
-import { carryOverFields } from "../meta/creative-rebuild.js";
+import { carryOverFields, withInstagramIdentity } from "../meta/creative-rebuild.js";
 
 const statusEnum = z.enum(["ACTIVE", "PAUSED", "DELETED", "ARCHIVED"]);
 
@@ -743,9 +743,13 @@ export function registerAdSetTools(server: McpServer): void {
             warnings.push(...carried.warnings);
             const creativeBody: Record<string, string> = {
               name: plan.override.name ?? plannedName,
-              object_story_spec: JSON.stringify(patched),
+              object_story_spec: JSON.stringify(withInstagramIdentity(patched, plan.sourceCreative)),
               ...carried.body,
             };
+            // The source's creative-level link override must follow the new link.
+            if (plan.override.link_url !== undefined && creativeBody.link_url !== undefined) {
+              creativeBody.link_url = plan.override.link_url;
+            }
             if (plan.sourceCreative.url_tags) creativeBody.url_tags = plan.sourceCreative.url_tags;
             const newCreative = await metaApiClient.postForm<{ id: string }>(
               `/${accountPath}/adcreatives`,

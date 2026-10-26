@@ -37,6 +37,14 @@ export function resolveInstagramUserId(creative: AdCreative): string | undefined
   return typeof embedded === "string" ? embedded : undefined;
 }
 
+// Some creatives keep the Instagram identity beside the spec rather than in
+// it; a replacement built from the spec alone would lose the Instagram account.
+export function withInstagramIdentity(spec: Record<string, unknown>, creative: AdCreative): Record<string, unknown> {
+  const instagramUserId = resolveInstagramUserId(creative);
+  if (!instagramUserId || spec.instagram_user_id !== undefined) return spec;
+  return { ...spec, instagram_user_id: instagramUserId };
+}
+
 // Creatives built before v22.0 still report standard_enhancements, which Meta
 // now rejects in any form (subcode 3858504), so a replacement must drop it.
 export function cleanDegreesOfFreedomSpec(

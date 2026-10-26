@@ -16,6 +16,7 @@ import {
   readCreativeForRebuild,
   repointGroup,
   resolveInstagramUserId,
+  withInstagramIdentity,
   type CreativeGroup,
   type UpdatedAd,
 } from "../meta/creative-rebuild.js";
@@ -97,7 +98,7 @@ function buildReplacementCreativeBody(
       });
     }
   } else {
-    body.object_story_spec = JSON.stringify(creative.object_story_spec);
+    body.object_story_spec = JSON.stringify(withInstagramIdentity(asRecord(creative.object_story_spec) ?? {}, creative));
     if (strategy === "clone_feed") body.asset_feed_spec = JSON.stringify(creative.asset_feed_spec);
   }
 

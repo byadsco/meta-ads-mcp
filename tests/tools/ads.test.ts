@@ -479,6 +479,20 @@ describe("registerAdTools", () => {
       expect(report.updated).toHaveLength(1);
     });
 
+    it("keeps an Instagram identity stored beside the spec when it clones the spec", async () => {
+      const server = createMockMcpServer();
+      registerAdTools(server as never);
+      vi.stubGlobal("fetch", vi.fn()
+        .mockResolvedValueOnce(mockFetchResponse(adResponse()))
+        .mockResolvedValueOnce(mockFetchResponse(specCreative({ instagram_user_id: "17841400000000009" })))
+        .mockResolvedValueOnce(mockFetchResponse({ id: "4100" }))
+        .mockResolvedValueOnce(mockFetchResponse({ success: true })));
+
+      await server._registeredTools[UPDATE_URL_TAGS].handler({ ad_ids: ["3001"], url_tags: "utm_source=meta", dry_run: false });
+
+      expect(JSON.parse(bodyOf(2).get("object_story_spec") ?? "{}").instagram_user_id).toBe("17841400000000009");
+    });
+
     it("treats a feed with no content keys as no feed, so a carousel keeps its post", async () => {
       const server = createMockMcpServer();
       registerAdTools(server as never);

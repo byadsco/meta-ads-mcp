@@ -158,6 +158,28 @@ describe("planContentEdit — new post", () => {
     });
   });
 
+  it("replaces the source's creative-level link override with the new link", () => {
+    const plan = planContentEdit(singleImage({ link_url: "https://example.com/old" }), { link_url: "https://example.com/new" }, true);
+    expect(plan.body?.link_url).toBe("https://example.com/new");
+    expect(parse(plan.body?.object_story_spec).link_data.link).toBe("https://example.com/new");
+  });
+
+  it("keeps an Instagram identity stored beside the spec", () => {
+    const plan = planContentEdit(singleImage({ instagram_user_id: "17841400000000009" }), { headlines: { set: ["Nuevo"] } }, true);
+    expect(parse(plan.body?.object_story_spec).instagram_user_id).toBe("17841400000000009");
+  });
+
+  it("gives a video without a button one, so a new link is not silently dropped", () => {
+    const video: AdCreative = {
+      id: "1", name: "v",
+      object_story_spec: { page_id: "6001", video_data: { video_id: "8", image_hash: "t", message: "M" } },
+    };
+    const plan = planContentEdit(video, { link_url: "https://example.com/v" }, true);
+    expect(parse(plan.body?.object_story_spec).video_data.call_to_action).toEqual({
+      type: "LEARN_MORE", value: { link: "https://example.com/v" },
+    });
+  });
+
   it("keeps a video's description in link_description", () => {
     const video: AdCreative = {
       id: "1", name: "v",
@@ -184,6 +206,26 @@ describe("planContentEdit — refusals", () => {
 
   it("points url_tags-only changes to ads_update_ad_url_tags", () => {
     expect(planContentEdit(multiText(), { url_tags: "utm_source=other" }, true).reason).toMatch(/ads_update_ad_url_tags/);
+  });
+
+  it("edits again an ad the same-post route already changed (post plus text options, no spec)", () => {
+    const routeAResult: AdCreative = {
+      id: "4100",
+      name: "Multi",
+      effective_object_story_id: "6001_777",
+      asset_feed_spec: { bodies: [{ text: "Uno" }, { text: "Tres" }], titles: [{ text: "T1" }], optimization_type: "DEGREES_OF_FREEDOM" },
+    };
+    expect(readCopy(routeAResult)).toEqual({
+      source: "post",
+      copy: { primary: ["Uno", "Tres"], headlines: ["T1"], descriptions: [] },
+    });
+
+    const again = planContentEdit(routeAResult, { primary_texts: { add: ["Cuatro"] } }, false);
+    expect(again.route).toBe("same_post");
+    expect(again.body?.object_story_id).toBe("6001_777");
+    expect(JSON.parse(again.body!.asset_feed_spec).bodies).toEqual([{ text: "Uno" }, { text: "Tres" }, { text: "Cuatro" }]);
+
+    expect(planContentEdit(routeAResult, { headlines: { set: ["T2"] } }, true).reason).toMatch(/promotes an existing post/);
   });
 
   it("only edits a promoted post's primary texts", () => {

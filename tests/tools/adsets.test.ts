@@ -442,6 +442,42 @@ describe("registerAdSetTools", () => {
       expect(JSON.parse(result.content[1].text).warnings.join(" ")).toMatch(/Dropped standard_enhancements/);
     });
 
+    it("lets a link override replace the source's creative-level link_url on the swapped creative", async () => {
+      const server = createMockMcpServer();
+      registerAdSetTools(server as never);
+
+      vi.stubGlobal("fetch", vi.fn()
+        .mockResolvedValueOnce(mockFetchResponse(sourceAdSet()))
+        .mockResolvedValueOnce(mockFetchResponse(oneAd()))
+        .mockResolvedValueOnce(mockFetchResponse({
+          id: "4001", name: "C1",
+          object_story_spec: { page_id: "6001", link_data: { link: "https://x.com/old", image_hash: "h1" } },
+          link_url: "https://x.com/old",
+          instagram_user_id: "17841400000000009",
+        }))
+        .mockResolvedValueOnce(mockFetchResponse({ id: "20001" }))
+        .mockResolvedValueOnce(mockFetchResponse({ copied_ad_id: "30001" }))
+        .mockResolvedValueOnce(mockFetchResponse({ success: true }))
+        .mockResolvedValueOnce(mockFetchResponse({ id: "41001" }))
+        .mockResolvedValueOnce(mockFetchResponse({ success: true })));
+
+      await server._registeredTools[2].handler({
+        account_id: "act_123",
+        source_ad_set_id: "2099",
+        target_ad_set: { name: "Target", geo_override: { countries: ["CO"] }, status: "PAUSED" },
+        creative_overrides: [{ source_ad_id: "3001", link_url: "https://x.com/new" }],
+        dry_run: false,
+        idempotency_key: "k-swap-link",
+      });
+
+      const creativeCall = vi.mocked(fetch).mock.calls.find((c) => new URL(c[0] as string).pathname.endsWith("/adcreatives"))!;
+      const body = new URLSearchParams(creativeCall[1]?.body as string);
+      expect(body.get("link_url")).toBe("https://x.com/new");
+      const spec = JSON.parse(body.get("object_story_spec") ?? "{}");
+      expect(spec.link_data.link).toBe("https://x.com/new");
+      expect(spec.instagram_user_id).toBe("17841400000000009");
+    });
+
     it("skips a single failed ad copy and continues with the rest", async () => {
       const server = createMockMcpServer();
       registerAdSetTools(server as never);

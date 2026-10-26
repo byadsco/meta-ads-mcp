@@ -1,5 +1,5 @@
 import { MAX_HEADLINE_LENGTH } from "./creative-spec.js";
-import { asRecord, carryOverFields, resolveInstagramUserId } from "./creative-rebuild.js";
+import { asRecord, carryOverFields, resolveInstagramUserId, withInstagramIdentity } from "./creative-rebuild.js";
 import type { AdCreative } from "./types/index.js";
 
 const MAX_TEXT_OPTIONS = 5;
@@ -61,11 +61,12 @@ export function readCopy(creative: AdCreative): { source: CopySource; copy: Copy
     if (feed.optimization_type !== "DEGREES_OF_FREEDOM") {
       return { unsupported: "dynamic creative or asset feed with images, videos or placement rules; edit it in Ads Manager or rebuild it with ads_create_ad_creative" };
     }
-    if (!spec) return { unsupported: "text options without an object_story_spec" };
-    return {
-      source: "text_options",
-      copy: { primary: texts(feed.bodies), headlines: texts(feed.titles), descriptions: texts(feed.descriptions) },
-    };
+    const copy = { primary: texts(feed.bodies), headlines: texts(feed.titles), descriptions: texts(feed.descriptions) };
+    if (spec) return { source: "text_options", copy };
+    // What the same-post route leaves behind: the existing post plus text
+    // options, with no spec to rebuild from.
+    if (creative.effective_object_story_id) return { source: "post", copy };
+    return { unsupported: "text options without an object_story_spec or a post" };
   }
   const linkData = asRecord(spec?.link_data);
   const videoData = asRecord(spec?.video_data);
@@ -115,7 +116,7 @@ const sameList = (a: string[], b: string[]) => a.length === b.length && a.every(
 // copy out the way ads_create_ad_creative does: several texts in a
 // DEGREES_OF_FREEDOM feed with no copy in the spec, one of each in the spec.
 function buildNewPostBody(creative: AdCreative, after: Copy, changes: ContentChanges): Record<string, string> {
-  const spec = structuredClone(asRecord(creative.object_story_spec) ?? {});
+  const spec = withInstagramIdentity(structuredClone(asRecord(creative.object_story_spec) ?? {}), creative);
   const linkData = asRecord(spec.link_data);
   const videoData = asRecord(spec.video_data);
   const target = linkData ?? videoData ?? {};
@@ -123,7 +124,13 @@ function buildNewPostBody(creative: AdCreative, after: Copy, changes: ContentCha
   if (changes.link_url !== undefined) {
     if (linkData) linkData.link = changes.link_url;
     const cta = asRecord(target.call_to_action);
-    if (cta) target.call_to_action = { ...cta, value: { ...(asRecord(cta.value) ?? {}), link: changes.link_url } };
+    if (cta) {
+      target.call_to_action = { ...cta, value: { ...(asRecord(cta.value) ?? {}), link: changes.link_url } };
+    } else if (videoData) {
+      // A video carries its destination only in its button, so a new link
+      // needs one; LEARN_MORE is the default ads_create_ad_creative uses.
+      target.call_to_action = { type: changes.call_to_action_type ?? "LEARN_MORE", value: { link: changes.link_url } };
+    }
   }
   if (changes.call_to_action_type !== undefined) {
     const cta = asRecord(target.call_to_action) ?? {};
@@ -194,6 +201,9 @@ export function planContentEdit(creative: AdCreative, changes: ContentChanges, a
   const warnings = [...carried.warnings];
   const finish = (body: Record<string, string>) => {
     Object.assign(body, carried.body);
+    // The carried link_url is the source's destination override; a new link
+    // has to replace it, or the creative would keep pointing at the old one.
+    if (changes.link_url !== undefined && body.link_url !== undefined) body.link_url = changes.link_url;
     const urlTags = changes.url_tags ?? creative.url_tags;
     if (urlTags) body.url_tags = urlTags;
     return body;
