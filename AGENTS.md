@@ -119,6 +119,19 @@ npm run typecheck         # tsc --noEmit
 - **Tests live under `tests/`** mirroring `src/` paths.
 - **OAuth/auth surface (`src/auth/`, `src/transport/security-config.ts`)** changes require extra scrutiny — request review even for small changes.
 
+## Ponytail
+
+Maintainers run the [Ponytail](https://github.com/DietrichGebert/ponytail) plugin (`ponytail@ponytail`) in Claude Code and Codex. It pushes for the smallest change that works. This repo's rules win over it:
+
+- The pre-deploy / pre-commit safety rule, in full: lint, typecheck, tests, build and both secret scans.
+- A test under `tests/` for every behavior change; a bug fix starts with a failing one.
+- New or changed tools follow the whole checklist in [docs/adding-a-tool.md](docs/adding-a-tool.md).
+- Changes to the OAuth/auth surface get the extra review described under *Repository conventions*.
+- No `shortcut:` comments: a known limit gets a normal comment that says why.
+- `/ponytail-review` and `/ponytail-audit` add a review; they never replace the Codex audit or the pre-deploy guard.
+
+`.claude/` is gitignored here, so nothing in the repo enables the plugin. Once per machine run `claude plugin marketplace add DietrichGebert/ponytail`, then `claude plugin install ponytail@ponytail --scope project` at the root of the main checkout and of each worktree. To keep it out of search and guard subagents, set `PONYTAIL_SUBAGENT_MATCHER` to `^(?!(explore|claude-code-guide|statusline-setup|pre-deploy-guard)$)` under `env` in `.claude/settings.json`. For Codex: `codex plugin marketplace add DietrichGebert/ponytail`, `codex plugin add ponytail@ponytail`, then trust its hooks in `/hooks`.
+
 ## Installing the Claude Code guard (optional but recommended)
 
 If you're using Claude Code on this repo and want the same automatic pre-commit/pre-push guard the maintainers use:
