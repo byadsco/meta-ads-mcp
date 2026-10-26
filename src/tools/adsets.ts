@@ -528,6 +528,7 @@ export function registerAdSetTools(server: McpServer): void {
             fields: buildFieldsParam(undefined, [
               ...CREATIVE_DEFAULT_FIELDS, "destination_spec", "wamo_whatsapp_identity_spec",
               "degrees_of_freedom_spec", "adlabels", "contextual_multi_ads", "instagram_user_id",
+              "platform_customizations",
             ]),
           });
         }

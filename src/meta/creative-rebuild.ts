@@ -109,6 +109,7 @@ export interface FailedAd {
   ad_id: string;
   error: string;
   new_creative_id?: string;
+  code?: "changed_meanwhile" | "repoint_refused";
 }
 
 export interface UpdatedAd {
@@ -181,15 +182,34 @@ async function readCreativeIdAfterFailedRepoint(adId: string): Promise<string | 
 
 // Points every ad of a group at the replacement. A write may reach Meta with
 // only its response lost, so a failed repoint is read back before the ad is
-// reported as untouched.
+// reported as untouched. With verifyUnchanged, each ad is read right before
+// its repoint and left alone if someone moved it to another creative since
+// the plan was made: the replacement was built from the old one and would
+// undo their change. Meta has no conditional update, so this narrows the
+// window rather than closing it.
 export async function repointGroup(
   group: CreativeGroup,
   newCreativeId: string,
+  options: { verifyUnchanged?: boolean } = {},
 ): Promise<{ updated: UpdatedAd[]; failed: FailedAd[]; warnings: string[] }> {
   const updated: UpdatedAd[] = [];
   const failed: FailedAd[] = [];
   const warnings: string[] = [];
   for (const adId of group.ad_ids) {
+    if (options.verifyUnchanged) {
+      const now = await readCreativeIdAfterFailedRepoint(adId);
+      if (now !== group.creative_id) {
+        failed.push({
+          ad_id: adId,
+          error: now === undefined
+            ? "Left untouched: its current creative could not be read to confirm nobody changed it."
+            : `Left untouched: it moved to creative ${now} after the plan was made, and the replacement would undo that change. Run the edit again to plan from its current creative.`,
+          new_creative_id: newCreativeId,
+          code: "changed_meanwhile",
+        });
+        continue;
+      }
+    }
     try {
       await metaApiClient.postForm<{ success: boolean }>(
         `/${adId}`,
@@ -211,6 +231,7 @@ export async function repointGroup(
         ad_id: adId,
         error: `Creative ${newCreativeId} was created but ${state}: ${errorMessage(err)}. Retry with ads_update_ad { ad_id: "${adId}", creative_id: "${newCreativeId}" }.`,
         new_creative_id: newCreativeId,
+        code: "repoint_refused",
       });
     }
   }

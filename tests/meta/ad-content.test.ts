@@ -249,6 +249,19 @@ describe("planContentEdit — refusals", () => {
     expect(planContentEdit(post, { primary_texts: { add: ["Otro"] } }, false).route).toBe("same_post");
   });
 
+  it("refuses new media for an ad with per-platform media, which would keep the old media elsewhere", () => {
+    const customized = singleImage({ platform_customizations: { instagram: { image_hash: "ig1" } } } as Partial<AdCreative>);
+    const plan = planContentEdit(customized, { image_hash: "h2" }, true);
+    expect(plan.route).toBeUndefined();
+    expect(plan.blocking).toBe(true);
+    expect(plan.reason).toMatch(/per-platform media/);
+
+    // A copy-only change still goes through and keeps the customization.
+    const copyOnly = planContentEdit(customized, { headlines: { set: ["Nuevo"] } }, true);
+    expect(copyOnly.route).toBe("new_post");
+    expect(parse(copyOnly.body?.platform_customizations)).toEqual({ instagram: { image_hash: "ig1" } });
+  });
+
   it("refuses to switch an image ad to video", () => {
     expect(planContentEdit(singleImage(), { video_id: "800" }, true).reason).toMatch(/image ad to video/);
   });

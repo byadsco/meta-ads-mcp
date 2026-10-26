@@ -14,8 +14,9 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   - **Anything else:** it creates a new post, which resets the visible engagement, so it needs `allow_new_post: true`.
   - **Dry run by default.** The first call shows the copy before and after, the route and the engagement at stake.
   - **All or nothing on the plan.** The batch changes nothing if any ad cannot be read, has an invalid change, or needs a route that is not allowed, or if any replacement creative cannot be created: every replacement is created before any ad is repointed. If Meta then refuses a repoint, the ads already repointed stay changed and are listed with their previous creative.
-  - **Repeats do nothing.** Repeating a change that is already applied leaves the ad alone.
-  - **Kept on replacements:** per-platform media (`platform_customizations`).
+  - **Repeats:** repeating a set, link, button or media change that is already applied leaves the ad alone. `add` and `remove` are not repeatable, so after a partial failure run again with only the ads that failed.
+  - **Concurrent edits:** each ad is read again right before its repoint. If someone moved it to another creative meanwhile, it is left untouched.
+  - **Per-platform media:** `platform_customizations` is kept on replacements. An ad that has it cannot get a new image or video here, because the other platforms would keep the old one.
   - **Undo:** the response lists each ad's previous creative.
 - **`ads_update_ad_url_tags` can rebuild ads with text options** when `allow_new_post` is set. Without it they are skipped, as before.
 - **Several primary texts, headlines and descriptions per ad.**

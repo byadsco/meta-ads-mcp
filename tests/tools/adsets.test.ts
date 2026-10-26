@@ -429,7 +429,7 @@ describe("registerAdSetTools", () => {
       const calls = vi.mocked(fetch).mock.calls;
       const creativeRead = calls.find((c) => new URL(c[0] as string).pathname.endsWith("/4001"))!;
       const readFields = new URL(creativeRead[0] as string).searchParams.get("fields")?.split(",");
-      expect(readFields).toEqual(expect.arrayContaining(["degrees_of_freedom_spec", "adlabels", "contextual_multi_ads", "url_tags"]));
+      expect(readFields).toEqual(expect.arrayContaining(["degrees_of_freedom_spec", "adlabels", "contextual_multi_ads", "url_tags", "platform_customizations"]));
 
       const creativeCall = calls.find((c) => new URL(c[0] as string).pathname.endsWith("/adcreatives"))!;
       const body = new URLSearchParams(creativeCall[1]?.body as string);

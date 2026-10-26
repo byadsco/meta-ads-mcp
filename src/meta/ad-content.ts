@@ -33,6 +33,12 @@ export type CopySource = "text_options" | "link_data" | "video_data" | "post";
 
 export type Route = "same_post" | "new_post";
 
+export interface FieldChange {
+  field: "link_url" | "call_to_action_type" | "image_hash" | "image_url" | "video_id" | "url_tags";
+  before?: string;
+  after: string;
+}
+
 export interface ContentPlan {
   before: Copy;
   after: Copy;
@@ -42,6 +48,8 @@ export interface ContentPlan {
   // A reason that leaves part of the request undone. It stops the whole batch;
   // "nothing to change" does not.
   blocking?: boolean;
+  // Link, button, media and url_tags values that would change, for the preview.
+  field_changes?: FieldChange[];
   social_proof?: { facebook: "kept" | "reset"; instagram: "kept" | "reset" };
   warnings: string[];
 }
@@ -226,22 +234,39 @@ export function planContentEdit(creative: AdCreative, changes: ContentChanges, a
   // Compared with what the creative has now, so repeating an applied change
   // (say, after a lost response) does not rebuild it and reset its post again.
   const current = currentDestination(creative);
-  const differs = (requested: string | undefined, now: string | undefined) => requested !== undefined && requested !== now;
-  const otherChanged =
-    differs(changes.link_url, current.link) ||
-    differs(changes.call_to_action_type, current.ctaType) ||
-    // image_hash wins when both are given, so only the medium that would be
-    // written is compared.
-    differs(changes.image_hash, current.imageHash) ||
-    (changes.image_hash === undefined && differs(changes.image_url, current.imageUrl)) ||
-    differs(changes.video_id, current.videoId);
+  // image_hash wins when both are given, so only the medium that would be
+  // written is compared.
+  const requested: Array<{ field: FieldChange["field"]; value: string | undefined; now: string | undefined }> = [
+    { field: "link_url", value: changes.link_url, now: current.link },
+    { field: "call_to_action_type", value: changes.call_to_action_type, now: current.ctaType },
+    { field: "image_hash", value: changes.image_hash, now: current.imageHash },
+    { field: "image_url", value: changes.image_hash === undefined ? changes.image_url : undefined, now: current.imageUrl },
+    { field: "video_id", value: changes.video_id, now: current.videoId },
+  ];
+  const field_changes: FieldChange[] = requested
+    .filter((r) => r.value !== undefined && r.value !== r.now)
+    .map((r) => ({ field: r.field, before: r.now, after: r.value as string }));
+  const otherChanged = field_changes.length > 0;
   const urlTagsChanged = changes.url_tags !== undefined && changes.url_tags !== (creative.url_tags ?? "");
+  if (urlTagsChanged) field_changes.push({ field: "url_tags", before: creative.url_tags, after: changes.url_tags as string });
 
   if (!primaryChanged && !otherCopyChanged && !otherChanged) {
     if (urlTagsChanged) {
       return { before, after, reason: "only url_tags change: use ads_update_ad_url_tags, which keeps the post where it can", blocking: true, warnings: [] };
     }
     return { before, after, reason: "nothing to change", blocking: false, warnings: [] };
+  }
+
+  const mediaChanged = field_changes.some((c) => c.field === "image_hash" || c.field === "image_url" || c.field === "video_id");
+  if (mediaChanged && asRecord((creative as AdCreative & { platform_customizations?: unknown }).platform_customizations)) {
+    return {
+      before,
+      after,
+      field_changes,
+      reason: "the ad uses per-platform media (platform_customizations): replacing its image or video here would leave the other platforms showing the old one. Change its media in Ads Manager.",
+      blocking: true,
+      warnings: [],
+    };
   }
 
   const carried = carryOverFields(creative);
@@ -274,13 +299,14 @@ export function planContentEdit(creative: AdCreative, changes: ContentChanges, a
     const instagramUserId = resolveInstagramUserId(creative);
     if (instagramUserId) body.instagram_user_id = instagramUserId;
     body.asset_feed_spec = JSON.stringify(feed);
-    return { before, after, route: "same_post", body: finish(body), social_proof: { facebook: "kept", instagram: "reset" }, warnings };
+    return { before, after, field_changes, route: "same_post", body: finish(body), social_proof: { facebook: "kept", instagram: "reset" }, warnings };
   }
 
   if (read.source === "post") {
     return {
       before,
       after,
+      field_changes,
       reason: "the ad promotes an existing post: only its primary texts can change while keeping the post, and the result needs at least two of them. For other changes create a new creative with ads_create_ad_creative.",
       blocking: true,
       warnings,
@@ -294,6 +320,7 @@ export function planContentEdit(creative: AdCreative, changes: ContentChanges, a
     return {
       before,
       after,
+      field_changes,
       reason: `${needs} needs a new post, which resets the likes, comments and shares people see. Pass allow_new_post: true to do it.`,
       blocking: true,
       warnings,
@@ -302,12 +329,13 @@ export function planContentEdit(creative: AdCreative, changes: ContentChanges, a
 
   const isVideo = Boolean(asRecord(asRecord(creative.object_story_spec)?.video_data));
   if (changes.video_id !== undefined && !isVideo) {
-    return { before, after, reason: "switching an image ad to video is not supported; create a new creative instead", blocking: true, warnings };
+    return { before, after, field_changes, reason: "switching an image ad to video is not supported; create a new creative instead", blocking: true, warnings };
   }
 
   return {
     before,
     after,
+    field_changes,
     route: "new_post",
     body: finish(buildNewPostBody(creative, after, changes)),
     social_proof: { facebook: "reset", instagram: "reset" },
