@@ -15,32 +15,13 @@ import { logger } from "../utils/logger.js";
 import { assertSafePublicUrl, UnsafeUrlError } from "../utils/url-guard.js";
 import { downloadSafePublicImage } from "../utils/safe-download.js";
 import { READ, CREATE, UPDATE, UPLOAD, WRITE_WARNING } from "./_register.js";
+import { CTA_TYPES, buildStorySpec } from "../meta/creative-spec.js";
+import { normalizeUrlTags } from "../utils/validation.js";
 
-export const ctaEnum = z.enum([
-  // Core actions
-  "LEARN_MORE", "SIGN_UP", "DOWNLOAD", "SUBSCRIBE", "CONTACT_US",
-  "APPLY_NOW", "GET_OFFER", "GET_QUOTE", "GET_STARTED", "OPEN_LINK",
-  "NO_BUTTON", "SEE_MORE",
-  // Shopping & commerce
-  "SHOP_NOW", "BUY_NOW", "ORDER_NOW", "START_ORDER", "ADD_TO_CART",
-  "VIEW_PRODUCT", "BUY_VIA_MESSAGE", "GET_PROMOTIONS",
-  // Booking & services
-  "BOOK_NOW", "BOOK_TRAVEL", "MAKE_AN_APPOINTMENT", "BOOK_A_CONSULTATION",
-  "ASK_ABOUT_SERVICES", "GET_A_QUOTE", "REQUEST_TIME",
-  // Communication
-  "SEND_MESSAGE", "MESSAGE_PAGE", "WHATSAPP_MESSAGE", "CHAT_WITH_US",
-  "CALL_NOW", "GET_IN_TOUCH",
-  // Media & entertainment
-  "WATCH_MORE", "WATCH_VIDEO", "LISTEN_NOW",
-  // App
-  "INSTALL_APP", "USE_APP",
-  // Page & social
-  "LIKE_PAGE", "FOLLOW_PAGE", "EVENT_RSVP", "DONATE_NOW",
-  // Local
-  "GET_DIRECTIONS",
-  // AI features (v25.0+)
-  "SHOP_WITH_AI", "TRY_ON_WITH_AI",
-]);
+export const ctaEnum = z.enum(CTA_TYPES);
+
+const MAX_TEXT_OPTIONS = 5;
+const MAX_HEADLINE_LENGTH = 255;
 
 const AD_IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tiff"];
 const AD_IMAGE_FILE_NAME_MAX = 100;
@@ -76,6 +57,19 @@ export function adImageFileName(name: string | undefined, extension: string): st
 
   base = Array.from(base).slice(0, Math.max(0, AD_IMAGE_FILE_NAME_MAX - ext.length)).join("").trimEnd();
   return base ? `${base}${ext}` : fallback;
+}
+
+function resolveTextOptions(
+  single: string | undefined,
+  options: string[] | undefined,
+  singleName: string,
+  optionsName: string,
+): string[] {
+  if (single !== undefined && options !== undefined) {
+    throw new Error(`Pass either ${singleName} or ${optionsName}, not both.`);
+  }
+  if (options) return options;
+  return single ? [single] : [];
 }
 
 export function asRecord(value: unknown): Record<string, unknown> | undefined {
@@ -264,7 +258,7 @@ export function registerCreativeTools(server: McpServer): void {
   server.registerTool(
     "ads_create_ad_creative",
     {
-      description: `${WRITE_WARNING}Create a new ad creative. Three modes: (1) Build from scratch with image/video + text via object_story_spec, (2) Promote an existing Facebook Page post via object_story_id ('Boost Post'), (3) Promote an existing Instagram post via source_instagram_media_id. The creative can then be used when creating ads. Important: scratch-built video creatives require a thumbnail via image_hash or image_url; Meta rejects video_id without one.`,
+      description: `${WRITE_WARNING}Create a new ad creative. Three modes: (1) Build from scratch with image/video + text via object_story_spec, (2) Promote an existing Facebook Page post via object_story_id ('Boost Post'), (3) Promote an existing Instagram post via source_instagram_media_id. The creative can then be used when creating ads. Built from scratch, it accepts up to ${MAX_TEXT_OPTIONS} primary texts, headlines and descriptions (primary_texts / headlines / descriptions), like Ads Manager's text options: Meta shows each person the combination likely to perform best. Pass either the single field (message / headline / description) or its list, not both. Important: scratch-built video creatives require a thumbnail via image_hash or image_url; Meta rejects video_id without one. Meta creates the ad's post only once an ad uses the creative, a few minutes later.`,
       inputSchema: {
         account_id: z.string().describe("Ad account ID"),
         name: z.string().min(1).describe("Creative name"),
@@ -277,18 +271,40 @@ export function registerCreativeTools(server: McpServer): void {
         video_id: z.string().optional().describe("Video ID"),
         link_url: z.string().optional().describe("Destination URL"),
         message: z.string().optional().describe("Primary text / body copy"),
-        headline: z.string().optional().describe("Headline text"),
+        headline: z.string().max(MAX_HEADLINE_LENGTH).optional().describe("Headline text"),
         description: z.string().optional().describe("Description text (shown below headline)"),
+        primary_texts: z
+          .array(z.string().min(1))
+          .min(1)
+          .max(MAX_TEXT_OPTIONS)
+          .optional()
+          .describe(`Up to ${MAX_TEXT_OPTIONS} primary texts for the same ad. Use instead of message.`),
+        headlines: z
+          .array(z.string().min(1).max(MAX_HEADLINE_LENGTH))
+          .min(1)
+          .max(MAX_TEXT_OPTIONS)
+          .optional()
+          .describe(`Up to ${MAX_TEXT_OPTIONS} headlines (max ${MAX_HEADLINE_LENGTH} characters each). Use instead of headline.`),
+        descriptions: z
+          .array(z.string().min(1))
+          .min(1)
+          .max(MAX_TEXT_OPTIONS)
+          .optional()
+          .describe(`Up to ${MAX_TEXT_OPTIONS} descriptions. Use instead of description.`),
         call_to_action_type: ctaEnum.optional().describe("Call-to-action button type"),
-        url_tags: z.string().optional().describe("Query string params appended to URLs clicked from the ad (e.g. 'utm_source=meta&utm_medium=paid')"),
+        url_tags: z.string().optional().describe("Query string params appended to URLs clicked from the ad (e.g. 'utm_source=meta&utm_medium=paid'). A leading '?' is stripped."),
       },
       annotations: { ...CREATE },
     },
     async ({
       account_id, name, page_id, object_story_id, instagram_actor_id, source_instagram_media_id,
       image_hash, image_url, video_id, link_url, message, headline, description,
-      call_to_action_type, url_tags,
+      primary_texts, headlines, descriptions, call_to_action_type, url_tags,
     }) => {
+      const primaryTexts = resolveTextOptions(message, primary_texts, "message", "primary_texts");
+      const headlineOptions = resolveTextOptions(headline, headlines, "headline", "headlines");
+      const descriptionOptions = resolveTextOptions(description, descriptions, "description", "descriptions");
+      const warnings: string[] = [];
       const accountPath = normalizeAccountId(account_id);
       const pageIdValidated = page_id ? validateMetaId(page_id, "page") : undefined;
       const objectStoryIdValidated = object_story_id
@@ -305,6 +321,12 @@ export function registerCreativeTools(server: McpServer): void {
         : undefined;
 
       const body: Record<string, string | number | boolean> = { name };
+      const usesExistingPost = Boolean(sourceInstagramMediaIdValidated || objectStoryIdValidated);
+      const copyGiven = primaryTexts.length + headlineOptions.length + descriptionOptions.length > 0;
+      if (usesExistingPost && copyGiven) {
+        warnings.push("Ignored the ad copy: a creative that promotes an existing post shows that post's own text.");
+      }
+      let textOptionCounts: { primary: number; headlines: number; descriptions: number } | undefined;
 
       if (sourceInstagramMediaIdValidated) {
         body.source_instagram_media_id = sourceInstagramMediaIdValidated;
@@ -336,46 +358,32 @@ export function registerCreativeTools(server: McpServer): void {
             throw err;
           }
         }
-        const objectStorySpec: Record<string, unknown> = { page_id: pageIdValidated };
-
-        if (videoIdValidated) {
-          const videoData: Record<string, unknown> = { video_id: videoIdValidated };
-          if (message) videoData.message = message;
-          if (image_hash) videoData.image_hash = image_hash;
-          if (image_url && !image_hash) videoData.image_url = image_url;
-          if (headline) videoData.title = headline;
-          if (call_to_action_type || link_url) {
-            videoData.call_to_action = {
-              type: call_to_action_type ?? "LEARN_MORE",
-              value: link_url ? { link: link_url } : undefined,
-            };
-          }
-          objectStorySpec.video_data = videoData;
-        } else {
-          const linkData: Record<string, unknown> = {};
-          if (image_hash) linkData.image_hash = image_hash;
-          if (image_url && !image_hash) linkData.picture = image_url;
-          if (link_url) linkData.link = link_url;
-          if (message) linkData.message = message;
-          if (headline) linkData.name = headline;
-          if (description) linkData.description = description;
-          if (call_to_action_type) {
-            linkData.call_to_action = {
-              type: call_to_action_type,
-              value: link_url ? { link: link_url } : undefined,
-            };
-          }
-          objectStorySpec.link_data = linkData;
+        const story = buildStorySpec({
+          pageId: pageIdValidated,
+          instagramUserId: instagramActorIdValidated,
+          imageHash: image_hash,
+          imageUrl: image_url,
+          videoId: videoIdValidated,
+          linkUrl: link_url,
+          primaryTexts,
+          headlines: headlineOptions,
+          descriptions: descriptionOptions,
+          callToActionType: call_to_action_type,
+        });
+        warnings.push(...story.warnings);
+        body.object_story_spec = JSON.stringify(story.objectStorySpec);
+        if (story.assetFeedSpec) {
+          body.asset_feed_spec = JSON.stringify(story.assetFeedSpec);
+          textOptionCounts = {
+            primary: (story.assetFeedSpec.bodies as unknown[] | undefined)?.length ?? 0,
+            headlines: (story.assetFeedSpec.titles as unknown[] | undefined)?.length ?? 0,
+            descriptions: (story.assetFeedSpec.descriptions as unknown[] | undefined)?.length ?? 0,
+          };
         }
-
-        if (instagramActorIdValidated) {
-          objectStorySpec.instagram_user_id = instagramActorIdValidated;
-        }
-
-        body.object_story_spec = JSON.stringify(objectStorySpec);
       }
 
-      if (url_tags) body.url_tags = url_tags;
+      const normalizedUrlTags = url_tags === undefined ? "" : normalizeUrlTags(url_tags);
+      if (normalizedUrlTags) body.url_tags = normalizedUrlTags;
 
       const result = await metaApiClient.postForm<{ id: string }>(
         `/${accountPath}/adcreatives`,
@@ -393,12 +401,20 @@ export function registerCreativeTools(server: McpServer): void {
         // Non-critical
       }
 
+      const lines = [
+        `Creative created successfully!\nID: ${result.id}\nName: ${name}${pageIdValidated ? `\nPage: ${pageIdValidated}` : ""}${objectStoryIdValidated ? `\nBoosted Post: ${objectStoryIdValidated}` : ""}${sourceInstagramMediaIdValidated ? `\nIG Post: ${sourceInstagramMediaIdValidated}` : ""}${effectiveStoryId ? `\nPost ID: ${effectiveStoryId}` : ""}\nCTA: ${call_to_action_type ?? "N/A"}`,
+      ];
+      if (textOptionCounts) {
+        lines.push(`Text options: ${textOptionCounts.primary} primary text(s), ${textOptionCounts.headlines} headline(s), ${textOptionCounts.descriptions} description(s). Meta shows each person the combination likely to perform best.`);
+      }
+      if (!effectiveStoryId && !usesExistingPost) {
+        lines.push("Post ID: not created yet — Meta creates the ad's post a few minutes after an ad uses this creative.");
+      }
+      if (warnings.length > 0) lines.push("", "Warnings:", ...warnings.map((w) => `• ${w}`));
+
       return {
         content: [
-          {
-            type: "text",
-            text: `Creative created successfully!\nID: ${result.id}\nName: ${name}${pageIdValidated ? `\nPage: ${pageIdValidated}` : ""}${objectStoryIdValidated ? `\nBoosted Post: ${objectStoryIdValidated}` : ""}${sourceInstagramMediaIdValidated ? `\nIG Post: ${sourceInstagramMediaIdValidated}` : ""}${effectiveStoryId ? `\nPost ID: ${effectiveStoryId}` : ""}\nCTA: ${call_to_action_type ?? "N/A"}`,
-          },
+          { type: "text", text: lines.join("\n") },
         ],
       };
     },

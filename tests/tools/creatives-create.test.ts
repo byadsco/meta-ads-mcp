@@ -131,6 +131,7 @@ describe("ads_create_ad_creative request body", () => {
         message: "Video text",
         image_hash: "thumbhash",
         title: "Video headline",
+        link_description: "Video description",
         call_to_action: { type: "LEARN_MORE", value: { link: "https://example.com/video" } },
       },
     });
@@ -177,7 +178,7 @@ describe("ads_create_ad_creative request body", () => {
     expect(JSON.parse(body.call_to_action)).toEqual({ type: "SHOP_NOW", value: { link: "https://example.com/ig" } });
   });
 
-  it("forwards url_tags exactly as given", async () => {
+  it("strips a leading '?' from url_tags", async () => {
     stubCreateAndReadBack();
     await createHandler()({
       ...EMPTY_INPUT,
@@ -187,7 +188,87 @@ describe("ads_create_ad_creative request body", () => {
       url_tags: "?utm_source=meta&utm_medium=paid",
     });
 
-    expect(sentBody().url_tags).toBe("?utm_source=meta&utm_medium=paid");
+    expect(sentBody().url_tags).toBe("utm_source=meta&utm_medium=paid");
+  });
+
+  it("sends several texts as a DEGREES_OF_FREEDOM asset feed, the shape Ads Manager uses", async () => {
+    stubCreateAndReadBack();
+    const result = await createHandler()({
+      ...EMPTY_INPUT,
+      page_id: "6001",
+      image_hash: "abc123hash",
+      link_url: "https://example.com",
+      primary_texts: ["One", "Two", "Three"],
+      headlines: ["Head one", "Head two"],
+      descriptions: ["Desc"],
+      call_to_action_type: "PLAY_GAME",
+    }) as { content: Array<{ text: string }> };
+
+    const body = sentBody();
+    expect(JSON.parse(body.object_story_spec)).toEqual({
+      page_id: "6001",
+      link_data: {
+        image_hash: "abc123hash",
+        link: "https://example.com",
+        call_to_action: { type: "PLAY_GAME", value: { link: "https://example.com" } },
+      },
+    });
+    expect(JSON.parse(body.asset_feed_spec)).toEqual({
+      bodies: [{ text: "One" }, { text: "Two" }, { text: "Three" }],
+      titles: [{ text: "Head one" }, { text: "Head two" }],
+      descriptions: [{ text: "Desc" }],
+      optimization_type: "DEGREES_OF_FREEDOM",
+    });
+    expect(result.content[0].text).toContain("3 primary text(s), 2 headline(s), 1 description(s)");
+  });
+
+  it("refuses a single field together with its list, before calling Meta", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+    await expect(createHandler()({
+      ...EMPTY_INPUT,
+      page_id: "6001",
+      image_hash: "abc123hash",
+      message: "One",
+      primary_texts: ["Two", "Three"],
+    })).rejects.toThrow(/either message or primary_texts/);
+    expect(vi.mocked(fetch)).not.toHaveBeenCalled();
+  });
+
+  it("warns that copy is ignored when promoting an existing post", async () => {
+    stubCreateAndReadBack("6001_7777");
+    const result = await createHandler()({
+      ...EMPTY_INPUT,
+      object_story_id: "6001_7777",
+      primary_texts: ["Ignored", "Also ignored"],
+    }) as { content: Array<{ text: string }> };
+
+    expect(sentBody().asset_feed_spec).toBeUndefined();
+    expect(result.content[0].text).toMatch(/Ignored the ad copy/);
+  });
+
+  it("says the post does not exist yet when Meta has not created it", async () => {
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(mockFetchResponse({ id: "4100" }))
+      .mockResolvedValueOnce(mockFetchResponse({ id: "4100" })));
+    const result = await createHandler()({
+      ...EMPTY_INPUT,
+      page_id: "6001",
+      image_hash: "abc123hash",
+      primary_texts: ["One", "Two"],
+    }) as { content: Array<{ text: string }> };
+
+    expect(result.content[0].text).toMatch(/Post ID: not created yet/);
+  });
+
+  it("accepts PLAY_GAME and rejects headlines over 255 characters in the schema", () => {
+    const server = createMockMcpServer();
+    registerCreativeTools(server as never);
+    const schema = server._registeredTools.find((t) => t.name === "ads_create_ad_creative")!.schema as Record<string, { safeParse: (v: unknown) => { success: boolean } }>;
+
+    expect(schema.call_to_action_type.safeParse("PLAY_GAME").success).toBe(true);
+    expect(schema.headlines.safeParse(["h".repeat(255)]).success).toBe(true);
+    expect(schema.headlines.safeParse(["h".repeat(256)]).success).toBe(false);
+    expect(schema.primary_texts.safeParse(["1", "2", "3", "4", "5", "6"]).success).toBe(false);
   });
 
   it("requires page_id when building from scratch", async () => {
