@@ -527,7 +527,7 @@ export function registerAdSetTools(server: McpServer): void {
           sourceCreative = await metaApiClient.get<AdCreative>(`/${sourceCreativeId}`, {
             fields: buildFieldsParam(undefined, [
               ...CREATIVE_DEFAULT_FIELDS, "destination_spec", "wamo_whatsapp_identity_spec",
-              "degrees_of_freedom_spec", "adlabels", "contextual_multi_ads",
+              "degrees_of_freedom_spec", "adlabels", "contextual_multi_ads", "instagram_user_id",
             ]),
           });
         }

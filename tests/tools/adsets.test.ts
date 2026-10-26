@@ -470,6 +470,10 @@ describe("registerAdSetTools", () => {
         idempotency_key: "k-swap-link",
       });
 
+      // The identity can only be carried if the source read asks for it.
+      const creativeRead = vi.mocked(fetch).mock.calls.find((c) => new URL(c[0] as string).pathname.endsWith("/4001"))!;
+      expect(new URL(creativeRead[0] as string).searchParams.get("fields")?.split(",")).toContain("instagram_user_id");
+
       const creativeCall = vi.mocked(fetch).mock.calls.find((c) => new URL(c[0] as string).pathname.endsWith("/adcreatives"))!;
       const body = new URLSearchParams(creativeCall[1]?.body as string);
       expect(body.get("link_url")).toBe("https://x.com/new");
