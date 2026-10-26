@@ -6,6 +6,7 @@ import { assertSafePublicUrl, UnsafeUrlError } from "../utils/url-guard.js";
 import { planContentEdit, type ContentChanges, type ContentPlan } from "../meta/ad-content.js";
 import {
   createReplacementCreative,
+  deleteCreative,
   errorMessage,
   groupAdsByCreative,
   readCreativeForRebuild,
@@ -39,6 +40,7 @@ interface GroupReport {
   social_proof?: ContentPlan["social_proof"];
   engagement?: Engagement;
   reason?: string;
+  blocking: boolean;
   warnings: string[];
 }
 
@@ -46,7 +48,7 @@ export function registerAdContentTools(server: McpServer): void {
   server.registerTool(
     "ads_update_ad_content",
     {
-      description: `${WRITE_WARNING}Change the copy, link, button or media of live ads: add, remove or replace primary texts, headlines and descriptions, including removing one option of several. Meta creatives are immutable, so each ad gets a replacement creative and goes back through review; the ad keeps its ID, history and previous creative (point it back with ads_update_ad to undo, which brings its post back too). Likes, comments and shares live on the ad's post. When only primary texts change and at least two remain, the ad keeps its Facebook post and that engagement (its Instagram side starts over and the Facebook headline stays the post's own). Anything else creates a new post, which resets the visible engagement, and only happens with allow_new_post: true. dry_run defaults to true: the first call shows, per creative, the copy before and after, the route and the engagement at stake, without changing anything. Show that to the person and call again with dry_run: false once they agree. Carousels, dynamic creative and other asset feeds are not supported. Meta lets an ad change creative at most once every 30 seconds (error 613): wait before changing the same ad again.`,
+      description: `${WRITE_WARNING}Change the copy, link, button or media of live ads: add, remove or replace primary texts, headlines and descriptions, including removing one option of several. Meta creatives are immutable, so each ad gets a replacement creative and goes back through review; the ad keeps its ID, history and previous creative (point it back with ads_update_ad to undo, which brings its post back too). Likes, comments and shares live on the ad's post. When only primary texts change and at least two remain, the ad keeps its Facebook post and that engagement (its Instagram side starts over and the Facebook headline stays the post's own). Anything else creates a new post, which resets the visible engagement, and only happens with allow_new_post: true. dry_run defaults to true: the first call shows, per creative, the copy before and after, the route and the engagement at stake, without changing anything. Show that to the person and call again with dry_run: false once they agree. Nothing changes if any ad cannot be read, has an invalid change or would need a route that is not allowed, or if any replacement creative cannot be created: all replacements are created before any ad is repointed. If Meta then refuses to repoint an ad, ads already repointed stay changed, and the response lists each one with its previous creative so it can be undone. Repeating a change that is already applied does nothing. Carousels, dynamic creative and other asset feeds are not supported. Meta lets an ad change creative at most once every 30 seconds (error 613): wait before changing the same ad again.`,
       inputSchema: {
         ad_ids: z.array(z.string()).min(1).max(50).describe("Ad IDs to change (1-50). Ads sharing a creative get one replacement."),
         primary_texts: textChange("primary text"),
@@ -117,6 +119,7 @@ export function registerAdContentTools(server: McpServer): void {
           after: plan.after,
           social_proof: plan.social_proof,
           reason: plan.reason,
+          blocking: plan.blocking === true,
           warnings: plan.warnings,
         };
         if (preview && plan.route) {
@@ -128,33 +131,61 @@ export function registerAdContentTools(server: McpServer): void {
 
       const updated: UpdatedAd[] = [];
       const warnings: string[] = [];
-      // Every ad has to be read and planned before anything is written, so a
-      // batch never half-applies: an ad that could not even be read counts.
-      const aborted = !preview && (planningErrors.length > 0 || failed.length > 0);
+      const unused: string[] = [];
+      // Every ad has to be read and planned before anything is written, and
+      // any ad left out (unreadable, invalid change, refused route) stops the
+      // batch: a batch never half-applies on a plan.
+      let aborted = !preview && (planningErrors.length > 0 || failed.length > 0 || reports.some((r) => r.blocking));
       if (!preview && !aborted) {
+        // Two phases: every replacement creative first (it changes no ad), and
+        // only when all of them exist, the repoints.
+        const ready: Array<{ group: CreativeGroup; newCreativeId: string }> = [];
         for (const { group, body } of actionable) {
-          let newCreativeId: string;
           try {
-            newCreativeId = await createReplacementCreative(group.account_id, body);
+            ready.push({ group, newCreativeId: await createReplacementCreative(group.account_id, body) });
           } catch (err) {
             for (const adId of group.ad_ids) {
               failed.push({ ad_id: adId, error: `Failed to create the replacement creative: ${errorMessage(err)}` });
             }
-            continue;
+            aborted = true;
+            break;
           }
-          const outcome = await repointGroup(group, newCreativeId);
-          updated.push(...outcome.updated);
-          failed.push(...outcome.failed);
-          warnings.push(...outcome.warnings);
+        }
+        if (aborted) {
+          unused.push(...ready.map((r) => r.newCreativeId));
+          for (const id of unused) await deleteCreative(id);
+        } else {
+          for (const { group, newCreativeId } of ready) {
+            const outcome = await repointGroup(group, newCreativeId);
+            updated.push(...outcome.updated);
+            failed.push(...outcome.failed);
+            warnings.push(...outcome.warnings);
+          }
         }
       }
 
+      // The copy stays out of the JSON: it is shown only in the fenced summary.
+      const plans = reports.map(({ before, after, ...rest }) => ({
+        ...rest,
+        text_option_counts: {
+          before: { primary: before.primary.length, headlines: before.headlines.length, descriptions: before.descriptions.length },
+          after: { primary: after.primary.length, headlines: after.headlines.length, descriptions: after.descriptions.length },
+        },
+      }));
       return {
         content: [
           { type: "text", text: summarize(reports, planningErrors, updated, failed, preview, aborted) },
           {
             type: "text",
-            text: JSON.stringify({ dry_run: preview, aborted, plans: reports, planning_errors: planningErrors, updated, failed, warnings }, null, 2),
+            text: JSON.stringify({
+              dry_run: preview,
+              aborted,
+              plans,
+              planning_errors: planningErrors.length,
+              updated,
+              failed: failed.map((f) => ({ ...f, error: singleLine(f.error, 400) })),
+              warnings,
+            }, null, 2),
           },
         ],
       };

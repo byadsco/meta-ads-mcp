@@ -8,7 +8,7 @@ import type { Ad, AdCreative } from "./types/index.js";
 // The ad keeps its ID and history, and goes back through review.
 
 export const CREATIVE_REBUILD_FIELDS =
-  "id,name,object_story_spec,asset_feed_spec,effective_object_story_id,url_tags,instagram_user_id,source_instagram_media_id,effective_instagram_media_id,link_url,degrees_of_freedom_spec,destination_spec,wamo_whatsapp_identity_spec,call_to_action_type,adlabels,contextual_multi_ads";
+  "id,name,object_story_spec,asset_feed_spec,effective_object_story_id,url_tags,instagram_user_id,source_instagram_media_id,effective_instagram_media_id,link_url,degrees_of_freedom_spec,destination_spec,wamo_whatsapp_identity_spec,call_to_action_type,adlabels,contextual_multi_ads,platform_customizations";
 
 // asset_feed_spec keys that hold ad content. A feed with none of them (some
 // carousels report only promotional_metadata) does not change what the ad
@@ -82,8 +82,13 @@ export function carryOverFields(creative: AdCreative): { body: Record<string, st
   if (creative.wamo_whatsapp_identity_spec) {
     body.wamo_whatsapp_identity_spec = JSON.stringify(creative.wamo_whatsapp_identity_spec);
   }
-  const multiAdvertiser = asRecord((creative as AdCreative & { contextual_multi_ads?: unknown }).contextual_multi_ads);
+  const extra = creative as AdCreative & { contextual_multi_ads?: unknown; platform_customizations?: unknown };
+  const multiAdvertiser = asRecord(extra.contextual_multi_ads);
   if (multiAdvertiser) body.contextual_multi_ads = JSON.stringify(multiAdvertiser);
+  // Per-platform media (e.g. a different image on Instagram). If Meta refuses
+  // it on the replacement, creating the replacement fails and no ad changes.
+  const platformCustomizations = asRecord(extra.platform_customizations);
+  if (platformCustomizations) body.platform_customizations = JSON.stringify(platformCustomizations);
   // Agencies key reporting and automations off ad labels; a replacement without
   // them drops out of those views silently.
   const adlabels = (creative.adlabels ?? [])
@@ -152,6 +157,17 @@ export async function readCreativeForRebuild(creativeId: string, extraFields: st
 export async function createReplacementCreative(accountId: string, body: Record<string, string>): Promise<string> {
   const created = await metaApiClient.postForm<{ id: string }>(`/${normalizeAccountId(accountId)}/adcreatives`, body);
   return created.id;
+}
+
+// Best effort: an unused replacement changes no ad, so failing to delete it
+// only leaves clutter in the account's creative library.
+export async function deleteCreative(creativeId: string): Promise<boolean> {
+  try {
+    await metaApiClient.delete(`/${validateMetaId(creativeId, "creative")}`);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function readCreativeIdAfterFailedRepoint(adId: string): Promise<string | undefined> {

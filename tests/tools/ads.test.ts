@@ -143,7 +143,7 @@ describe("registerAdTools", () => {
       const creativeFields = new URL(vi.mocked(fetch).mock.calls[1][0] as string)
         .searchParams.get("fields");
       expect(creativeFields).toBe(
-        "id,name,object_story_spec,asset_feed_spec,effective_object_story_id,url_tags,instagram_user_id,source_instagram_media_id,effective_instagram_media_id,link_url,degrees_of_freedom_spec,destination_spec,wamo_whatsapp_identity_spec,call_to_action_type,adlabels,contextual_multi_ads",
+        "id,name,object_story_spec,asset_feed_spec,effective_object_story_id,url_tags,instagram_user_id,source_instagram_media_id,effective_instagram_media_id,link_url,degrees_of_freedom_spec,destination_spec,wamo_whatsapp_identity_spec,call_to_action_type,adlabels,contextual_multi_ads,platform_customizations",
       );
       expect(creativeFields).not.toContain("effective_link_url");
 

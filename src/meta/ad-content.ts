@@ -38,6 +38,9 @@ export interface ContentPlan {
   route?: Route;
   body?: Record<string, string>;
   reason?: string;
+  // A reason that leaves part of the request undone. It stops the whole batch;
+  // "nothing to change" does not.
+  blocking?: boolean;
   social_proof?: { facebook: "kept" | "reset"; instagram: "kept" | "reset" };
   warnings: string[];
 }
@@ -112,6 +115,25 @@ function applyChange(current: string[], change: TextChange | undefined, label: s
 
 const sameList = (a: string[], b: string[]) => a.length === b.length && a.every((text, i) => text === b[i]);
 
+function currentDestination(creative: AdCreative): {
+  link?: string; ctaType?: string; imageHash?: string; imageUrl?: string; videoId?: string;
+} {
+  const spec = asRecord(creative.object_story_spec);
+  const linkData = asRecord(spec?.link_data);
+  const videoData = asRecord(spec?.video_data);
+  const target = linkData ?? videoData;
+  const cta = asRecord(target?.call_to_action);
+  const ctaLink = asRecord(cta?.value)?.link;
+  const pick = (value: unknown) => (typeof value === "string" ? value : undefined);
+  return {
+    link: pick(linkData?.link) ?? pick(ctaLink) ?? creative.link_url,
+    ctaType: pick(cta?.type) ?? creative.call_to_action_type,
+    imageHash: pick(target?.image_hash),
+    imageUrl: pick(linkData?.picture) ?? pick(videoData?.image_url),
+    videoId: pick(videoData?.video_id),
+  };
+}
+
 // Clones the source spec, swaps media / link / button as asked and lays the
 // copy out the way ads_create_ad_creative does: several texts in a
 // DEGREES_OF_FREEDOM feed with no copy in the spec, one of each in the spec.
@@ -175,7 +197,7 @@ function buildNewPostBody(creative: AdCreative, after: Copy, changes: ContentCha
 export function planContentEdit(creative: AdCreative, changes: ContentChanges, allowNewPost: boolean): ContentPlan {
   const read = readCopy(creative);
   const empty: Copy = { primary: [], headlines: [], descriptions: [] };
-  if ("unsupported" in read) return { before: empty, after: empty, reason: read.unsupported, warnings: [] };
+  if ("unsupported" in read) return { before: empty, after: empty, reason: read.unsupported, blocking: true, warnings: [] };
 
   const before = read.copy;
   const after: Copy = {
@@ -186,15 +208,23 @@ export function planContentEdit(creative: AdCreative, changes: ContentChanges, a
 
   const primaryChanged = !sameList(before.primary, after.primary);
   const otherCopyChanged = !sameList(before.headlines, after.headlines) || !sameList(before.descriptions, after.descriptions);
-  const otherChanged = [changes.link_url, changes.call_to_action_type, changes.image_hash, changes.image_url, changes.video_id]
-    .some((value) => value !== undefined);
+  // Compared with what the creative has now, so repeating an applied change
+  // (say, after a lost response) does not rebuild it and reset its post again.
+  const current = currentDestination(creative);
+  const differs = (requested: string | undefined, now: string | undefined) => requested !== undefined && requested !== now;
+  const otherChanged =
+    differs(changes.link_url, current.link) ||
+    differs(changes.call_to_action_type, current.ctaType) ||
+    differs(changes.image_hash, current.imageHash) ||
+    differs(changes.image_url, current.imageUrl) ||
+    differs(changes.video_id, current.videoId);
   const urlTagsChanged = changes.url_tags !== undefined && changes.url_tags !== (creative.url_tags ?? "");
 
   if (!primaryChanged && !otherCopyChanged && !otherChanged) {
-    const reason = urlTagsChanged
-      ? "only url_tags change: use ads_update_ad_url_tags, which keeps the post where it can"
-      : "nothing to change";
-    return { before, after, reason, warnings: [] };
+    if (urlTagsChanged) {
+      return { before, after, reason: "only url_tags change: use ads_update_ad_url_tags, which keeps the post where it can", blocking: true, warnings: [] };
+    }
+    return { before, after, reason: "nothing to change", blocking: false, warnings: [] };
   }
 
   const carried = carryOverFields(creative);
@@ -235,6 +265,7 @@ export function planContentEdit(creative: AdCreative, changes: ContentChanges, a
       before,
       after,
       reason: "the ad promotes an existing post: only its primary texts can change while keeping the post, and the result needs at least two of them. For other changes create a new creative with ads_create_ad_creative.",
+      blocking: true,
       warnings,
     };
   }
@@ -247,13 +278,14 @@ export function planContentEdit(creative: AdCreative, changes: ContentChanges, a
       before,
       after,
       reason: `${needs} needs a new post, which resets the likes, comments and shares people see. Pass allow_new_post: true to do it.`,
+      blocking: true,
       warnings,
     };
   }
 
   const isVideo = Boolean(asRecord(asRecord(creative.object_story_spec)?.video_data));
   if (changes.video_id !== undefined && !isVideo) {
-    return { before, after, reason: "switching an image ad to video is not supported; create a new creative instead", warnings };
+    return { before, after, reason: "switching an image ad to video is not supported; create a new creative instead", blocking: true, warnings };
   }
 
   return {

@@ -12,7 +12,10 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - **`ads_update_ad_content` edits live ads.** It can add, remove or replace primary texts, headlines and descriptions (including dropping one option of several), and change the link, button or media. Every ad gets a replacement creative and keeps its ID and history.
   - **Primary texts only, two or more left:** the ad keeps its Facebook post and that post's likes, comments and shares. The new creative references the same post with the new texts as text options; Instagram starts over and the Facebook headline stays the post's own (measured against the live API).
   - **Anything else:** it creates a new post, which resets the visible engagement, so it needs `allow_new_post: true`.
-  - **Dry run by default.** The first call shows the copy before and after, the route and the engagement at stake. A batch where any ad's change is invalid changes nothing.
+  - **Dry run by default.** The first call shows the copy before and after, the route and the engagement at stake.
+  - **All or nothing on the plan.** The batch changes nothing if any ad cannot be read, has an invalid change, or needs a route that is not allowed, or if any replacement creative cannot be created: every replacement is created before any ad is repointed. If Meta then refuses a repoint, the ads already repointed stay changed and are listed with their previous creative.
+  - **Repeats do nothing.** Repeating a change that is already applied leaves the ad alone.
+  - **Kept on replacements:** per-platform media (`platform_customizations`).
   - **Undo:** the response lists each ad's previous creative.
 - **`ads_update_ad_url_tags` can rebuild ads with text options** when `allow_new_post` is set. Without it they are skipped, as before.
 - **Several primary texts, headlines and descriptions per ad.**
