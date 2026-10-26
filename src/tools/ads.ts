@@ -421,7 +421,7 @@ export function registerAdTools(server: McpServer): void {
   server.registerTool(
     "ads_delete_ad",
     {
-      description: `${WRITE_WARNING}Delete an ad (soft delete — sets status to DELETED).`,
+      description: `${WRITE_WARNING}Delete an ad (soft delete — sets status to DELETED). Meta does not let you delete the ad of a dynamic-creative ad set on its own; for those, delete or pause the ad set instead. To remove one text option from an ad, use ads_update_ad_content.`,
       inputSchema: {
         ad_id: z.string().describe("Ad ID to delete"),
       },
@@ -429,6 +429,12 @@ export function registerAdTools(server: McpServer): void {
     },
     async ({ ad_id }) => {
       const id = validateMetaId(ad_id, "ad");
+      const ad = await metaApiClient.get<{ adset?: { id?: string; is_dynamic_creative?: boolean } }>(`/${id}`, {
+        fields: "adset{id,is_dynamic_creative}",
+      });
+      if (ad.adset?.is_dynamic_creative) {
+        throw new Error(`Ad ${id} belongs to dynamic-creative ad set ${ad.adset.id}, and Meta does not allow deleting such an ad on its own (subcode 1340029). Delete the ad set with ads_delete_ad_set, or pause it with ads_activate_entity.`);
+      }
       await metaApiClient.postForm<{ success: boolean }>(`/${id}`, {
         status: "DELETED",
       });

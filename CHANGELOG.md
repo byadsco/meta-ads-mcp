@@ -42,6 +42,10 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ### Fixed
 
 - **`ads_update_ad_url_tags` works on creatives built before v22.0.** They still report `standard_enhancements`, which Meta rejects in any form, so cloning their Advantage+ settings failed. The replacement now drops that key and keeps the rest. It also keeps `contextual_multi_ads`, and carousels whose feed holds only `promotional_metadata` reuse their post again instead of being skipped.
+- **`ads_get_ad_comments` with `ad_id` finds the ad's post again.** It asked the Ad node for `effective_object_story_id`, which Meta rejects there; it now reads it from the ad's creative.
+- **`ads_delete_ad` explains dynamic-creative ads.** Meta refuses to delete such an ad on its own (subcode 1340029). The tool checks the ad set first and points to `ads_delete_ad_set` or pausing it.
+- **`ads_clone_ad_set_bundle` keeps everything beside the story on a swapped creative.** When a creative override swaps in a patched creative, it now keeps the source's UTM tags, Advantage+ settings (minus `standard_enhancements`), multi-advertiser choice and ad labels. It used to drop them.
+- **`ads_update_ad_content` and `ads_get_ad_dossier` share the untrusted-content fence.** Ad copy shows only inside it, one bounded line per text.
 - **A scratch-built video creative keeps its description.**
   `ads_create_ad_creative` dropped it; it now goes in
   `video_data.link_description`, and `ads_generate_preview` sends a raw

@@ -391,6 +391,57 @@ describe("registerAdSetTools", () => {
       expect(payload.created_ads[0]?.creative_id).toBe("41001");
     });
 
+    it("keeps the source's UTM tags, Advantage+ settings and labels on a swapped creative", async () => {
+      const server = createMockMcpServer();
+      registerAdSetTools(server as never);
+
+      vi.stubGlobal("fetch", vi.fn()
+        .mockResolvedValueOnce(mockFetchResponse(sourceAdSet()))
+        .mockResolvedValueOnce(mockFetchResponse(oneAd()))
+        .mockResolvedValueOnce(mockFetchResponse({
+          id: "4001", name: "C1",
+          object_story_spec: { page_id: "6001", link_data: { link: "https://x.com/", image_hash: "h1", message: "Old" } },
+          url_tags: "utm_source=meta&utm_campaign=x",
+          degrees_of_freedom_spec: {
+            creative_features_spec: {
+              standard_enhancements: { enroll_status: "OPT_IN" },
+              image_touchups: { enroll_status: "OPT_OUT" },
+            },
+          },
+          contextual_multi_ads: { enroll_status: "OPT_OUT" },
+          adlabels: [{ id: "900", name: "Label" }],
+        }))
+        .mockResolvedValueOnce(mockFetchResponse({ id: "20001" }))
+        .mockResolvedValueOnce(mockFetchResponse({ copied_ad_id: "30001" }))
+        .mockResolvedValueOnce(mockFetchResponse({ success: true }))
+        .mockResolvedValueOnce(mockFetchResponse({ id: "41001" }))
+        .mockResolvedValueOnce(mockFetchResponse({ success: true })));
+
+      const result = await server._registeredTools[2].handler({
+        account_id: "act_123",
+        source_ad_set_id: "2099",
+        target_ad_set: { name: "Target", geo_override: { countries: ["CO"] }, status: "PAUSED" },
+        creative_overrides: [{ source_ad_id: "3001", message: "New" }],
+        dry_run: false,
+        idempotency_key: "k-swap-carry",
+      }) as { content: Array<{ type: string; text: string }> };
+
+      const calls = vi.mocked(fetch).mock.calls;
+      const creativeRead = calls.find((c) => new URL(c[0] as string).pathname.endsWith("/4001"))!;
+      const readFields = new URL(creativeRead[0] as string).searchParams.get("fields")?.split(",");
+      expect(readFields).toEqual(expect.arrayContaining(["degrees_of_freedom_spec", "adlabels", "contextual_multi_ads", "url_tags"]));
+
+      const creativeCall = calls.find((c) => new URL(c[0] as string).pathname.endsWith("/adcreatives"))!;
+      const body = new URLSearchParams(creativeCall[1]?.body as string);
+      expect(body.get("url_tags")).toBe("utm_source=meta&utm_campaign=x");
+      expect(JSON.parse(body.get("degrees_of_freedom_spec") ?? "{}")).toEqual({
+        creative_features_spec: { image_touchups: { enroll_status: "OPT_OUT" } },
+      });
+      expect(JSON.parse(body.get("contextual_multi_ads") ?? "{}")).toEqual({ enroll_status: "OPT_OUT" });
+      expect(JSON.parse(body.get("adlabels") ?? "[]")).toEqual([{ id: "900" }]);
+      expect(JSON.parse(result.content[1].text).warnings.join(" ")).toMatch(/Dropped standard_enhancements/);
+    });
+
     it("skips a single failed ad copy and continues with the rest", async () => {
       const server = createMockMcpServer();
       registerAdSetTools(server as never);

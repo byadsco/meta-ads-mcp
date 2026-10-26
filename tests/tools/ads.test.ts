@@ -12,6 +12,7 @@ type ToolResult = { content: Array<{ type: string; text: string }> };
 
 const UPDATE_AD = 3;
 const UPDATE_URL_TAGS = 4;
+const DELETE_AD = 5;
 
 function bodyOf(callIndex: number): URLSearchParams {
   const call = vi.mocked(fetch).mock.calls[callIndex];
@@ -785,6 +786,31 @@ describe("registerAdTools", () => {
         failed: Array<{ ad_id: string; error: string }>;
       };
       expect(report.failed[0].ad_id).toBe("3001");
+    });
+  });
+
+  describe("ads_delete_ad handler", () => {
+    it("soft-deletes an ad after checking its ad set", async () => {
+      const server = createMockMcpServer();
+      registerAdTools(server as never);
+      vi.stubGlobal("fetch", vi.fn()
+        .mockResolvedValueOnce(mockFetchResponse({ id: "3001", adset: { id: "2001", is_dynamic_creative: false } }))
+        .mockResolvedValueOnce(mockFetchResponse({ success: true })));
+
+      await server._registeredTools[DELETE_AD].handler({ ad_id: "3001" });
+
+      expect(bodyOf(1).get("status")).toBe("DELETED");
+    });
+
+    it("explains instead of failing when the ad belongs to a dynamic-creative ad set", async () => {
+      const server = createMockMcpServer();
+      registerAdTools(server as never);
+      vi.stubGlobal("fetch", vi.fn()
+        .mockResolvedValueOnce(mockFetchResponse({ id: "3001", adset: { id: "2001", is_dynamic_creative: true } })));
+
+      await expect(server._registeredTools[DELETE_AD].handler({ ad_id: "3001" }))
+        .rejects.toThrow(/dynamic-creative ad set 2001.*ads_delete_ad_set/);
+      expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
     });
   });
 });

@@ -16,6 +16,7 @@ import {
 } from "../meta/creative-rebuild.js";
 import { readEngagement, type Engagement } from "../meta/post-engagement.js";
 import type { AdCreative } from "../meta/types/index.js";
+import { ADVERTISER_CONTENT_CLOSE, ADVERTISER_CONTENT_OPEN, singleLine } from "../utils/single-line.js";
 import { ctaEnum } from "./creatives.js";
 import { UPDATE, WRITE_WARNING } from "./_register.js";
 
@@ -159,6 +160,12 @@ export function registerAdContentTools(server: McpServer): void {
   );
 }
 
+// Ad copy is advertiser content: it is rendered one bounded line per option,
+// inside the untrusted fence, never as framing.
+function listCopy(texts: string[]): string {
+  return texts.length === 0 ? "(none)" : texts.map((text) => `[${singleLine(text, 300)}]`).join(" ");
+}
+
 function describeEngagement(engagement: Engagement | undefined): string {
   if (!engagement) return "";
   const parts: string[] = [];
@@ -194,10 +201,15 @@ function summarize(
       ? "keeps its Facebook post and that post's likes, comments and shares; Instagram starts over"
       : "gets a new post: likes, comments and shares start from zero";
     lines.push(`• Ads ${ads} (creative ${report.creative_id}): ${proof}.${describeEngagement(report.engagement)}`);
-    lines.push(`  Primary texts: ${JSON.stringify(report.before.primary)} → ${JSON.stringify(report.after.primary)}`);
-    lines.push(`  Headlines: ${JSON.stringify(report.before.headlines)} → ${JSON.stringify(report.after.headlines)}`);
-    lines.push(`  Descriptions: ${JSON.stringify(report.before.descriptions)} → ${JSON.stringify(report.after.descriptions)}`);
     for (const warning of report.warnings) lines.push(`  ⚠️ ${warning}`);
+    lines.push(ADVERTISER_CONTENT_OPEN);
+    lines.push(`Primary texts before: ${listCopy(report.before.primary)}`);
+    lines.push(`Primary texts after: ${listCopy(report.after.primary)}`);
+    lines.push(`Headlines before: ${listCopy(report.before.headlines)}`);
+    lines.push(`Headlines after: ${listCopy(report.after.headlines)}`);
+    lines.push(`Descriptions before: ${listCopy(report.before.descriptions)}`);
+    lines.push(`Descriptions after: ${listCopy(report.after.descriptions)}`);
+    lines.push(ADVERTISER_CONTENT_CLOSE);
   }
   if (planningErrors.length > 0) lines.push("", "Problems:", ...planningErrors.map((error) => `• ${error}`));
   if (failed.length > 0) lines.push("", "Failed:", ...failed.map((f) => `• Ad ${f.ad_id}: ${f.error}`));
