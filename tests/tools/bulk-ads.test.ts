@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { registerBulkAdTools } from "../../src/tools/bulk-ads.js";
+import { metaApiClient } from "../../src/meta/client.js";
 import { createMockMcpServer, setupTestToken, cleanupTestToken, mockFetchResponse } from "../setup.js";
 
 // Keep every real guard rule (protocol, private-IP checks) and stub only DNS,
@@ -41,6 +42,9 @@ function urlOf(call: unknown[]): string {
 describe("registerBulkAdTools", () => {
   beforeEach(() => {
     setupTestToken();
+    // Every item makes three account-scoped writes; without a reset the shared
+    // write pacer carries the earlier tests' writes and stalls later ones.
+    metaApiClient.resetForTests();
   });
 
   afterEach(() => {
@@ -156,6 +160,77 @@ describe("registerBulkAdTools", () => {
       expect(spec.video_data.message).toBe("propio");
       expect(spec.video_data.title).toBe("propio-h");
       expect(spec.video_data.link_description).toBe("compartido-d");
+    });
+
+    function stubOneReadyVideo() {
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(mockFetchResponse({ id: "vid_1" }))
+        .mockResolvedValueOnce(mockFetchResponse({
+          status: { video_status: "ready" },
+          thumbnails: { data: [{ uri: "https://cdn.example/t.jpg", is_preferred: true }] },
+        }))
+        .mockResolvedValueOnce(mockFetchResponse({ id: "cre_1" }))
+        .mockResolvedValueOnce(mockFetchResponse({ id: "ad_1" }));
+      vi.stubGlobal("fetch", fetchMock);
+      return () => new URLSearchParams(String(fetchMock.mock.calls[2][1]?.body ?? ""));
+    }
+
+    it("sends shared text options as a DEGREES_OF_FREEDOM feed with the AI features off", async () => {
+      const tool = handlerFor("ads_bulk_create_video_ads");
+      const creativeBody = stubOneReadyVideo();
+
+      await tool.handler({
+        ...BASE_ARGS,
+        videos: [{ file_url: "https://cdn.example/a.mp4" }],
+        primary_texts: ["compartido uno", "compartido dos"],
+        headlines: ["titular"],
+        link_url: "https://example.com",
+        url_tags: "?utm_source=meta",
+      });
+
+      const first = creativeBody();
+      expect(JSON.parse(first.get("asset_feed_spec")!)).toEqual({
+        bodies: [{ text: "compartido uno" }, { text: "compartido dos" }],
+        titles: [{ text: "titular" }],
+        optimization_type: "DEGREES_OF_FREEDOM",
+      });
+      expect(JSON.parse(first.get("object_story_spec")!).video_data).toEqual({
+        video_id: "vid_1",
+        image_url: "https://cdn.example/t.jpg",
+        call_to_action: { type: "LEARN_MORE", value: { link: "https://example.com" } },
+      });
+      expect(first.get("url_tags")).toBe("utm_source=meta");
+      expect(JSON.parse(first.get("contextual_multi_ads")!)).toEqual({ enroll_status: "OPT_OUT" });
+      expect(Object.values(JSON.parse(first.get("degrees_of_freedom_spec")!).creative_features_spec)
+        .every((f) => (f as { enroll_status: string }).enroll_status === "OPT_OUT")).toBe(true);
+    });
+
+    it("lets a video's own text options override the shared ones, field by field", async () => {
+      const tool = handlerFor("ads_bulk_create_video_ads");
+      const creativeBody = stubOneReadyVideo();
+
+      await tool.handler({
+        ...BASE_ARGS,
+        videos: [{ file_url: "https://cdn.example/b.mp4", primary_texts: ["propio uno", "propio dos"] }],
+        primary_texts: ["compartido uno", "compartido dos"],
+        headlines: ["titular"],
+      });
+
+      const feed = JSON.parse(creativeBody().get("asset_feed_spec")!);
+      expect(feed.bodies).toEqual([{ text: "propio uno" }, { text: "propio dos" }]);
+      expect(feed.titles).toEqual([{ text: "titular" }]);
+    });
+
+    it("refuses a single field together with its list before uploading anything", async () => {
+      const tool = handlerFor("ads_bulk_create_video_ads");
+      vi.stubGlobal("fetch", vi.fn());
+
+      await expect(tool.handler({
+        ...BASE_ARGS,
+        videos: [{ file_url: "https://cdn.example/a.mp4", headline: "uno", headlines: ["dos", "tres"] }],
+      })).rejects.toThrow(/videos\[0\]\.headline or videos\[0\]\.headlines/);
+      expect(vi.mocked(fetch)).not.toHaveBeenCalled();
     });
 
     it("keeps successful items when one video fails", async () => {

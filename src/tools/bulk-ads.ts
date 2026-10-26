@@ -4,7 +4,16 @@ import { McpError, ErrorCode } from "@modelcontextprotocol/sdk/types.js";
 import { metaApiClient } from "../meta/client.js";
 import { normalizeAccountId, validateMetaId } from "../utils/format.js";
 import { assertSafePublicUrl, UnsafeUrlError } from "../utils/url-guard.js";
-import { ctaEnum } from "./creatives.js";
+import {
+  ctaEnum,
+  headlineOptions,
+  MAX_HEADLINE_LENGTH,
+  MAX_TEXT_OPTIONS,
+  resolveTextOptions,
+  textOptions,
+} from "./creatives.js";
+import { buildFeatureSpec, buildStorySpec, FEATURE_NAME_PATTERN } from "../meta/creative-spec.js";
+import { normalizeUrlTags } from "../utils/validation.js";
 import { CREATE, WRITE_WARNING } from "./_register.js";
 
 const POLL_INTERVAL_MS = 5000;
@@ -41,6 +50,7 @@ interface ItemResult {
   skipped?: boolean;
   error?: string;
   failed_stage?: Stage;
+  warnings?: string[];
 }
 
 class StageError extends Error {
@@ -96,7 +106,7 @@ export function registerBulkAdTools(server: McpServer): void {
   server.registerTool(
     "ads_bulk_create_video_ads",
     {
-      description: `${WRITE_WARNING}Turn a list of public video URLs into ads in one call: uploads each video, waits for Meta to finish processing, auto-selects a thumbnail, builds the creative, and creates the ad in the given ad set. Ads are created PAUSED by default. Per-video copy overrides the shared defaults. A video rejected by Meta does not abort the rest — every item reports its own outcome and the stage it failed at — but an expired token, rate limit or abuse signal stops the batch immediately, as does the same failure repeating (which means a shared input like page_id or ad_set_id is wrong). The whole call is capped at ${BATCH_BUDGET_MS / 1000}s so it always returns the IDs it created; videos left unprocessed come back marked "skipped", and re-running with only those is safe. Use this instead of chaining ads_upload_ad_video → ads_create_ad_creative → ads_create_ad manually.`,
+      description: `${WRITE_WARNING}Turn a list of public video URLs into ads in one call: uploads each video, waits for Meta to finish processing, auto-selects a thumbnail, builds the creative, and creates the ad in the given ad set. Ads are created PAUSED by default. Per-video copy overrides the shared defaults. Up to ${MAX_TEXT_OPTIONS} primary texts, headlines and descriptions per ad (primary_texts / headlines / descriptions) become Ads Manager-style text options. Advantage+ AI features and multi-advertiser ads stay off unless requested. A video rejected by Meta does not abort the rest — every item reports its own outcome and the stage it failed at — but an expired token, rate limit or abuse signal stops the batch immediately, as does the same failure repeating (which means a shared input like page_id or ad_set_id is wrong). The whole call is capped at ${BATCH_BUDGET_MS / 1000}s so it always returns the IDs it created; videos left unprocessed come back marked "skipped", and re-running with only those is safe. Use this instead of chaining ads_upload_ad_video → ads_create_ad_creative → ads_create_ad manually.`,
       inputSchema: {
         account_id: z.string().describe("Ad account ID"),
         ad_set_id: z.string().describe("Ad set ID that will hold the new ads"),
@@ -112,8 +122,11 @@ export function registerBulkAdTools(server: McpServer): void {
               ad_name: z.string().min(1).optional().describe("Name of the resulting ad. Defaults to the video name, then to 'Video ad N'."),
               video_name: z.string().min(1).optional().describe("Name of the video in the ad account library"),
               message: z.string().optional().describe("Primary text. Overrides the shared message."),
-              headline: z.string().optional().describe("Headline. Overrides the shared headline."),
+              headline: z.string().max(MAX_HEADLINE_LENGTH).optional().describe("Headline. Overrides the shared headline."),
               description: z.string().optional().describe("Description below the headline. Overrides the shared description."),
+              primary_texts: textOptions().describe(`Up to ${MAX_TEXT_OPTIONS} primary texts for this video's ad. Overrides the shared primary text(s).`),
+              headlines: headlineOptions().describe(`Up to ${MAX_TEXT_OPTIONS} headlines for this video's ad. Overrides the shared headline(s).`),
+              descriptions: textOptions().describe(`Up to ${MAX_TEXT_OPTIONS} descriptions for this video's ad. Overrides the shared description(s).`),
               link_url: z.string().min(1).optional().describe("Destination URL. Overrides the shared link_url."),
               call_to_action_type: ctaEnum.optional().describe("CTA button. Overrides the shared call_to_action_type."),
             }),
@@ -122,8 +135,16 @@ export function registerBulkAdTools(server: McpServer): void {
           .max(MAX_VIDEOS_PER_CALL)
           .describe(`Videos to turn into ads (max ${MAX_VIDEOS_PER_CALL} per call)`),
         message: z.string().optional().describe("Shared primary text applied to every video without its own message"),
-        headline: z.string().optional().describe("Shared headline applied to every video without its own headline"),
+        headline: z.string().max(MAX_HEADLINE_LENGTH).optional().describe("Shared headline applied to every video without its own headline"),
         description: z.string().optional().describe("Shared description applied to every video without its own description"),
+        primary_texts: textOptions().describe(`Shared primary texts (up to ${MAX_TEXT_OPTIONS}) for every video without its own. Several texts become Ads Manager-style text options.`),
+        headlines: headlineOptions().describe(`Shared headlines (up to ${MAX_TEXT_OPTIONS}) for every video without its own.`),
+        descriptions: textOptions().describe(`Shared descriptions (up to ${MAX_TEXT_OPTIONS}) for every video without its own.`),
+        advantage_creative: z
+          .record(z.string().regex(FEATURE_NAME_PATTERN), z.enum(["OPT_IN", "OPT_OUT"]))
+          .optional()
+          .describe("Advantage+ creative features to turn on for every ad, e.g. { \"text_optimizations\": \"OPT_IN\" }. Every feature is OPT_OUT unless listed."),
+        multi_advertiser_ads: z.boolean().optional().describe("Let Meta show these ads alongside other advertisers' ads. Off unless true."),
         link_url: z.string().min(1).optional().describe("Shared destination URL applied to every video without its own link_url"),
         call_to_action_type: ctaEnum.optional().describe("Shared CTA button applied to every video without its own CTA"),
         url_tags: z.string().optional().describe("Query params appended to clicked URLs (e.g. 'utm_source=meta&utm_medium=paid')"),
@@ -142,9 +163,25 @@ export function registerBulkAdTools(server: McpServer): void {
     },
     async ({
       account_id, ad_set_id, page_id, instagram_actor_id, videos,
-      message, headline, description, link_url, call_to_action_type,
-      url_tags, status, max_wait_seconds,
+      message, headline, description, primary_texts, headlines, descriptions,
+      link_url, call_to_action_type, url_tags, advantage_creative, multi_advertiser_ads,
+      status, max_wait_seconds,
     }) => {
+      const sharedCopy = {
+        primary: resolveTextOptions(message, primary_texts, "message", "primary_texts"),
+        headlines: resolveTextOptions(headline, headlines, "headline", "headlines"),
+        descriptions: resolveTextOptions(description, descriptions, "description", "descriptions"),
+      };
+      const itemCopies = videos.map((video, index) => {
+        const where = `videos[${index}]`;
+        return {
+          primary: resolveTextOptions(video.message, video.primary_texts, `${where}.message`, `${where}.primary_texts`),
+          headlines: resolveTextOptions(video.headline, video.headlines, `${where}.headline`, `${where}.headlines`),
+          descriptions: resolveTextOptions(video.description, video.descriptions, `${where}.description`, `${where}.descriptions`),
+        };
+      });
+      const featureSpec = buildFeatureSpec(advantage_creative, multi_advertiser_ads === true);
+      const normalizedUrlTags = url_tags === undefined ? "" : normalizeUrlTags(url_tags);
       const accountPath = normalizeAccountId(account_id);
       const adSetIdValidated = validateMetaId(ad_set_id, "adset");
       const pageIdValidated = validateMetaId(page_id, "page");
@@ -204,39 +241,28 @@ export function registerBulkAdTools(server: McpServer): void {
           }
           result.thumbnail_url = thumbnailUrl;
 
-          const videoData: Record<string, unknown> = {
-            video_id: uploaded.id,
-            image_url: thumbnailUrl,
-          };
-          const itemMessage = video.message ?? message;
-          const itemHeadline = video.headline ?? headline;
-          const itemDescription = video.description ?? description;
-          const itemLinkUrl = video.link_url ?? link_url;
-          const itemCta = video.call_to_action_type ?? call_to_action_type;
-
-          if (itemMessage) videoData.message = itemMessage;
-          if (itemHeadline) videoData.title = itemHeadline;
-          if (itemDescription) videoData.link_description = itemDescription;
-          if (itemCta || itemLinkUrl) {
-            videoData.call_to_action = {
-              type: itemCta ?? "LEARN_MORE",
-              value: itemLinkUrl ? { link: itemLinkUrl } : undefined,
-            };
-          }
-
-          const objectStorySpec: Record<string, unknown> = {
-            page_id: pageIdValidated,
-            video_data: videoData,
-          };
-          if (instagramActorIdValidated) {
-            objectStorySpec.instagram_user_id = instagramActorIdValidated;
-          }
+          const itemCopy = itemCopies[index];
+          const story = buildStorySpec({
+            pageId: pageIdValidated,
+            instagramUserId: instagramActorIdValidated,
+            videoId: uploaded.id,
+            imageUrl: thumbnailUrl,
+            linkUrl: video.link_url ?? link_url,
+            primaryTexts: itemCopy.primary.length > 0 ? itemCopy.primary : sharedCopy.primary,
+            headlines: itemCopy.headlines.length > 0 ? itemCopy.headlines : sharedCopy.headlines,
+            descriptions: itemCopy.descriptions.length > 0 ? itemCopy.descriptions : sharedCopy.descriptions,
+            callToActionType: video.call_to_action_type ?? call_to_action_type,
+          });
+          if (story.warnings.length > 0) result.warnings = story.warnings;
 
           const creativeBody: Record<string, string | number | boolean> = {
             name: `${adName} — creative`,
-            object_story_spec: JSON.stringify(objectStorySpec),
+            object_story_spec: JSON.stringify(story.objectStorySpec),
+            degrees_of_freedom_spec: JSON.stringify(featureSpec.degrees_of_freedom_spec),
+            contextual_multi_ads: JSON.stringify(featureSpec.contextual_multi_ads),
           };
-          if (url_tags) creativeBody.url_tags = url_tags;
+          if (story.assetFeedSpec) creativeBody.asset_feed_spec = JSON.stringify(story.assetFeedSpec);
+          if (normalizedUrlTags) creativeBody.url_tags = normalizedUrlTags;
 
           const creative = await metaApiClient.postForm<{ id: string }>(
             `/${accountPath}/adcreatives`,

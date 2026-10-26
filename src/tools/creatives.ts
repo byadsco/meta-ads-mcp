@@ -26,8 +26,12 @@ import { normalizeUrlTags } from "../utils/validation.js";
 
 export const ctaEnum = z.enum(CTA_TYPES);
 
-const MAX_TEXT_OPTIONS = 5;
-const MAX_HEADLINE_LENGTH = 255;
+export const MAX_TEXT_OPTIONS = 5;
+export const MAX_HEADLINE_LENGTH = 255;
+
+export const textOptions = () => z.array(z.string().min(1)).min(1).max(MAX_TEXT_OPTIONS).optional();
+export const headlineOptions = () =>
+  z.array(z.string().min(1).max(MAX_HEADLINE_LENGTH)).min(1).max(MAX_TEXT_OPTIONS).optional();
 
 const AD_IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tiff"];
 const AD_IMAGE_FILE_NAME_MAX = 100;
@@ -65,7 +69,7 @@ export function adImageFileName(name: string | undefined, extension: string): st
   return base ? `${base}${ext}` : fallback;
 }
 
-function resolveTextOptions(
+export function resolveTextOptions(
   single: string | undefined,
   options: string[] | undefined,
   singleName: string,
@@ -279,24 +283,9 @@ export function registerCreativeTools(server: McpServer): void {
         message: z.string().optional().describe("Primary text / body copy"),
         headline: z.string().max(MAX_HEADLINE_LENGTH).optional().describe("Headline text"),
         description: z.string().optional().describe("Description text (shown below headline)"),
-        primary_texts: z
-          .array(z.string().min(1))
-          .min(1)
-          .max(MAX_TEXT_OPTIONS)
-          .optional()
-          .describe(`Up to ${MAX_TEXT_OPTIONS} primary texts for the same ad. Use instead of message.`),
-        headlines: z
-          .array(z.string().min(1).max(MAX_HEADLINE_LENGTH))
-          .min(1)
-          .max(MAX_TEXT_OPTIONS)
-          .optional()
-          .describe(`Up to ${MAX_TEXT_OPTIONS} headlines (max ${MAX_HEADLINE_LENGTH} characters each). Use instead of headline.`),
-        descriptions: z
-          .array(z.string().min(1))
-          .min(1)
-          .max(MAX_TEXT_OPTIONS)
-          .optional()
-          .describe(`Up to ${MAX_TEXT_OPTIONS} descriptions. Use instead of description.`),
+        primary_texts: textOptions().describe(`Up to ${MAX_TEXT_OPTIONS} primary texts for the same ad. Use instead of message.`),
+        headlines: headlineOptions().describe(`Up to ${MAX_TEXT_OPTIONS} headlines (max ${MAX_HEADLINE_LENGTH} characters each). Use instead of headline.`),
+        descriptions: textOptions().describe(`Up to ${MAX_TEXT_OPTIONS} descriptions. Use instead of description.`),
         call_to_action_type: ctaEnum.optional().describe("Call-to-action button type"),
         url_tags: z.string().optional().describe("Query string params appended to URLs clicked from the ad (e.g. 'utm_source=meta&utm_medium=paid'). A leading '?' is stripped."),
         advantage_creative: z
