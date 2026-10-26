@@ -9,6 +9,12 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
+- **`ads_update_ad_content` edits live ads.** It can add, remove or replace primary texts, headlines and descriptions (including dropping one option of several), and change the link, button or media. Every ad gets a replacement creative and keeps its ID and history.
+  - **Primary texts only, two or more left:** the ad keeps its Facebook post and that post's likes, comments and shares. The new creative references the same post with the new texts as text options; Instagram starts over and the Facebook headline stays the post's own (measured against the live API).
+  - **Anything else:** it creates a new post, which resets the visible engagement, so it needs `allow_new_post: true`.
+  - **Dry run by default.** The first call shows the copy before and after, the route and the engagement at stake. A batch where any ad's change is invalid changes nothing.
+  - **Undo:** the response lists each ad's previous creative.
+- **`ads_update_ad_url_tags` can rebuild ads with text options** when `allow_new_post` is set. Without it they are skipped, as before.
 - **Several primary texts, headlines and descriptions per ad.**
   `ads_create_ad_creative`, `ads_bulk_create_video_ads` and
   `ads_generate_preview` take `primary_texts`, `headlines` and `descriptions`
@@ -35,6 +41,7 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Fixed
 
+- **`ads_update_ad_url_tags` works on creatives built before v22.0.** They still report `standard_enhancements`, which Meta rejects in any form, so cloning their Advantage+ settings failed. The replacement now drops that key and keeps the rest. It also keeps `contextual_multi_ads`, and carousels whose feed holds only `promotional_metadata` reuse their post again instead of being skipped.
 - **A scratch-built video creative keeps its description.**
   `ads_create_ad_creative` dropped it; it now goes in
   `video_data.link_description`, and `ads_generate_preview` sends a raw

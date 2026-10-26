@@ -135,9 +135,9 @@ export async function groupAdsByCreative(
   return { groups: [...groups.values()], failed };
 }
 
-export async function readCreativeForRebuild(creativeId: string): Promise<AdCreative> {
+export async function readCreativeForRebuild(creativeId: string, extraFields: string[] = []): Promise<AdCreative> {
   return metaApiClient.get<AdCreative>(`/${validateMetaId(creativeId, "creative")}`, {
-    fields: CREATIVE_REBUILD_FIELDS,
+    fields: [CREATIVE_REBUILD_FIELDS, ...extraFields].join(","),
   });
 }
 

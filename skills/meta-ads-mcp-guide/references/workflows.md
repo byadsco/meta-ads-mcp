@@ -45,6 +45,18 @@ Frequency above roughly 3 in a short window, a falling CTR with a stable CPM, an
 
 Advantage+ AI features that rewrite copy or edit media stay off unless you list them in `advantage_creative`. The ad's post appears a few minutes after the ad exists.
 
+## Changing the copy of a live ad
+
+"Drop the second headline and add a primary text to these ads."
+
+1. `ads_update_ad_content` with the changes (`primary_texts`, `headlines`, `descriptions`, each with `set` / `add` / `remove`). It is a dry run by default.
+2. Show the person what the dry run reports for each creative: the copy before and after, and what happens to the post's likes, comments and shares.
+   - Only primary texts change and two or more remain: the ad keeps its Facebook post, while Instagram starts over.
+   - Anything else needs `allow_new_post: true`, and the new post starts from zero.
+3. Run it again with `dry_run: false` once they agree.
+
+Every changed ad goes back through review. To undo, point the ad at its previous creative with `ads_update_ad`; that brings its old post and engagement back.
+
 ## Budget change
 
 "Increase the budget on the winner."

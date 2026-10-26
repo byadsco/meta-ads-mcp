@@ -31,6 +31,7 @@ import { registerDiagnosticTools } from "./diagnostics.js";
 import { registerHelpTools } from "./help.js";
 import { registerMacroTools } from "./macros.js";
 import { registerBulkAdTools } from "./bulk-ads.js";
+import { registerAdContentTools } from "./ad-content.js";
 import { registerWhatsAppTools } from "./whatsapp.js";
 import { registerWhatsAppTemplateTools } from "./whatsapp-templates.js";
 import { registerWhatsAppFlowTools } from "./whatsapp-flows.js";
@@ -81,6 +82,7 @@ export function registerAllTools(server: McpServer): void {
   // ─── Agency Macros (cross-account) ──────────────────────
   registerMacroTools(server);        // 2 tools — diagnose_underperformance, portfolio_summary
   registerBulkAdTools(server);       // 1 tool  — ads_bulk_create_video_ads (upload → creative → ad)
+  registerAdContentTools(server);    // 1 tool  — ads_update_ad_content (edit copy/link/media of live ads)
 
   // ─── Instagram ──────────────────────────────────────────
   registerInstagramTools(server);    // 2 tools — IG account & media lookup
@@ -100,5 +102,5 @@ export function registerAllTools(server: McpServer): void {
   // ─── Token Management ────────────────────────────────────
   registerTokenTools(server);        // 4 tools — list / set-active / register / delete
 
-  // Total: 142 tools (79 renamed + 14 new in v3 + 3 audience-sharing + 1 invoices + 27 WhatsApp + 1 url-tags + 1 bulk video ads + 1 creative media + 9 Ad Library/Apify + 1 video media + 1 video analysis + 3 Gemini key mgmt + 1 ad dossier)
+  // Total: 143 tools (79 renamed + 14 new in v3 + 3 audience-sharing + 1 invoices + 27 WhatsApp + 1 url-tags + 1 bulk video ads + 1 creative media + 9 Ad Library/Apify + 1 video media + 1 video analysis + 3 Gemini key mgmt + 1 ad dossier + 1 ad content editor)
 }
