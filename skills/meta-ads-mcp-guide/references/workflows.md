@@ -34,6 +34,17 @@ Frequency above roughly 3 in a short window, a falling CTR with a stable CPM, an
 3. Compare hooks, offers and formats, not just numbers. The creative-analysis skill has the rubric.
 4. Write the conclusion as a testable change, not as praise.
 
+## An ad with several texts
+
+"Run this image with these three primary texts and two headlines."
+
+1. `ads_upload_ad_image` (or `ads_upload_ad_video`) for the media, unless it is already in the account.
+2. `ads_generate_preview` with the same fields you will create with, to check the copy renders. It shows one combination.
+3. `ads_create_ad_creative` with `primary_texts`, `headlines` and `descriptions` (up to 5 each, headlines up to 255 characters, no repeats). Meta shows each person the combination likely to work best, as Ads Manager's text options do.
+4. `ads_create_ad` in a regular ad set. It is created paused; activating it is a separate, confirmed step.
+
+Advantage+ AI features that rewrite copy or edit media stay off unless you list them in `advantage_creative`. The ad's post appears a few minutes after the ad exists.
+
 ## Budget change
 
 "Increase the budget on the winner."

@@ -7,7 +7,43 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Added
+
+- **Several primary texts, headlines and descriptions per ad.**
+  `ads_create_ad_creative`, `ads_bulk_create_video_ads` and
+  `ads_generate_preview` take `primary_texts`, `headlines` and `descriptions`
+  (up to 5 each) and send them the way Ads Manager stores text options: an
+  `asset_feed_spec` with `optimization_type: "DEGREES_OF_FREEDOM"` on a
+  regular ad set, with the copy left out of `object_story_spec`. Meta rejects
+  such a feed when every field has a single entry and when a field repeats a
+  text, so one text of each kind keeps the plain shape and repeats are dropped
+  with a warning. The rules Meta enforces, measured against the live API, are
+  in `docs/meta-creative-ground-truth.md`.
+- **Every call-to-action type Meta documents for v26.0**, including
+  `PLAY_GAME`, is accepted by the creative tools.
+- **`ads_generate_preview` builds from simple fields**, the same ones
+  `ads_create_ad_creative` takes, and its raw spec accepts `asset_feed_spec`.
+
+### Changed
+
+- **Advantage+ AI features and multi-advertiser ads are off by default** on
+  every creative the creative tools build: they send an explicit `OPT_OUT` for
+  the 23 documented features and for `contextual_multi_ads`. Opt features in
+  with `advantage_creative`, and multi-advertiser ads with
+  `multi_advertiser_ads`. `standard_enhancements` is refused locally; Meta
+  rejects it in any form since v22.0.
+
 ### Fixed
+
+- **A scratch-built video creative keeps its description.**
+  `ads_create_ad_creative` dropped it; it now goes in
+  `video_data.link_description`, and `ads_generate_preview` sends a raw
+  video `description` there too.
+- **`ads_create_ad_creative` strips a leading `?` from `url_tags`**, as
+  `ads_update_ad_url_tags` already did.
+- **The tool map no longer promises what the tools do not do**: an asset
+  feed on `ads_create_ad_creative`, URL tags on `ads_update_ad_creative`, and
+  a processing wait on `ads_upload_ad_video`.
 
 - **`ads_analyze_video` works again.** `gemini-3.8-flash` answered every
   request with a generic `400 INVALID_ARGUMENT` ("Request contains an invalid
