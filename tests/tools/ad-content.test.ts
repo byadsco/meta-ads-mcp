@@ -191,6 +191,23 @@ describe("ads_update_ad_content", () => {
     const report = JSON.parse(result.content[1].text);
     expect(report.aborted).toBe(true);
     expect(report.updated).toEqual([]);
+    expect(report.failed).toEqual([{ ad_id: "3002", kind: "create_failed" }]);
+  });
+
+  it("reports a refused repoint as repoint_failed with the replacement to retry, without Meta's message", async () => {
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(mockFetchResponse({ id: "3001", account_id: "123", creative: { id: "4001" } }))
+      .mockResolvedValueOnce(mockFetchResponse(MULTI_TEXT_CREATIVE))
+      .mockResolvedValueOnce(mockFetchResponse({ id: "4100" }))
+      .mockResolvedValueOnce(mockFetchResponse({ error: { code: 100, message: "Ad copy echoed here" } }, { status: 400 }))
+      .mockResolvedValueOnce(mockFetchResponse({ id: "3001", creative: { id: "4001" } })));
+
+    const result = await tool().handler({ ad_ids: ["3001"], primary_texts: { add: ["Tres"] }, dry_run: false }) as ToolResult;
+
+    const report = JSON.parse(result.content[1].text);
+    expect(report.failed).toEqual([{ ad_id: "3001", kind: "repoint_failed", new_creative_id: "4100" }]);
+    expect(result.content[1].text).not.toContain("Ad copy echoed here");
+    expect(result.content[0].text).toContain("Ad copy echoed here");
   });
 
   it("does nothing when the requested link is already the ad's link", async () => {
