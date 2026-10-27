@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { registerAdContentTools } from "../../src/tools/ad-content.js";
 import { metaApiClient } from "../../src/meta/client.js";
+import { claimPostEditLease, resetPostEditLeasesForTests } from "../../src/store/post-edit-lease.js";
 import { createMockMcpServer, setupTestToken, cleanupTestToken, mockFetchResponse, fetchCallSummary } from "../setup.js";
 
 type ToolResult = { content: Array<{ text: string }> };
@@ -601,6 +602,7 @@ describe("ads_update_ad_content — editing the post (allow_post_edit)", () => {
   beforeEach(() => {
     setupTestToken();
     metaApiClient.resetForTests();
+    resetPostEditLeasesForTests();
   });
 
   afterEach(() => {
@@ -657,6 +659,8 @@ describe("ads_update_ad_content — editing the post (allow_post_edit)", () => {
       "GET /4900": [{ id: "4900", effective_object_story_id: "6001_999" }],
       "GET /6001": [{ id: "6001", access_token: "page-token" }],
       "POST /6001_888": [{ success: true }],
+      // Read for the plan, then on its new creative before it is resumed.
+      "GET /3001": [AD, { id: "3001", creative: { id: "4950" } }],
       "DELETE /4900": [{ error: { code: 100, message: "In use" } }],
     });
 
@@ -674,7 +678,75 @@ describe("ads_update_ad_content — editing the post (allow_post_edit)", () => {
     expect(report.post_edit).toMatchObject({ edited: true, temporary_creative_id: "4900", new_creatives: ["4950"] });
     expect(report.leftover_creatives).toEqual(["4900"]);
     expect(result.content[1].text).not.toContain("page-token");
-    expect(result.content[0].text).toMatch(/post 6001_888 was edited/i);
+    const text = result.content[0].text;
+    expect(text).toMatch(/post 6001_888 was edited/i);
+    expect(text).toMatch(/Creative 4900, the temporary one .*No ad uses it/);
+    // Undoing a post edit means editing the post back, not repointing.
+    expect(text).toMatch(/To undo, run ads_update_ad_content again with the previous text/);
+    expect(text).not.toMatch(/point an ad at its previous creative/);
+  });
+
+  it("does not say the temporary creative is unused when ads were left on it", async () => {
+    const plan_token = await approvedToken(ARGS, OBJECTS);
+    stubMeta({
+      ...READS,
+      "POST /act_123/adcreatives": [{ id: "4900" }, { id: "4950" }],
+      "GET /4900": [{ id: "4900", effective_object_story_id: "6001_999" }],
+      "GET /6001": [{ id: "6001", access_token: "page-token" }],
+      "POST /6001_888": [{ success: true }],
+      // pause, detach, then moving it back is refused
+      "POST /3001": [{ success: true }, { success: true }, { error: { code: 100, message: "Refused" } }],
+      "GET /3001": [AD, { id: "3001", creative: { id: "4900" } }],
+      "DELETE /4900": [{ error: { code: 100, message: "In use" } }],
+    });
+
+    const result = await tool().handler({ ...ARGS, dry_run: false, plan_token }) as ToolResult;
+
+    const text = result.content[0].text;
+    expect(JSON.parse(result.content[1].text).failed).toEqual([{ ad_id: "3001", kind: "left_on_temporary" }]);
+    expect(text).toMatch(/Creative 4900, the temporary one, stays in the account and ad 3001 is still on it/);
+    expect(text).not.toMatch(/No ad uses it/);
+  });
+
+  it("refuses a post used by more ads than one call can move back in time", async () => {
+    const crowded = { data: Array.from({ length: 11 }, (_, i) => ({
+      id: String(3001 + i), status: "PAUSED", creative: { id: i === 0 ? "4002" : "4005", effective_object_story_id: "6001_888" },
+    })) };
+    routeFetch({ ...OBJECTS, ads: crowded });
+
+    const result = await tool().handler(ARGS) as ToolResult;
+
+    expect(JSON.parse(result.content[1].text).plans[0]).toMatchObject({ blocking: true, reason_code: "post_edit_too_many_ads" });
+  });
+
+  it("writes nothing while another edit of the same post is running", async () => {
+    const plan_token = await approvedToken(ARGS, OBJECTS);
+    await claimPostEditLease("6001_888", "another-edit");
+    routeFetch(OBJECTS);
+
+    const result = await tool().handler({ ...ARGS, dry_run: false, plan_token }) as ToolResult;
+
+    expect(fetchCallSummary().filter((c) => !c.startsWith("GET"))).toEqual([]);
+    expect(JSON.parse(result.content[1].text)).toMatchObject({ aborted: true, post_edit: { busy: true } });
+    expect(result.content[0].text).toMatch(/another edit of post 6001_888 is running/);
+  });
+
+  it("says the post may or may not have the new text when the edit cannot be confirmed", async () => {
+    const plan_token = await approvedToken(ARGS, OBJECTS);
+    stubMeta({
+      ...READS,
+      "POST /act_123/adcreatives": [{ id: "4900" }, { id: "4950" }],
+      "GET /4900": [{ id: "4900", effective_object_story_id: "6001_999" }],
+      "GET /6001": [{ id: "6001", access_token: "page-token" }],
+      "POST /6001_888": [{ error: { code: 100, message: "Unexpected error" } }],
+      "GET /6001_888": [{ error: { code: 100, message: "Unavailable" } }],
+      "GET /3001": [AD, { id: "3001", creative: { id: "4950" } }],
+    });
+
+    const result = await tool().handler({ ...ARGS, dry_run: false, plan_token }) as ToolResult;
+
+    expect(JSON.parse(result.content[1].text).post_edit).toMatchObject({ edited: false, edit_unconfirmed: true });
+    expect(result.content[0].text).toMatch(/may or may not have the new text/);
   });
 
   it("puts every ad back when Meta never accepts the edit", async () => {

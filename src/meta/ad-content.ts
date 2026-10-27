@@ -64,7 +64,8 @@ export type ReasonCode =
   | "post_edit_unsupported"
   | "post_edit_alone"
   | "post_edit_permission"
-  | "post_edit_scan_incomplete";
+  | "post_edit_scan_incomplete"
+  | "post_edit_too_many_ads";
 
 export interface ContentPlan {
   before: Copy;

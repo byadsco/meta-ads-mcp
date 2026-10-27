@@ -35,11 +35,13 @@ function input(overrides: Partial<PostEditInput> = {}): PostEditInput {
 }
 
 // Answers Meta by method and path; each route's replies are used in order and
-// the last one repeats. A reply with an error is a 400.
-function stubMeta(routes: Record<string, unknown[]>, clock?: FakeClock): number[] {
+// the last one repeats. A reply with an error is a 400. With latencyMs, each
+// call takes that long on the fake clock.
+function stubMeta(routes: Record<string, unknown[]>, clock?: FakeClock, latencyMs = 0): number[] {
   const counts: Record<string, number> = {};
   const times: number[] = [];
   vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+    if (clock && latencyMs) await clock.sleep(latencyMs);
     times.push(clock?.now() ?? 0);
     const key = `${init?.method ?? "GET"} ${new URL(url).pathname.replace(/^\/v[\d.]+/, "")}`;
     const replies = routes[key] ?? [{ success: true }];
@@ -81,6 +83,7 @@ describe("editPost", () => {
       "GET /4900": [{ id: "4900", effective_object_story_id: "6001_999" }],
       "GET /6001": [{ id: "6001", access_token: PAGE_TOKEN }],
       "POST /6001_888": [failedEdit, { success: true }],
+      "GET /3001": [{ id: "3001", creative: { id: "4950" } }],
       "DELETE /4900": [{ error: { code: 100, error_subcode: 3858800, message: "In use" } }],
     }, clock);
 
@@ -93,7 +96,8 @@ describe("editPost", () => {
       "GET /6001", "POST /6001_888", "POST /6001_888",
       "POST /act_123/adcreatives",
       "POST /3001", "POST /3002",
-      "POST /3001",
+      // Resumed only once it is confirmed on the creative it was moved to.
+      "GET /3001", "POST /3001",
       "DELETE /4900",
     ]);
     // A temporary creative of its own post, carrying the new text.
@@ -113,7 +117,7 @@ describe("editPost", () => {
     expect(json(body(8).get("adlabels"))).toEqual([{ id: "900" }]);
     expect(json(body(9).get("creative"))).toEqual({ creative_id: "4950" });
     expect(json(body(10).get("creative"))).toEqual({ creative_id: "4002" });
-    expect(body(11).get("status")).toBe("ACTIVE");
+    expect(body(12).get("status")).toBe("ACTIVE");
     // Meta allows one creative change per ad every 30 seconds.
     expect(times[9] - times[2]).toBeGreaterThanOrEqual(30_000);
     expect(times[10] - times[3]).toBeGreaterThanOrEqual(30_000);
@@ -138,6 +142,9 @@ describe("editPost", () => {
       "GET /4900": [{ id: "4900", effective_object_story_id: "6001_999" }],
       "GET /6001": [{ id: "6001", access_token: PAGE_TOKEN }],
       "POST /6001_888": [failedEdit],
+      // Read after the last refusal: the post still has its old text.
+      "GET /6001_888": [{ id: "6001_888", message: "Viejo" }],
+      "GET /3001": [{ id: "3001", creative: { id: "4001" } }],
     }, clock);
 
     const outcome = await editPost(input(), clock);
@@ -162,6 +169,7 @@ describe("editPost", () => {
       "POST /act_123/adcreatives": [{ id: "4900" }],
       "POST /3002": [{ error: { code: 100, message: "Refused" } }],
       "GET /3002": [{ id: "3002", creative: { id: "4002" } }],
+      "GET /3001": [{ id: "3001", creative: { id: "4001" } }],
     }, clock);
 
     const outcome = await editPost(input(), clock);
@@ -184,7 +192,7 @@ describe("editPost", () => {
     stubMeta({
       "POST /act_123/adcreatives": [{ id: "4900" }],
       "POST /3001": [{ error: { code: 100, message: "Lost response" } }, { success: true }],
-      "GET /3001": [{ id: "3001", status: "PAUSED" }],
+      "GET /3001": [{ id: "3001", status: "PAUSED", creative: { id: "4001" } }],
     }, clock);
 
     const outcome = await editPost(input(), clock);
@@ -200,6 +208,7 @@ describe("editPost", () => {
       "POST /act_123/adcreatives": [{ id: "4900" }],
       "POST /3002": [{ error: { code: 100, message: "Lost response" } }, { success: true }],
       "GET /3002": [{ error: { code: 100, message: "Unavailable" } }],
+      "GET /3001": [{ id: "3001", creative: { id: "4001" } }],
     }, clock);
 
     const outcome = await editPost(input(), clock);
@@ -215,6 +224,7 @@ describe("editPost", () => {
     stubMeta({
       "POST /act_123/adcreatives": [{ id: "4900" }],
       "GET /4900": [{ id: "4900", effective_object_story_id: "6001_888" }],
+      "GET /3001": [{ id: "3001", creative: { id: "4001" } }],
     }, clock);
 
     const outcome = await editPost(input(), clock);
@@ -259,6 +269,88 @@ describe("editPost", () => {
     expect(outcome.edited).toBe(true);
     expect(outcome.ads[0]).toMatchObject({ ad_id: "3001", outcome: "left_on_temporary", creative_id: "4900", resumed: false });
     expect(outcome.ads[1]).toMatchObject({ ad_id: "3002", outcome: "updated", creative_id: "4002" });
+  });
+
+  it("never resumes an ad found on a creative this edit did not put it on", async () => {
+    const clock = fakeClock();
+    stubMeta({
+      "POST /act_123/adcreatives": [{ id: "4900" }],
+      // Another edit of the post moved 3001 to its own temporary creative.
+      "POST /3001": [{ success: true }, { error: { code: 100, message: "Refused" } }],
+      "GET /3001": [{ id: "3001", creative: { id: "4777" } }],
+    }, clock);
+
+    const outcome = await editPost(input(), clock);
+
+    expect(outcome).toMatchObject({ edited: false, stage: "detach" });
+    expect(outcome.ads[0]).toMatchObject({ ad_id: "3001", creative_id: "4777", resumed: false });
+    expect(outcome.ads[0].error).toMatch(/stays paused/);
+    expect(fetchCallSummary().filter((c) => c === "POST /3001")).toHaveLength(2);
+  });
+
+  it("treats a pause it cannot confirm either way as done, and says so if the ad cannot be resumed safely", async () => {
+    const clock = fakeClock();
+    stubMeta({
+      "POST /act_123/adcreatives": [{ id: "4900" }],
+      "POST /3001": [{ error: { code: 100, message: "Lost response" } }],
+      "GET /3001": [{ error: { code: 100, message: "Unavailable" } }],
+    }, clock);
+
+    const outcome = await editPost(input(), clock);
+
+    expect(outcome).toMatchObject({ edited: false, stage: "pause" });
+    expect(outcome.ads[0]).toMatchObject({ ad_id: "3001", resumed: false });
+    expect(outcome.ads[0].error).toMatch(/may be paused|stays paused/);
+  });
+
+  it("goes on as edited when the edit's answer is lost but the post has the new text", async () => {
+    const clock = fakeClock();
+    stubMeta({
+      "POST /act_123/adcreatives": [{ id: "4900" }, { id: "4950" }],
+      "GET /4900": [{ id: "4900", effective_object_story_id: "6001_999" }],
+      "GET /6001": [{ id: "6001", access_token: PAGE_TOKEN }],
+      "POST /6001_888": [{ error: { code: 100, message: "Unexpected error" } }],
+      "GET /6001_888": [{ id: "6001_888", message: "Nuevo" }],
+      "GET /3001": [{ id: "3001", creative: { id: "4950" } }],
+    }, clock);
+
+    const outcome = await editPost(input(), clock);
+
+    expect(outcome.edited).toBe(true);
+    expect(outcome.ads.map((a) => a.outcome)).toEqual(["updated", "updated"]);
+  });
+
+  it("moves every ad onto creatives that work either way when it cannot tell whether the post was edited", async () => {
+    const clock = fakeClock();
+    stubMeta({
+      "POST /act_123/adcreatives": [{ id: "4900" }, { id: "4950" }],
+      "GET /4900": [{ id: "4900", effective_object_story_id: "6001_999" }],
+      "GET /6001": [{ id: "6001", access_token: PAGE_TOKEN }],
+      "POST /6001_888": [{ error: { code: 100, message: "Unexpected error" } }],
+      "GET /6001_888": [{ error: { code: 100, message: "Unavailable" } }],
+      "GET /3001": [{ id: "3001", creative: { id: "4950" } }],
+    }, clock);
+
+    const outcome = await editPost(input(), clock);
+
+    // A creative reusing the post carries the ad whether or not the text changed.
+    expect(outcome).toMatchObject({ edited: false, edit_unconfirmed: true });
+    expect(outcome.ads[0]).toMatchObject({ ad_id: "3001", outcome: "updated", creative_id: "4950", resumed: true });
+    expect(outcome.ads[1]).toMatchObject({ ad_id: "3002", outcome: "updated", creative_id: "4002" });
+  });
+
+  it("puts everything back without editing when Meta is too slow to finish within a call", async () => {
+    const clock = fakeClock();
+    stubMeta({
+      "POST /act_123/adcreatives": [{ id: "4900" }],
+      "GET /3001": [{ id: "3001", creative: { id: "4001" } }],
+    }, clock, 20_000);
+
+    const outcome = await editPost(input(), clock);
+
+    expect(fetchCallSummary()).not.toContain("POST /6001_888");
+    expect(outcome).toMatchObject({ edited: false, stage: "time" });
+    expect(outcome.ads.map((a) => a.outcome)).toEqual(["restored", "restored"]);
   });
 
   it("keeps the text options of an own creative on its replacement", async () => {
