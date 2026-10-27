@@ -627,8 +627,19 @@ describe("ads_update_ad_content — editing the post (allow_post_edit)", () => {
     expect(text).toContain('Primary texts after: ["Texto nuevo"]');
     expect(text).toMatch(/Ad 3005: .*Instagram kept/);
     expect(text).toMatch(/Ad 3001: .*Instagram starts over/);
-    expect(text).toMatch(/pause/);
+    expect(text).toMatch(/active ads \(3001\) keep running/);
     expect(text).toMatch(/temporary creative/);
+  });
+
+  it("refuses when an active ad would run on a temporary creative that is not a copy of the ad", async () => {
+    // A promoted post: no creative on it created it, so there is nothing to copy.
+    const promoted = { id: "4005", name: "Promoted", effective_object_story_id: "6001_888", body: "Texto" };
+    const scan = { data: [{ id: "3005", status: "ACTIVE", creative: { id: "4005", effective_object_story_id: "6001_888" } }] };
+    routeFetch({ 3005: { id: "3005", account_id: "123", creative: { id: "4005" } }, 4005: promoted, permissions: GRANTED, ads: scan });
+
+    const result = await tool().handler({ ...ARGS, ad_ids: ["3005"] }) as ToolResult;
+
+    expect(JSON.parse(result.content[1].text).plans[0]).toMatchObject({ blocking: true, reason_code: "post_edit_no_temporary" });
   });
 
   it("refuses the edit when the token lacks pages_manage_posts, before scanning the account", async () => {
@@ -666,9 +677,9 @@ describe("ads_update_ad_content — editing the post (allow_post_edit)", () => {
 
     const result = await tool().handler({ ...ARGS, dry_run: false, plan_token }) as ToolResult;
 
-    // 3001 is moved back and resumed in the same write.
+    // No ad's status is touched: active 3001 keeps running throughout.
     expect(fetchCallSummary().filter((c) => !c.startsWith("GET"))).toEqual([
-      "POST /act_123/adcreatives", "POST /3001", "POST /3001", "POST /3005", "POST /6001_888",
+      "POST /act_123/adcreatives", "POST /3001", "POST /3005", "POST /6001_888",
       "POST /act_123/adcreatives", "POST /3001", "POST /3005", "DELETE /4900",
     ]);
     const report = JSON.parse(result.content[1].text);
@@ -695,8 +706,8 @@ describe("ads_update_ad_content — editing the post (allow_post_edit)", () => {
       "GET /4900": [{ id: "4900", effective_object_story_id: "6001_999" }],
       "GET /6001": [{ id: "6001", access_token: "page-token" }],
       "POST /6001_888": [{ success: true }],
-      // pause, detach, then moving it back is refused
-      "POST /3001": [{ success: true }, { success: true }, { error: { code: 100, message: "Refused" } }],
+      // moved off, then moving it back is refused
+      "POST /3001": [{ success: true }, { error: { code: 100, message: "Refused" } }],
       "GET /3001": [AD, { id: "3001", creative: { id: "4900" } }],
       "DELETE /4900": [{ error: { code: 100, message: "In use" } }],
     });
@@ -705,12 +716,12 @@ describe("ads_update_ad_content — editing the post (allow_post_edit)", () => {
 
     const text = result.content[0].text;
     expect(JSON.parse(result.content[1].text).failed).toEqual([{ ad_id: "3001", kind: "left_on_temporary" }]);
-    expect(text).toMatch(/Creative 4900, the temporary one, stays in the account and ad 3001 is still on it/);
+    expect(text).toMatch(/Creative 4900, the temporary one, stays in the account and ad 3001 may still be on it/);
     expect(text).not.toMatch(/No ad uses it/);
   });
 
   it("refuses a post used by more ads than one call can move back in time", async () => {
-    const crowded = { data: Array.from({ length: 11 }, (_, i) => ({
+    const crowded = { data: Array.from({ length: 6 }, (_, i) => ({
       id: String(3001 + i), status: "PAUSED", creative: { id: i === 0 ? "4002" : "4005", effective_object_story_id: "6001_888" },
     })) };
     routeFetch({ ...OBJECTS, ads: crowded });

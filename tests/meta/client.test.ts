@@ -249,6 +249,47 @@ describe("MetaApiClient", () => {
     });
   });
 
+  describe("bounded calls (timeoutMs)", () => {
+    it("never retries a bounded call, even on a transient error", async () => {
+      const retryClient = new MetaApiClient({ maxRetries: 3, timeout: 5000 });
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockFetchResponse({ error: { message: "Server error", type: "API_ERROR", code: 1 } })));
+
+      await expect(retryClient.postForm("/123", { status: "PAUSED" }, { accountId: "act_1", timeoutMs: 1000 })).rejects.toThrow();
+      expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
+    });
+
+    it("gives up a bounded call that does not answer in time", async () => {
+      vi.stubGlobal("fetch", vi.fn((_url: string, init: RequestInit) => new Promise((_resolve, reject) => {
+        init.signal?.addEventListener("abort", () => reject(Object.assign(new Error("aborted"), { name: "AbortError" })));
+      })));
+      const started = Date.now();
+
+      await expect(client.get("/me", {}, { timeoutMs: 50 })).rejects.toThrow(/timeout/i);
+      expect(Date.now() - started).toBeLessThan(1000);
+    });
+
+    it("gives up a bounded call whose answer does not arrive in time", async () => {
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+        ok: true, status: 200, headers: new Headers(),
+        json: () => new Promise(() => {}),
+      }));
+
+      await expect(client.get("/me", {}, { timeoutMs: 50 })).rejects.toThrow(/timeout/i);
+    });
+
+    it("sends nothing when pacing would hold a bounded write past its limit", async () => {
+      vi.stubGlobal("fetch", vi.fn());
+      vi.spyOn((client as unknown as { writePacer: { acquire: () => Promise<void> } }).writePacer, "acquire")
+        .mockReturnValue(new Promise((resolve) => setTimeout(resolve, 1000)));
+
+      const error = await client.postForm("/123", { status: "PAUSED" }, { accountId: "act_1", timeoutMs: 50 }).catch((e: unknown) => e);
+
+      expect(String((error as Error).message)).toMatch(/Not sent/);
+      expect((error as { code?: number }).code).toBe(-32600);
+      expect(vi.mocked(fetch)).not.toHaveBeenCalled();
+    });
+  });
+
   describe("retry behavior", () => {
     it("retries on server errors when retries are configured", async () => {
       const retryClient = new MetaApiClient({

@@ -8,10 +8,12 @@ import { metaApiClient } from "./client.js";
  * in memory for its duration: it is never logged, returned or stored. Editing
  * a Page post needs it, and the person needs pages_manage_posts on the Page.
  */
-export async function withPageToken<T>(pageId: string, work: () => Promise<T>): Promise<T> {
-  const page = await metaApiClient.get<{ access_token?: string }>(`/${validateMetaId(pageId, "page")}`, {
-    fields: "access_token",
-  });
+export async function withPageToken<T>(pageId: string, work: () => Promise<T>, timeoutMs?: number): Promise<T> {
+  const page = await metaApiClient.get<{ access_token?: string }>(
+    `/${validateMetaId(pageId, "page")}`,
+    { fields: "access_token" },
+    timeoutMs === undefined ? undefined : { timeoutMs },
+  );
   if (!page.access_token) {
     throw new Error(`Meta returned no Page access token for page ${pageId}: the person has to manage the Page and grant pages_manage_posts.`);
   }
