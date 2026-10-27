@@ -164,6 +164,21 @@ describe("ads_update_ad_content", () => {
     expect(other).not.toBe(first);
   });
 
+  it("keeps the plan_token when Meta returns the same creative with its keys in another order", async () => {
+    const args = { ad_ids: ["3001"], headlines: { set: ["Nuevo"] }, allow_new_post: true };
+    const { link_data } = MULTI_TEXT_CREATIVE.object_story_spec;
+    const reordered = {
+      ...MULTI_TEXT_CREATIVE,
+      object_story_spec: {
+        link_data: { call_to_action: link_data.call_to_action, image_hash: link_data.image_hash, link: link_data.link },
+        instagram_user_id: MULTI_TEXT_CREATIVE.object_story_spec.instagram_user_id,
+        page_id: MULTI_TEXT_CREATIVE.object_story_spec.page_id,
+      },
+    };
+    const first = await approvedToken(args, { 3001: AD_3001, 4001: MULTI_TEXT_CREATIVE });
+    expect(await approvedToken(args, { 3001: AD_3001, 4001: reordered })).toBe(first);
+  });
+
   it("writes nothing when the ads changed since the preview, and returns the new preview to approve", async () => {
     // Previewed: removing "Dos" from three texts keeps the post.
     const threeTexts = { ...MULTI_TEXT_CREATIVE, asset_feed_spec: { bodies: [{ text: "Uno" }, { text: "Dos" }, { text: "Tres" }], optimization_type: "DEGREES_OF_FREEDOM" } };

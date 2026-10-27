@@ -74,11 +74,32 @@ const NUMERIC_ID = /^\d+$/;
 // are immutable, so the same source creative gives the same body.
 function planToken(reports: GroupReport[], planningErrors: PlanningProblem[], failed: KindedFailure[]): string {
   const plan = {
-    plans: reports.map((r) => [r.creative_id, r.ad_ids, r.route ?? null, r.reason_code ?? null, r.body ?? null]),
+    plans: reports.map((r) => [r.creative_id, r.ad_ids, r.route ?? null, r.reason_code ?? null, r.body ? canonicalBody(r.body) : null]),
     planning_errors: planningErrors.map((p) => [p.creative_id, p.ad_ids, p.code]),
     unreadable: failed.map((f) => f.ad_id),
   };
   return createHash("sha256").update(JSON.stringify(plan)).digest("hex").slice(0, 32);
+}
+
+// Key order is not part of a plan: Meta may return the same creative with its
+// keys in another order, and the body's JSON fields inherit that order.
+function canonicalBody(body: Record<string, string>): unknown {
+  return sortKeys(Object.fromEntries(Object.entries(body).map(([key, value]) => [key, parseJson(value)])));
+}
+
+function parseJson(value: string): unknown {
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    return value;
+  }
+}
+
+function sortKeys(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortKeys);
+  if (value === null || typeof value !== "object") return value;
+  const record = value as Record<string, unknown>;
+  return Object.fromEntries(Object.keys(record).sort().map((key) => [key, sortKeys(record[key])]));
 }
 
 // The JSON block is built from these projections only: IDs, codes, field
