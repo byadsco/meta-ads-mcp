@@ -78,7 +78,7 @@ Route B (editing the post):
   - Its `object_story_spec.message` keeps the old one.
 - Headline and description cannot be edited. `name`, `description` and `call_to_action` are refused as top-level parameters and inside `link_edit[link_data]` ("Invalid keys … were found"); other `link_edit` shapes answer `requires exactly one key`.
 - `/act_{id}/ads` cannot filter by `effective_object_story_id` (nor `creative.effective_object_story_id`, `creative.object_story_id`): finding the ads on a post means reading the account's ads.
-- A creative an ad has used cannot be deleted while that ad exists (`subcode 3858800`), even after the ad moved to another creative.
+- Deleting the temporary creative once its ads moved back: refused once (`subcode 3858800`, content used in ads), and accepted right away in two later runs, after the post edit went through.
 - Ad posts report `is_published: false`, `status_type: "shared_story"`.
 
 ## Changing an ad's creative
