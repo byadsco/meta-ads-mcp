@@ -125,7 +125,7 @@ Ads tools use the `ads_*` naming convention, aligned with Meta's official MCP se
 | Help search | 1 | `ads_get_help_article` — curated Meta Business Help Center search |
 | Agency macros | 2 | `ads_diagnose_underperformance`, `ads_portfolio_summary` (cross-account) |
 | Bulk ad creation | 1 | `ads_bulk_create_video_ads` — video URLs → upload, processing wait, auto-thumbnail, creative and ad in one call |
-| Ad content editing | 1 | `ads_update_ad_content` — add, remove or replace the primary texts, headlines and descriptions of live ads, or change link, button or media; keeps the Facebook post when only primary texts change; dry run by default |
+| Ad content editing | 1 | `ads_update_ad_content` — add, remove or replace the primary texts, headlines and descriptions of live ads, or change link, button or media; keeps the Facebook post when only primary texts change, or edits the post itself for one-text ads (`allow_post_edit`); dry run by default |
 | Instagram | 2 | IG account and media lookup |
 | Ad Library (Apify) | 9 | Competitor ad research: `ads_library_scrape` the public Meta Ad Library by keyword or Facebook page, poll run status, page through results (each with a media summary and its offset), abort runs, `ads_library_get_ad_details` for the full card of one scraped ad with its images inline and its videos as thumbnails / keyframes / links, plus per-user Apify token register/status/delete |
 | Ad dossier | 1 | `ads_get_ad_dossier` — one ad in full: ad, ad set, campaign, creative with copy and effective landing URL, targeting, performance with the video retention funnel and auction rankings, plus the media itself |
@@ -357,6 +357,8 @@ SESSION_COOKIE_SECRET=$(openssl rand -base64 32)
 OAUTH_SECRET=$(openssl rand -hex 32)
 FIRESTORE_PROJECT_ID=my-gcp-project
 ```
+
+Permissions that need Meta App Review are asked for only when `META_OAUTH_EXTRA_SCOPES` lists them. For example, editing an ad's post (`ads_update_ad_content` with `allow_post_edit`) needs `pages_manage_posts`. Set it once Meta approved the permission; people with a role on the app can use it before. People then sign in again to grant it.
 
 For local development with `stdio` (no OAuth, no Firestore needed):
 

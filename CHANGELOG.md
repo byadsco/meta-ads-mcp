@@ -9,6 +9,28 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
+- **`ads_update_ad_content` can edit the ad's post itself (`allow_post_edit`).** For an ad with one primary text (an image or link ad, or a promoted post), the post gets the new text and keeps its likes, comments and shares on Facebook. Measured against the live API:
+  - Meta refuses to edit a post while any ad uses it. Every ad on the post moves to a temporary creative of its own: a copy of the ad, on a post of its own.
+    - The copy keeps the post's link, media and button, with the new text, or with the ad's text options when it shows them.
+    - It also keeps the ad's destination override, tracking, Advantage+ settings, per-platform media, labels and Instagram identity.
+    - The post is edited with a Page token about 40-50 seconds later, and each ad moves back.
+    - No ad's status is changed: active ads keep running on their copy for that minute.
+    - The response lists the temporary creatives, and the ones Meta refused to delete.
+  - An ad whose creative reuses the post goes back to it and keeps its Instagram media too. Meta refuses the creative that created the post once the post is edited, so those ads move to a new creative reusing it, and their Instagram starts over.
+  - The new text shows on every ad using the post. The preview lists them all, also the ones not asked for, with what happens to each one's Instagram. The `plan_token` covers every one of them, its status and the text Meta shows for it, so an edit of the post since the preview means nothing is written.
+  - Headline and description cannot be edited this way: Meta refuses them on the post.
+  - It needs `pages_manage_posts`, checked in the preview. One post per call, with no other change.
+  - A promoted post with an active ad and no creative of its own to copy is refused, since the active ad would run on something that is not a copy of it.
+  - So is a post with an active ad that has several text options: its copy would put those options over the post's own link and media, which can show headlines the ad never showed.
+  - At most 3 ads on the post. Every Meta call of an edit is bounded: never retried by the client, not sent if rate limits would hold it, and given up after 10 seconds, or 20 for moving an ad (Meta's ad updates were seen taking over 10). Before every step the edit checks that moving every ad back still fits in the request's time limit at those bounds. When it does not, it stops and puts everything back.
+  - One edit of a post at a time, with a lease shared by every server instance. An apply reads only the requested ads to find the post, takes its lease, and only then reads everything and checks the `plan_token`. An edit of the post that ended in between is never overwritten, and the account's ads are scanned once per apply.
+  - The lease store also counts the edits started on each post. The `plan_token` binds that count, and it goes up before an edit's first write. An approval given before another edit of the post therefore never applies, even while Meta's reads still show the old text.
+  - Meta's reads can lag behind an edit that just ran, so they only count when no edit of the post is running or ended less than three minutes ago. A released post stays locked for those three minutes. A preview is refused (`post_edit_recent`) when the post is busy right after its reads, or when its reads took over a minute.
+  - When Meta turns the edit down, nothing was written and every ad goes back. Any other failure counts as possibly written, even if a later attempt is turned down, and the post's text is read back. Anything but exactly the new text, spacing included, counts as unconfirmed, and every ad then moves to a creative that works either way.
+  - Any failure before the edit puts every ad back. An ad that cannot be moved back stays on the temporary creative, and the response says so. The temporary creative is deleted afterwards when Meta allows it; when it refuses, `leftover_creatives` lists it.
+  - Meta's reads can lag behind its writes (seen live). A move with no clear answer counts as possibly done: an ad whose move off the post got none is moved back anyway. One whose move back got none, and still reads as on the copy, is reported as `move_back_unconfirmed`, to be read again, not as stuck. A failed move back is confirmed only by a read showing a creative the ad never had: a read showing the one it had before the edit may predate the move off, so that ad is reported as `move_back_unconfirmed` too.
+- **Bounded Meta calls.** The Meta client takes a per-call `timeoutMs`. Such a call is never retried, is not sent if pacing would hold it past the limit (reported as refused), and gives up on an answer that takes longer, reading the body included.
+- **`META_OAUTH_EXTRA_SCOPES`** lists permissions that need Meta App Review (such as `pages_manage_posts`) for the login dialog to ask for. Only a fixed list is accepted; anything else is ignored.
 - **`ads_update_ad_content` edits live ads.** It can add, remove or replace primary texts, headlines and descriptions (including dropping one option of several), and change the link, button or media. Every ad gets a replacement creative and keeps its ID and history.
   - **Primary texts only, two or more left:** the ad keeps its Facebook post and that post's likes, comments and shares. The new creative references the same post with the new texts as text options; Instagram starts over and the Facebook headline stays the post's own (measured against the live API).
   - **Anything else:** it creates a new post, which resets the visible engagement, so it needs `allow_new_post: true`.

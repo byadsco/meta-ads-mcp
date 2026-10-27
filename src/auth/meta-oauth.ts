@@ -15,6 +15,29 @@ const DEFAULT_SCOPES = [
   "public_profile",
 ];
 
+// Scopes that need Meta App Review. The server asks for them only when its
+// operator lists them in META_OAUTH_EXTRA_SCOPES, once Meta approved them (or
+// while testing with people who have a role on the app). Nothing else from the
+// variable reaches the login dialog.
+const OPTIONAL_SCOPES: ReadonlySet<string> = new Set([
+  "pages_manage_posts",
+  "pages_read_user_content",
+  "pages_manage_ads",
+  "catalog_management",
+  "leads_retrieval",
+  "instagram_basic",
+  "instagram_branded_content_ads_brand",
+]);
+
+export function oauthScopes(): string[] {
+  const listed = (process.env.META_OAUTH_EXTRA_SCOPES ?? "").split(",").map((name) => name.trim()).filter(Boolean);
+  const ignored = listed.filter((name) => !OPTIONAL_SCOPES.has(name));
+  if (ignored.length > 0) {
+    logger.warn({ ignored: ignored.length }, "META_OAUTH_EXTRA_SCOPES lists scopes this server never requests; they were ignored");
+  }
+  return [...new Set([...DEFAULT_SCOPES, ...listed.filter((name) => OPTIONAL_SCOPES.has(name))])];
+}
+
 export interface MetaOAuthConfig {
   appId: string;
   appSecret: string;
@@ -47,7 +70,7 @@ export function buildAuthorizeUrl(
   url.searchParams.set("client_id", config.appId);
   url.searchParams.set("redirect_uri", config.redirectUri);
   url.searchParams.set("state", state);
-  url.searchParams.set("scope", DEFAULT_SCOPES.join(","));
+  url.searchParams.set("scope", oauthScopes().join(","));
   url.searchParams.set("response_type", "code");
   url.searchParams.set("auth_type", "rerequest");
   return url.toString();

@@ -52,6 +52,11 @@ Advantage+ AI features that rewrite copy or edit media stay off unless you list 
 1. `ads_update_ad_content` with the changes (`primary_texts`, `headlines`, `descriptions`, each with `set` / `add` / `remove`). It is a dry run by default.
 2. Show the person what the dry run reports for each creative: the copy before and after, and what happens to the post's likes, comments and shares.
    - Only primary texts change and two or more remain: the ad keeps its Facebook post, while Instagram starts over.
+   - One primary text changes on a one-text ad: with `allow_post_edit: true` the post itself is edited.
+     - Facebook keeps its engagement, and Instagram too when the ad reuses the post rather than having created it.
+     - The new text shows on every ad using the post, and the preview lists them.
+     - Active ones keep running on a temporary copy of the ad with the new text for about a minute. An active ad with several text options on that post blocks the edit: pause it first. After an edit, the same post can be edited again three minutes later.
+     - The token needs `pages_manage_posts`.
    - Anything else needs `allow_new_post: true`, and the new post starts from zero.
 3. Once they agree, run it again with `dry_run: false` and the `plan_token` the dry run returned. Only that exact plan is applied: if the ads changed in between, nothing is written and you get a new preview to show.
 

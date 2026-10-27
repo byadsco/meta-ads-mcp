@@ -1,5 +1,5 @@
 import { MAX_HEADLINE_LENGTH } from "./creative-spec.js";
-import { asRecord, carryOverFields, resolveInstagramUserId, withInstagramIdentity } from "./creative-rebuild.js";
+import { asRecord, carryOverFields, hasFeedContent, resolveInstagramUserId, withInstagramIdentity } from "./creative-rebuild.js";
 import { effectiveLinkUrl } from "./effective-link.js";
 import type { AdCreative } from "./types/index.js";
 
@@ -31,7 +31,17 @@ export interface Copy {
 
 export type CopySource = "text_options" | "link_data" | "video_data" | "post";
 
-export type Route = "same_post" | "new_post";
+export type Route = "same_post" | "new_post" | "edit_post";
+
+// Route B: the ad's post itself gets the new message.
+export interface PostEdit {
+  post_id: string;
+  page_id: string;
+  message: string;
+  // The creative reuses the post (object_story_id) rather than having created
+  // it: only such a creative can carry the ad again after the edit.
+  reuses_post: boolean;
+}
 
 export interface FieldChange {
   field: "link_url" | "call_to_action_type" | "image_hash" | "image_url" | "video_id" | "url_tags";
@@ -49,7 +59,16 @@ export type ReasonCode =
   | "per_platform_media"
   | "promoted_post"
   | "needs_new_post"
-  | "image_to_video";
+  | "image_to_video"
+  | "post_edit_url_tags"
+  | "post_edit_unsupported"
+  | "post_edit_alone"
+  | "post_edit_permission"
+  | "post_edit_scan_incomplete"
+  | "post_edit_too_many_ads"
+  | "post_edit_no_temporary"
+  | "post_edit_active_text_options"
+  | "post_edit_recent";
 
 export interface ContentPlan {
   before: Copy;
@@ -65,6 +84,7 @@ export interface ContentPlan {
   // With a route they are read from the replacement itself, so they include
   // anything the body changes beyond the request.
   field_changes?: FieldChange[];
+  post_edit?: PostEdit;
   social_proof?: { facebook: "kept" | "reset"; instagram: "kept" | "reset" };
   warnings: string[];
 }
@@ -271,7 +291,12 @@ function buildNewPostBody(creative: AdCreative, after: Copy, changes: ContentCha
   return body;
 }
 
-export function planContentEdit(creative: AdCreative, changes: ContentChanges, allowNewPost: boolean): ContentPlan {
+export function planContentEdit(
+  creative: AdCreative,
+  changes: ContentChanges,
+  allowNewPost: boolean,
+  allowPostEdit = false,
+): ContentPlan {
   const read = readCopy(creative);
   const empty: Copy = { primary: [], headlines: [], descriptions: [] };
   if ("unsupported" in read) {
@@ -362,6 +387,52 @@ export function planContentEdit(creative: AdCreative, changes: ContentChanges, a
     body.asset_feed_spec = JSON.stringify(feed);
     const sent = finish(body);
     return { before, ...previewOf(creative, sent), route: "same_post", body: sent, social_proof: { facebook: "kept", instagram: "reset" }, warnings };
+  }
+
+  // Route B: edit the post itself. Only its message can change (Meta refuses
+  // link_edit for headline and description), and an ad shows that message
+  // only when it has one primary text: an image or link ad, or a promoted post
+  // without text options.
+  const onlyPrimaryToOne = primaryChanged && !otherCopyChanged && !otherChanged && after.primary.length === 1;
+  if (allowPostEdit && onlyPrimaryToOne && creative.effective_object_story_id) {
+    const showsPostMessage = read.source === "link_data" || (read.source === "post" && !hasFeedContent(creative));
+    if (showsPostMessage && urlTagsChanged) {
+      return {
+        before, after, field_changes,
+        reason: "url_tags cannot change while the post is edited: change them on their own afterwards",
+        reason_code: "post_edit_url_tags", blocking: true, warnings,
+      };
+    }
+    if (showsPostMessage) {
+      // A creative that reuses the post carries its ads again as it is; one
+      // that created the post is replaced, with what it carries over.
+      const reusesPost = read.source === "post";
+      const postWarnings = reusesPost ? [] : [
+        ...warnings,
+        "Instagram starts over for these ads: once the post is edited, Meta does not let an ad go back to the creative that created it, so they move to a creative that reuses the post.",
+      ];
+      return {
+        before,
+        after,
+        field_changes: [],
+        route: "edit_post",
+        post_edit: {
+          post_id: creative.effective_object_story_id,
+          page_id: creative.effective_object_story_id.split("_")[0],
+          message: after.primary[0],
+          reuses_post: reusesPost,
+        },
+        social_proof: { facebook: "kept", instagram: reusesPost ? "kept" : "reset" },
+        warnings: postWarnings,
+      };
+    }
+    if (!allowNewPost) {
+      return {
+        before, after, field_changes,
+        reason: "editing the post changes only the text of image or link ads with one primary text and of promoted posts; this ad shows other text (a video or text options). Pass allow_new_post: true to give it a new post instead.",
+        reason_code: "post_edit_unsupported", blocking: true, warnings,
+      };
+    }
   }
 
   if (read.source === "post") {

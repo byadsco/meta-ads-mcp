@@ -1,3 +1,4 @@
+import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { getAccessToken, hashToken } from "../auth/token-store.js";
 import { logger } from "../utils/logger.js";
 import { RateLimiter, type RequestContext } from "./rate-limiter.js";
@@ -28,6 +29,24 @@ export interface MetaApiClientConfig {
 
 interface RequestScope {
   accountId?: string;
+  // A call with a hard end, for work that has to fit a deadline: it is never
+  // retried, it is not sent at all if pacing would hold it past this many
+  // milliseconds, and it gives up on an answer that takes longer.
+  timeoutMs?: number;
+}
+
+// Rejects with `late()` once `until` passes, unless `work` settles first.
+async function settleBy<T>(work: Promise<T>, until: number, late: () => Error): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(late()), Math.max(0, until - Date.now()));
+  });
+  work.catch(() => {});
+  try {
+    return await Promise.race([work, deadline]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /**
@@ -68,9 +87,10 @@ export class MetaApiClient {
   async get<T>(
     path: string,
     params?: Record<string, string | number | boolean | undefined>,
+    scope?: RequestScope,
   ): Promise<T> {
     const url = this.buildUrl(path, params);
-    return this.execute<T>("GET", url, path);
+    return this.execute<T>("GET", url, path, undefined, false, scope);
   }
 
   async post<T>(
@@ -113,9 +133,10 @@ export class MetaApiClient {
   async delete<T>(
     path: string,
     params?: Record<string, string | number | boolean | undefined>,
+    scope?: RequestScope,
   ): Promise<T> {
     const url = this.buildUrl(path, params);
-    return this.execute<T>("DELETE", url, path);
+    return this.execute<T>("DELETE", url, path, undefined, false, scope);
   }
 
   async getPaginated<T>(
@@ -223,16 +244,23 @@ export class MetaApiClient {
     // Circuit breaker is the hard stop: if open, never call Meta.
     this.circuitBreaker.assertClosed(circuitContext);
 
+    const endBy = scope?.timeoutMs !== undefined ? Date.now() + scope.timeoutMs : undefined;
+    // A bounded call that pacing would hold too long is not sent: Meta never
+    // sees it, so it is reported as refused, not as an unknown outcome.
+    const beforeSending = (wait: Promise<void>) => endBy === undefined
+      ? wait
+      : settleBy(wait, endBy, () => new McpError(ErrorCode.InvalidRequest, `Not sent: ${method} ${path} would have waited on rate limits past its ${scope?.timeoutMs} ms limit.`));
+
     // Preventive write pacing for POST / DELETE on account-scoped paths.
     const isWrite =
       (method === "POST" || method === "DELETE") &&
       accountId !== undefined;
     if (isWrite) {
-      await this.writePacer.acquire(tokenHash, accountId);
+      await beforeSending(this.writePacer.acquire(tokenHash, accountId));
     }
 
     // Reactive self-throttle based on last-known usage headers.
-    await this.rateLimiter.waitIfNeeded(context);
+    await beforeSending(this.rateLimiter.waitIfNeeded(context));
 
     const reqUrl = skipTokenParam ? url : this.appendToken(url, token);
 
@@ -252,15 +280,17 @@ export class MetaApiClient {
         /\/copies$/.test(path) ||
         /\/(message_templates|flows|message_qrdls|request_code)$/.test(path));
     const canRetryTransport = !isCreatingRequest;
+    const maxRetries = endBy === undefined ? this.maxRetries : 0;
+    const timeout = endBy === undefined ? this.timeout : Math.max(1, endBy - Date.now());
 
     let lastError: Error | undefined;
 
-    for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
         const controller = new AbortController();
         const timeoutId = setTimeout(
           () => controller.abort(),
-          this.timeout,
+          timeout,
         );
 
         const response = await fetch(reqUrl, {
@@ -269,7 +299,8 @@ export class MetaApiClient {
           signal: controller.signal,
         });
 
-        clearTimeout(timeoutId);
+        // A bounded call keeps its abort armed until the answer is read.
+        if (endBy === undefined) clearTimeout(timeoutId);
 
         // Update rate-limiter + pacer from response headers — regardless of
         // whether the response was OK. Throttle signals travel on error
@@ -279,7 +310,19 @@ export class MetaApiClient {
         this.maybeLogUsage();
         this.maybeLogVersionWarning(response.headers);
 
-        const body = (await response.json()) as unknown;
+        // A bounded call's limit covers reading the answer too, and running
+        // out of it cancels the transfer.
+        let body: unknown;
+        try {
+          body = endBy === undefined
+            ? await response.json()
+            : await settleBy(response.json() as Promise<unknown>, endBy, () => {
+              controller.abort();
+              return new Error(`Request timeout after ${scope?.timeoutMs}ms`);
+            });
+        } finally {
+          clearTimeout(timeoutId);
+        }
 
         if (isMetaApiError(body)) {
           const classification = classifyMetaError(body.error);
@@ -300,7 +343,7 @@ export class MetaApiClient {
             throw classification.mcpError;
           }
 
-          if (classification.retryable && canRetryTransport && attempt < this.maxRetries) {
+          if (classification.retryable && canRetryTransport && attempt < maxRetries) {
             lastError = classification.mcpError;
             await this.backoff(attempt);
             continue;
@@ -313,7 +356,7 @@ export class MetaApiClient {
           lastError = new Error(
             `HTTP ${response.status}: ${JSON.stringify(body)}`,
           );
-          if (response.status >= 500 && canRetryTransport && attempt < this.maxRetries) {
+          if (response.status >= 500 && canRetryTransport && attempt < maxRetries) {
             await this.backoff(attempt);
             continue;
           }
@@ -323,8 +366,8 @@ export class MetaApiClient {
         return body as T;
       } catch (error) {
         if (error instanceof Error && error.name === "AbortError") {
-          lastError = new Error(`Request timeout after ${this.timeout}ms`);
-          if (canRetryTransport && attempt < this.maxRetries) {
+          lastError = new Error(`Request timeout after ${timeout}ms`);
+          if (canRetryTransport && attempt < maxRetries) {
             await this.backoff(attempt);
             continue;
           }
@@ -337,7 +380,7 @@ export class MetaApiClient {
         }
 
         lastError = error instanceof Error ? error : new Error(String(error));
-        if (canRetryTransport && attempt < this.maxRetries) {
+        if (canRetryTransport && attempt < maxRetries) {
           await this.backoff(attempt);
           continue;
         }
