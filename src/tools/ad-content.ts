@@ -392,7 +392,11 @@ export function registerAdContentTools(server: McpServer, options: { clock?: Clo
       }
 
       const leaseHolder = randomUUID();
-      const readPlan = async () => {
+      // "locate" reads only the requested ads, to find the post an apply has
+      // to lock: the account scan and the checks of a post edit run once,
+      // under the lock ("locked"), where no other edit of the post can run,
+      // so how long the reads take does not matter there.
+      const readPlan = async (mode: "preview" | "locate" | "locked" = "preview") => {
         const readStartedAt = clock.now();
         const grouped = await groupAdsByCreative(ad_ids);
         const failed: KindedFailure[] = grouped.failed.map((f) => ({ ...f, kind: "read_failed" }));
@@ -440,7 +444,7 @@ export function registerAdContentTools(server: McpServer, options: { clock?: Clo
           if (plan.route) routed.push({ report, creative, group });
           if (plan.route && plan.body) actionable.push({ group, body: plan.body });
         }
-        await preparePostEdits(routed);
+        if (mode !== "locate") await preparePostEdits(routed);
         let postScope = reports.find((r) => r.route === "edit_post")?.post_scope;
         if (postScope) {
           // Checked after the reads: see READ_WINDOW_MS. The lease's own
@@ -448,7 +452,7 @@ export function registerAdContentTools(server: McpServer, options: { clock?: Clo
           const state = await leases.state(postScope.post.post_id, leaseHolder);
           const reason = state.busy
             ? `another edit of this post is running or ended less than ${SETTLE_MS / 60_000} minutes ago, and Meta's reads may not show it yet. Preview again in a few minutes`
-            : clock.now() - readStartedAt > READ_WINDOW_MS
+            : mode === "preview" && clock.now() - readStartedAt > READ_WINDOW_MS
               ? "reading the ads took too long to rule out an edit of this post in the meantime. Preview again"
               : undefined;
           if (reason) {
@@ -470,8 +474,8 @@ export function registerAdContentTools(server: McpServer, options: { clock?: Clo
 
       // An apply call writes only the plan the person saw: if the ads or the
       // request changed since that dry run, this call becomes a new preview.
-      let plan = await readPlan();
-      let planChanged = !preview && plan_token !== plan.token;
+      let plan = await readPlan(preview ? "preview" : "locate");
+      let planChanged = false;
 
       const updated: UpdatedAd[] = [];
       const warnings: string[] = [];
@@ -479,27 +483,26 @@ export function registerAdContentTools(server: McpServer, options: { clock?: Clo
       const leftover: string[] = [];
       let postEditOutcome: PostEditOutcome | undefined;
       let postEditBusy = false;
-      // Two edits of one post at once would move each other's ads, and one
-      // that ended between the reads above and the lock changed what was
-      // approved: under the lock everything is read and checked again, the
-      // post's count of edits included, since Meta's reads may not show that
-      // edit yet. The count then goes up before the first write, so every
-      // other approval of the post stops applying.
+      // Two edits of one post at once would move each other's ads, so a post
+      // edit is planned and checked against the approval under the post's
+      // lock, the post's count of edits included, since Meta's reads may not
+      // show another edit yet. The count then goes up before the first write,
+      // so every other approval of the post stops applying.
+      const postToLock = preview ? undefined : plan.reports.find((r) => r.route === "edit_post")?.post_edit?.post_id;
       let lockedPost: string | undefined;
-      if (!preview && !planChanged && !plan.blocked && plan.postScope) {
-        if (await leases.claim(plan.postScope.post.post_id, leaseHolder)) lockedPost = plan.postScope.post.post_id;
+      if (postToLock && !plan.blocked) {
+        if (await leases.claim(postToLock, leaseHolder)) lockedPost = postToLock;
         else postEditBusy = true;
       }
-      let aborted = postEditBusy || planChanged || (!preview && plan.blocked);
+      let aborted = false;
       try {
-        if (lockedPost) {
-          plan = await readPlan();
-          planChanged = plan_token !== plan.token;
-          aborted = planChanged || plan.blocked;
-          if (!aborted && !(await leases.advance(lockedPost, leaseHolder))) {
-            aborted = true;
-            postEditBusy = true;
-          }
+        // Without the lock, the full plan read again is the new preview.
+        if (postToLock) plan = await readPlan(lockedPost ? "locked" : "preview");
+        planChanged = !preview && plan_token !== plan.token;
+        aborted = postEditBusy || planChanged || (!preview && plan.blocked);
+        if (lockedPost && !aborted && !(await leases.advance(lockedPost, leaseHolder))) {
+          aborted = true;
+          postEditBusy = true;
         }
         if (preview || planChanged) {
           for (const { report, creative } of plan.routed) {
@@ -636,7 +639,7 @@ function summarize(
   state: { preview: boolean; aborted: boolean; planChanged: boolean; token: string; postEditOutcome?: PostEditOutcome; postEditBusy?: boolean },
 ): string {
   const lines: string[] = [];
-  const editedPost = reports.find((r) => r.route === "edit_post")?.post_scope?.post.post_id;
+  const editedPost = reports.find((r) => r.post_edit)?.post_edit?.post_id;
   if (state.postEditBusy) {
     lines.push(`Nothing was changed: another edit of post ${editedPost} is running or ended moments ago. Run a new dry run in a few minutes.`);
   } else if (state.planChanged) {

@@ -780,6 +780,7 @@ describe("ads_update_ad_content — editing the post (allow_post_edit)", () => {
 
     expect(fetchCallSummary().filter((c) => !c.startsWith("GET"))).toEqual([]);
     expect(JSON.parse(result.content[1].text)).toMatchObject({ aborted: true, plan_changed: true, plans: [{ reason_code: "post_edit_recent" }] });
+    expect(result.content[0].text).toMatch(/another edit of post 6001_888 is running/);
   });
 
   it("writes nothing when another edit takes the post's lock first", async () => {
@@ -913,12 +914,39 @@ describe("ads_update_ad_content — editing the post (allow_post_edit)", () => {
     expect(fetchCallSummary().filter((c) => !c.startsWith("GET"))).toEqual([]);
   });
 
-  it("checks the approval again once it holds the post's lock, so an edit that ended meanwhile is not overwritten", async () => {
+  it("reads the account's ads once when applying, while it holds the post's lock", async () => {
     const plan_token = await approvedToken(ARGS, OBJECTS);
     stubMeta({
       ...READS,
-      // The text approved before the lock, then the one another edit left by the time it is held.
-      "GET /4005": [REUSE, { ...REUSE, body: "Texto que otra edicion dejo" }],
+      "POST /act_123/adcreatives": [{ id: "4900" }, { id: "4950" }],
+      "GET /4900": [{ id: "4900", effective_object_story_id: "6001_999" }],
+      "GET /6001": [{ id: "6001", access_token: "page-token" }],
+    });
+    const meta = fetch;
+    let held = false;
+    const scans: boolean[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      if (new URL(url).pathname.endsWith("/act_123/ads")) scans.push(held);
+      return meta(url, init);
+    }));
+    const server = createMockMcpServer();
+    registerAdContentTools(server as never, {
+      clock: fakeClock(),
+      leases: { ...UNCOUNTED, claim: async () => (held = true), release: async () => { held = false; } },
+    });
+
+    const result = await server._registeredTools[0].handler({ ...ARGS, dry_run: false, plan_token }) as ToolResult;
+
+    expect(JSON.parse(result.content[1].text).post_edit).toMatchObject({ edited: true });
+    expect(scans).toEqual([true]);
+  });
+
+  it("checks the approval while it holds the post's lock, and frees the lock when the plan changed", async () => {
+    const plan_token = await approvedToken(ARGS, OBJECTS);
+    stubMeta({
+      ...READS,
+      // By the time the lock is held, another edit left its text on the post.
+      "GET /4005": [{ ...REUSE, body: "Texto que otra edicion dejo" }],
     });
 
     vi.useFakeTimers({ toFake: ["Date"] });
