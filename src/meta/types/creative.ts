@@ -30,7 +30,7 @@ export interface AdCreative {
   asset_feed_spec?: Record<string, unknown>;
   call_to_action_type?: CallToActionType;
   link_url?: string;
-  // Derived locally via extractEffectiveLinkUrl — NOT a real Meta field, so it
+  // Derived locally via effectiveLinkUrl — NOT a real Meta field, so it
   // must never be added to CREATIVE_DEFAULT_FIELDS (Graph API rejects it with #100).
   effective_link_url?: string;
   effective_object_story_id?: string;
@@ -48,7 +48,7 @@ export interface AdCreative {
 /** Fields this server derives locally; they are stripped before hitting Meta. */
 export const SYNTHETIC_CREATIVE_FIELDS = ["effective_link_url"] as const;
 
-/** Real fields extractEffectiveLinkUrl reads to derive effective_link_url. */
+/** Real fields effectiveLinkUrl reads to derive effective_link_url. */
 export const EFFECTIVE_LINK_URL_SOURCE_FIELDS = [
   "link_url",
   "object_story_spec",

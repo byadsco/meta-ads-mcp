@@ -40,13 +40,14 @@ export function registerCommentTools(server: McpServer): void {
 
       if (!objectId && ad_id) {
         const adId = validateMetaId(ad_id, "ad");
-        const ad = await metaApiClient.get<{ effective_object_story_id?: string }>(
+        // The post ID lives on the ad's creative; the Ad node rejects
+        // effective_object_story_id.
+        const ad = await metaApiClient.get<{ creative?: { effective_object_story_id?: string } }>(
           `/${adId}`,
-          { fields: "effective_object_story_id" },
+          { fields: "creative{effective_object_story_id}" },
         );
-        objectId = ad.effective_object_story_id
-          ? validateMetaId(ad.effective_object_story_id, "post")
-          : undefined;
+        const postId = ad.creative?.effective_object_story_id;
+        objectId = postId ? validateMetaId(postId, "post") : undefined;
         if (!objectId) {
           return {
             content: [

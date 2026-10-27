@@ -13,6 +13,7 @@ import { READ, CREATE, UPDATE, DELETE, WRITE_WARNING } from "./_register.js";
 import { getCloneBundleStore, STALE_IN_PROGRESS_MS } from "../store/clone-bundle-store.js";
 import { adaptCopiedTargetingForCreate } from "../meta/targeting-compat.js";
 import { ctaEnum } from "./creatives.js";
+import { carryOverFields, withInstagramIdentity } from "../meta/creative-rebuild.js";
 
 const statusEnum = z.enum(["ACTIVE", "PAUSED", "DELETED", "ARCHIVED"]);
 
@@ -524,7 +525,11 @@ export function registerAdSetTools(server: McpServer): void {
         let sourceCreative: AdCreative | undefined;
         if (override && sourceCreativeId) {
           sourceCreative = await metaApiClient.get<AdCreative>(`/${sourceCreativeId}`, {
-            fields: buildFieldsParam(undefined, [...CREATIVE_DEFAULT_FIELDS, "destination_spec", "wamo_whatsapp_identity_spec"]),
+            fields: buildFieldsParam(undefined, [
+              ...CREATIVE_DEFAULT_FIELDS, "destination_spec", "wamo_whatsapp_identity_spec",
+              "degrees_of_freedom_spec", "adlabels", "contextual_multi_ads", "instagram_user_id",
+              "platform_customizations",
+            ]),
           });
         }
         adPlans.push({
@@ -731,19 +736,22 @@ export function registerAdSetTools(server: McpServer): void {
           try {
             const patched = buildPatchedObjectStorySpec(plan.sourceCreative, plan.override);
             if (!patched) throw new Error("source creative has no patchable object_story_spec.");
+            // The swap keeps everything beside the story that the native copy
+            // would have kept: UTM tags, Advantage+ settings (minus the
+            // deprecated standard_enhancements), destination, WhatsApp
+            // identity, multi-advertiser choice and ad labels.
+            const carried = carryOverFields(plan.sourceCreative);
+            warnings.push(...carried.warnings);
             const creativeBody: Record<string, string> = {
               name: plan.override.name ?? plannedName,
-              object_story_spec: JSON.stringify(patched),
+              object_story_spec: JSON.stringify(withInstagramIdentity(patched, plan.sourceCreative)),
+              ...carried.body,
             };
-            // Without it, Marketing API v26.0+ defaults a shop advertiser's new
-            // creative to Website and Shop.
-            if (plan.sourceCreative.destination_spec) {
-              creativeBody.destination_spec = JSON.stringify(plan.sourceCreative.destination_spec);
+            // The source's creative-level link override must follow the new link.
+            if (plan.override.link_url !== undefined && creativeBody.link_url !== undefined) {
+              creativeBody.link_url = plan.override.link_url;
             }
-            // v26.0+ no longer defaults the WhatsApp identity for third-party callers.
-            if (plan.sourceCreative.wamo_whatsapp_identity_spec) {
-              creativeBody.wamo_whatsapp_identity_spec = JSON.stringify(plan.sourceCreative.wamo_whatsapp_identity_spec);
-            }
+            if (plan.sourceCreative.url_tags) creativeBody.url_tags = plan.sourceCreative.url_tags;
             const newCreative = await metaApiClient.postForm<{ id: string }>(
               `/${accountPath}/adcreatives`,
               creativeBody,

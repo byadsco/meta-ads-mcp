@@ -1,6 +1,6 @@
 ---
 name: meta-ads-mcp-guide
-description: Use when working with Meta (Facebook/Instagram) ads through the meta-ads-mcp server — reading accounts, campaigns, ad sets, ads, creatives, insights, audiences, rules or WhatsApp Business, and whenever you need to pick the right tool out of the 142 this server registers. Covers which tool answers which question, what each one costs, which ones change live data, and the ID and permission rules that make calls fail. Read this before guessing a tool name.
+description: Use when working with Meta (Facebook/Instagram) ads through the meta-ads-mcp server — reading accounts, campaigns, ad sets, ads, creatives, insights, audiences, rules or WhatsApp Business, and whenever you need to pick the right tool out of the 143 this server registers. Covers which tool answers which question, what each one costs, which ones change live data, and the ID and permission rules that make calls fail. Read this before guessing a tool name.
 ---
 
 # Working with meta-ads-mcp
@@ -17,7 +17,7 @@ Three things are worth knowing before the first call.
 
 ## Choosing a tool
 
-`references/tool-map.md` lists all 142 grouped by intent. The shortest path for the common asks:
+`references/tool-map.md` lists all 143 grouped by intent. The shortest path for the common asks:
 
 | The ask | Start with |
 |---|---|
@@ -59,6 +59,6 @@ Writes are irreversible in practice. Meta has no undo, and a deleted campaign ta
 
 ## Files in this skill
 
-- `references/tool-map.md` — all 142 tools by intent, with write tools marked.
+- `references/tool-map.md` — all 143 tools by intent, with write tools marked.
 - `references/workflows.md` — the call sequences for the recurring jobs.
 - `references/safety-and-costs.md` — what costs money, what changes live data, and the limits to respect.

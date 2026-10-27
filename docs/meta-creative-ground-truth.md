@@ -71,6 +71,12 @@ Route B (editing the post):
 - Headline and description: `name` and `description` are not accepted parameters, and `link_edit` answered `requires exactly one key` with a single-key object. Not solved.
 - Ad posts report `is_published: false`, `status_type: "shared_story"`.
 
+## Changing an ad's creative
+
+- `POST /{ad_id}` with `creative={"creative_id": …}` keeps the ad's ID. Meta allows it at most once every 30 seconds per ad: a second change within that window fails with `(#613) Calls to this API have exceeded the concurrent request rate limit of 1 calls per 30 seconds`, and the ad keeps its previous creative.
+- A creative read back with `asset_feed_spec` and `object_story_spec` (text options) can be resent as is to create a replacement: Meta accepted it, with a new post.
+- A creative made by route A (`object_story_id` + text options, no spec) can go through route A again.
+
 ## Reading engagement
 
 - Instagram: `GET /{ig_media_id}?fields=like_count,comments_count` works with `instagram_basic`.

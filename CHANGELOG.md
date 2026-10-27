@@ -9,6 +9,19 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
+- **`ads_update_ad_content` edits live ads.** It can add, remove or replace primary texts, headlines and descriptions (including dropping one option of several), and change the link, button or media. Every ad gets a replacement creative and keeps its ID and history.
+  - **Primary texts only, two or more left:** the ad keeps its Facebook post and that post's likes, comments and shares. The new creative references the same post with the new texts as text options; Instagram starts over and the Facebook headline stays the post's own (measured against the live API).
+  - **Anything else:** it creates a new post, which resets the visible engagement, so it needs `allow_new_post: true`.
+  - **Dry run by default.** The first call shows the copy before and after, any link, button, media or `url_tags` change, the route and the engagement at stake. The preview is read from the replacement creative about to be sent, compared field by field with the current one, so it also shows what a change brings along: a video given a new link without a button gets a `LEARN_MORE` button, and the preview says so. Values are shown exactly, as quoted strings with line breaks and invisible characters escaped, so a change of spacing alone is visible. A value over 1,000 characters is cut and ends with its full length and a fingerprint of the whole value, so values that differ past the cut still look different.
+  - **Only the approved plan is applied.** The dry run returns a `plan_token` that covers the ads, their source creatives, the route and the exact replacement to send. `dry_run: false` requires it, and if the ads or the request changed since the dry run, nothing is written and the reply is the new preview with a new `plan_token`.
+  - **Untrusted text stays in the fenced summary.** The JSON block carries only IDs, codes (`reason_code`, failure `kind`), field names and counts. Ad copy, URLs, Meta's error messages and notes about engagement that could not be read appear only inside the fence. A malformed ad ID or `video_id` is refused by its position, without repeating it.
+  - **Leftovers are reported.** If the batch stops and a replacement creative cannot be deleted, `leftover_creatives` lists it; no ad uses it.
+  - **All or nothing on the plan.** The batch changes nothing if any ad cannot be read, has an invalid change, or needs a route that is not allowed, or if any replacement creative cannot be created: every replacement is created before any ad is repointed. If Meta then refuses a repoint, the ads already repointed stay changed and are listed with their previous creative.
+  - **Repeats:** repeating a set, link, button or media change that is already applied leaves the ad alone. `add` and `remove` are not repeatable, so after a partial failure preview again with only the ads that failed.
+  - **Concurrent edits:** each ad is read again right before its repoint. If someone moved it to another creative meanwhile, it is left untouched.
+  - **Per-platform media:** `platform_customizations` is kept on replacements. An ad that has it cannot get a new image or video here, because the other platforms would keep the old one.
+  - **Undo:** the response lists each ad's previous creative.
+- **`ads_update_ad_url_tags` can rebuild ads with text options** when `allow_new_post` is set. Without it they are skipped, as before.
 - **Several primary texts, headlines and descriptions per ad.**
   `ads_create_ad_creative`, `ads_bulk_create_video_ads` and
   `ads_generate_preview` take `primary_texts`, `headlines` and `descriptions`
@@ -35,6 +48,11 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Fixed
 
+- **`ads_update_ad_url_tags` works on creatives built before v22.0.** They still report `standard_enhancements`, which Meta rejects in any form, so cloning their Advantage+ settings failed. The replacement now drops that key and keeps the rest. It also keeps `contextual_multi_ads`, and carousels whose feed holds only `promotional_metadata` reuse their post again instead of being skipped.
+- **`ads_get_ad_comments` with `ad_id` finds the ad's post again.** It asked the Ad node for `effective_object_story_id`, which Meta rejects there; it now reads it from the ad's creative.
+- **`ads_delete_ad` explains dynamic-creative ads.** Meta refuses to delete such an ad on its own (subcode 1340029). The tool checks the ad set first and points to `ads_delete_ad_set` or pausing it.
+- **`ads_clone_ad_set_bundle` keeps everything beside the story on a swapped creative.** When a creative override swaps in a patched creative, it now keeps the source's UTM tags, Advantage+ settings (minus `standard_enhancements`), multi-advertiser choice and ad labels. It used to drop them.
+- **`ads_update_ad_content` and `ads_get_ad_dossier` share the untrusted-content fence.** Ad copy shows only inside it, one bounded line per text.
 - **A scratch-built video creative keeps its description.**
   `ads_create_ad_creative` dropped it; it now goes in
   `video_data.link_description`, and `ads_generate_preview` sends a raw

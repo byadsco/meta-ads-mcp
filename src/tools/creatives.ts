@@ -24,6 +24,7 @@ import {
   buildStorySpec,
 } from "../meta/creative-spec.js";
 import { normalizeUrlTags } from "../utils/validation.js";
+import { effectiveLinkUrl } from "../meta/effective-link.js";
 
 export const ctaEnum = z.enum(CTA_TYPES);
 
@@ -107,22 +108,6 @@ export function getNestedString(record: Record<string, unknown> | undefined, pat
   return typeof current === "string" && current.length > 0 ? current : undefined;
 }
 
-function extractEffectiveLinkUrl(creative: AdCreative): string | undefined {
-  if (creative.link_url) return creative.link_url;
-
-  const objectStorySpec = asRecord(creative.object_story_spec);
-  const videoData = asRecord(objectStorySpec?.["video_data"]);
-  const linkData = asRecord(objectStorySpec?.["link_data"]);
-  const assetFeedSpec = asRecord(creative.asset_feed_spec);
-
-  return (
-    getNestedString(videoData, ["call_to_action", "value", "link"])
-    ?? getString(linkData, "link")
-    ?? getNestedString(linkData, ["call_to_action", "value", "link"])
-    ?? getNestedString(assetFeedSpec, ["link_urls", "0", "website_url"])
-  );
-}
-
 // Callers sometimes pass Graph-style comma-joined lists as a single array
 // entry. Split those so a synthetic field hidden inside one cannot slip
 // through, but only on top-level commas: the ones inside a nested selector
@@ -168,9 +153,9 @@ function buildCreativeFieldsParam(fields?: string[]): string {
 }
 
 export function withDerivedEffectiveLinkUrl(creative: AdCreative): AdCreative {
-  const effectiveLinkUrl = extractEffectiveLinkUrl(creative);
-  return effectiveLinkUrl && !creative.effective_link_url
-    ? { ...creative, effective_link_url: effectiveLinkUrl }
+  const effectiveLink = effectiveLinkUrl(creative);
+  return effectiveLink && !creative.effective_link_url
+    ? { ...creative, effective_link_url: effectiveLink }
     : creative;
 }
 

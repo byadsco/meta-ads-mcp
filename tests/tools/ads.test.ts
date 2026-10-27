@@ -12,6 +12,7 @@ type ToolResult = { content: Array<{ type: string; text: string }> };
 
 const UPDATE_AD = 3;
 const UPDATE_URL_TAGS = 4;
+const DELETE_AD = 5;
 
 function bodyOf(callIndex: number): URLSearchParams {
   const call = vi.mocked(fetch).mock.calls[callIndex];
@@ -142,7 +143,7 @@ describe("registerAdTools", () => {
       const creativeFields = new URL(vi.mocked(fetch).mock.calls[1][0] as string)
         .searchParams.get("fields");
       expect(creativeFields).toBe(
-        "id,name,object_story_spec,asset_feed_spec,effective_object_story_id,url_tags,instagram_user_id,source_instagram_media_id,effective_instagram_media_id,link_url,degrees_of_freedom_spec,destination_spec,wamo_whatsapp_identity_spec,call_to_action_type,adlabels",
+        "id,name,object_story_spec,asset_feed_spec,effective_object_story_id,url_tags,instagram_user_id,source_instagram_media_id,effective_instagram_media_id,link_url,degrees_of_freedom_spec,destination_spec,wamo_whatsapp_identity_spec,call_to_action_type,adlabels,contextual_multi_ads,platform_customizations",
       );
       expect(creativeFields).not.toContain("effective_link_url");
 
@@ -422,15 +423,84 @@ describe("registerAdTools", () => {
       expect(report.updated).toHaveLength(1);
     });
 
-    it("carries the destination override and Advantage+ enhancement settings", async () => {
+    it("carries the destination override and Advantage+ settings, minus the deprecated standard_enhancements", async () => {
       const server = createMockMcpServer();
       registerAdTools(server as never);
-      const dof = { creative_features_spec: { standard_enhancements: { enroll_status: "OPT_IN" } } };
+      const dof = {
+        creative_features_spec: {
+          standard_enhancements: { enroll_status: "OPT_IN" },
+          image_touchups: { enroll_status: "OPT_IN" },
+          text_optimizations: { enroll_status: "OPT_OUT" },
+        },
+      };
       vi.stubGlobal("fetch", vi.fn()
         .mockResolvedValueOnce(mockFetchResponse(adResponse()))
         .mockResolvedValueOnce(mockFetchResponse(specCreative({
           link_url: "https://byads.co/landing",
           degrees_of_freedom_spec: dof,
+          contextual_multi_ads: { enroll_status: "OPT_OUT" },
+        })))
+        .mockResolvedValueOnce(mockFetchResponse({ id: "4100" }))
+        .mockResolvedValueOnce(mockFetchResponse({ success: true })));
+
+      const handler = server._registeredTools[UPDATE_URL_TAGS].handler;
+      const result = await handler({ ad_ids: ["3001"], url_tags: "utm_source=meta", dry_run: false }) as ToolResult;
+
+      expect(bodyOf(2).get("link_url")).toBe("https://byads.co/landing");
+      expect(JSON.parse(bodyOf(2).get("degrees_of_freedom_spec") ?? "{}")).toEqual({
+        creative_features_spec: {
+          image_touchups: { enroll_status: "OPT_IN" },
+          text_optimizations: { enroll_status: "OPT_OUT" },
+        },
+      });
+      expect(JSON.parse(bodyOf(2).get("contextual_multi_ads") ?? "{}")).toEqual({ enroll_status: "OPT_OUT" });
+      const report = JSON.parse(result.content[1].text) as { warnings: string[] };
+      expect(report.warnings.join(" ")).toMatch(/Dropped standard_enhancements/);
+    });
+
+    it("rebuilds an ad with text options only when allow_new_post is set, resending its feed", async () => {
+      const server = createMockMcpServer();
+      registerAdTools(server as never);
+      const feed = { bodies: [{ text: "Uno" }, { text: "Dos" }], titles: [{ text: "T" }], optimization_type: "DEGREES_OF_FREEDOM" };
+      const multiText = specCreative({ asset_feed_spec: feed, effective_object_story_id: "6001_777" });
+      vi.stubGlobal("fetch", vi.fn()
+        .mockResolvedValueOnce(mockFetchResponse(adResponse()))
+        .mockResolvedValueOnce(mockFetchResponse(multiText))
+        .mockResolvedValueOnce(mockFetchResponse({ id: "4100" }))
+        .mockResolvedValueOnce(mockFetchResponse({ success: true })));
+
+      const handler = server._registeredTools[UPDATE_URL_TAGS].handler;
+      const result = await handler({ ad_ids: ["3001"], url_tags: "utm_source=meta", allow_new_post: true, dry_run: false }) as ToolResult;
+
+      expect(bodyOf(2).get("object_story_id")).toBeNull();
+      expect(JSON.parse(bodyOf(2).get("asset_feed_spec") ?? "{}")).toEqual(feed);
+      expect(bodyOf(2).get("object_story_spec")).not.toBeNull();
+      const report = JSON.parse(result.content[1].text) as { updated: unknown[] };
+      expect(report.updated).toHaveLength(1);
+    });
+
+    it("keeps an Instagram identity stored beside the spec when it clones the spec", async () => {
+      const server = createMockMcpServer();
+      registerAdTools(server as never);
+      vi.stubGlobal("fetch", vi.fn()
+        .mockResolvedValueOnce(mockFetchResponse(adResponse()))
+        .mockResolvedValueOnce(mockFetchResponse(specCreative({ instagram_user_id: "17841400000000009" })))
+        .mockResolvedValueOnce(mockFetchResponse({ id: "4100" }))
+        .mockResolvedValueOnce(mockFetchResponse({ success: true })));
+
+      await server._registeredTools[UPDATE_URL_TAGS].handler({ ad_ids: ["3001"], url_tags: "utm_source=meta", dry_run: false });
+
+      expect(JSON.parse(bodyOf(2).get("object_story_spec") ?? "{}").instagram_user_id).toBe("17841400000000009");
+    });
+
+    it("treats a feed with no content keys as no feed, so a carousel keeps its post", async () => {
+      const server = createMockMcpServer();
+      registerAdTools(server as never);
+      vi.stubGlobal("fetch", vi.fn()
+        .mockResolvedValueOnce(mockFetchResponse(adResponse()))
+        .mockResolvedValueOnce(mockFetchResponse(specCreative({
+          asset_feed_spec: { promotional_metadata: { allowed_coupon_code_sources: [] } },
+          effective_object_story_id: "6001_777",
         })))
         .mockResolvedValueOnce(mockFetchResponse({ id: "4100" }))
         .mockResolvedValueOnce(mockFetchResponse({ success: true })));
@@ -438,8 +508,8 @@ describe("registerAdTools", () => {
       const handler = server._registeredTools[UPDATE_URL_TAGS].handler;
       await handler({ ad_ids: ["3001"], url_tags: "utm_source=meta", dry_run: false });
 
-      expect(bodyOf(2).get("link_url")).toBe("https://byads.co/landing");
-      expect(JSON.parse(bodyOf(2).get("degrees_of_freedom_spec") ?? "{}")).toEqual(dof);
+      expect(bodyOf(2).get("object_story_id")).toBe("6001_777");
+      expect(bodyOf(2).get("asset_feed_spec")).toBeNull();
     });
 
     // Since Marketing API v26.0 a new creative for an advertiser with a shop
@@ -730,6 +800,31 @@ describe("registerAdTools", () => {
         failed: Array<{ ad_id: string; error: string }>;
       };
       expect(report.failed[0].ad_id).toBe("3001");
+    });
+  });
+
+  describe("ads_delete_ad handler", () => {
+    it("soft-deletes an ad after checking its ad set", async () => {
+      const server = createMockMcpServer();
+      registerAdTools(server as never);
+      vi.stubGlobal("fetch", vi.fn()
+        .mockResolvedValueOnce(mockFetchResponse({ id: "3001", adset: { id: "2001", is_dynamic_creative: false } }))
+        .mockResolvedValueOnce(mockFetchResponse({ success: true })));
+
+      await server._registeredTools[DELETE_AD].handler({ ad_id: "3001" });
+
+      expect(bodyOf(1).get("status")).toBe("DELETED");
+    });
+
+    it("explains instead of failing when the ad belongs to a dynamic-creative ad set", async () => {
+      const server = createMockMcpServer();
+      registerAdTools(server as never);
+      vi.stubGlobal("fetch", vi.fn()
+        .mockResolvedValueOnce(mockFetchResponse({ id: "3001", adset: { id: "2001", is_dynamic_creative: true } })));
+
+      await expect(server._registeredTools[DELETE_AD].handler({ ad_id: "3001" }))
+        .rejects.toThrow(/dynamic-creative ad set 2001.*ads_delete_ad_set/);
+      expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
     });
   });
 });
