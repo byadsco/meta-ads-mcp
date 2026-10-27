@@ -4,7 +4,7 @@ import { metaApiClient } from "../../src/meta/client.js";
 import {
   advancePostEditGeneration,
   claimPostEditLease,
-  postEditGeneration,
+  postEditState,
   releasePostEditLease,
   resetPostEditLeasesForTests,
 } from "../../src/store/post-edit-lease.js";
@@ -608,7 +608,7 @@ describe("ads_update_ad_content — editing the post (allow_post_edit)", () => {
     "GET /me/permissions": [GRANTED], "GET /act_123/ads": [SCAN],
   };
   // For lease fakes that only test claim and release.
-  const UNCOUNTED = { generation: async () => 0, advance: async () => true };
+  const UNCOUNTED = { state: async () => ({ generation: 0, busy: false }), advance: async () => true };
 
   beforeEach(() => {
     setupTestToken();
@@ -702,7 +702,7 @@ describe("ads_update_ad_content — editing the post (allow_post_edit)", () => {
     expect(report.post_edit).toMatchObject({ edited: true, temporary_creatives: ["4900"], temporary_left: ["4900"], new_creatives: ["4950"] });
     expect(report.leftover_creatives).toEqual(["4900"]);
     // Counted before its first write: every earlier approval of the post is stale.
-    expect(await postEditGeneration("6001_888")).toBe(1);
+    expect((await postEditState("6001_888")).generation).toBe(1);
     expect(result.content[1].text).not.toContain("page-token");
     const text = result.content[0].text;
     expect(text).toMatch(/post 6001_888 was edited/i);
@@ -745,12 +745,50 @@ describe("ads_update_ad_content — editing the post (allow_post_edit)", () => {
     expect(JSON.parse(result.content[1].text).plans[0]).toMatchObject({ blocking: true, reason_code: "post_edit_too_many_ads" });
   });
 
+  it("refuses to preview while another edit of the post runs, and for a while after it ends", async () => {
+    routeFetch(OBJECTS);
+    await claimPostEditLease("6001_888", "another-edit");
+
+    const during = await tool().handler(ARGS) as ToolResult;
+    await releasePostEditLease("6001_888", "another-edit");
+    const after = await tool().handler(ARGS) as ToolResult;
+
+    for (const result of [during, after]) {
+      expect(JSON.parse(result.content[1].text).plans[0]).toMatchObject({ blocking: true, reason_code: "post_edit_recent" });
+    }
+    expect(after.content[0].text).toMatch(/Meta's reads may not show it yet/);
+  });
+
+  it("refuses a preview whose reads took too long to rule out an edit of the post in between", async () => {
+    routeFetch(OBJECTS);
+    const server = createMockMcpServer();
+    let t = 0;
+    // Each look at the clock is a minute and a half later.
+    registerAdContentTools(server as never, { clock: { now: () => (t += 90_000), sleep: async () => {} } });
+
+    const result = await server._registeredTools[0].handler(ARGS) as ToolResult;
+
+    expect(JSON.parse(result.content[1].text).plans[0]).toMatchObject({ blocking: true, reason_code: "post_edit_recent" });
+  });
+
   it("writes nothing while another edit of the same post is running", async () => {
     const plan_token = await approvedToken(ARGS, OBJECTS);
     await claimPostEditLease("6001_888", "another-edit");
     routeFetch(OBJECTS);
 
     const result = await tool().handler({ ...ARGS, dry_run: false, plan_token }) as ToolResult;
+
+    expect(fetchCallSummary().filter((c) => !c.startsWith("GET"))).toEqual([]);
+    expect(JSON.parse(result.content[1].text)).toMatchObject({ aborted: true, plan_changed: true, plans: [{ reason_code: "post_edit_recent" }] });
+  });
+
+  it("writes nothing when another edit takes the post's lock first", async () => {
+    const plan_token = await approvedToken(ARGS, OBJECTS);
+    routeFetch(OBJECTS);
+    const server = createMockMcpServer();
+    registerAdContentTools(server as never, { clock: fakeClock(), leases: { ...UNCOUNTED, claim: async () => false, release: async () => {} } });
+
+    const result = await server._registeredTools[0].handler({ ...ARGS, dry_run: false, plan_token }) as ToolResult;
 
     expect(fetchCallSummary().filter((c) => !c.startsWith("GET"))).toEqual([]);
     expect(JSON.parse(result.content[1].text)).toMatchObject({ aborted: true, post_edit: { busy: true } });
@@ -763,7 +801,7 @@ describe("ads_update_ad_content — editing the post (allow_post_edit)", () => {
     const server = createMockMcpServer();
     registerAdContentTools(server as never, {
       clock: fakeClock(),
-      leases: { claim: async () => true, release: async () => {}, generation: async () => 0, advance: async () => false },
+      leases: { claim: async () => true, release: async () => {}, state: async () => ({ generation: 0, busy: false }), advance: async () => false },
     });
 
     const result = await server._registeredTools[0].handler({ ...ARGS, dry_run: false, plan_token }) as ToolResult;
@@ -883,11 +921,18 @@ describe("ads_update_ad_content — editing the post (allow_post_edit)", () => {
       "GET /4005": [REUSE, { ...REUSE, body: "Texto que otra edicion dejo" }],
     });
 
-    const result = await tool().handler({ ...ARGS, dry_run: false, plan_token }) as ToolResult;
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const result = await tool().handler({ ...ARGS, dry_run: false, plan_token }) as ToolResult;
 
-    expect(JSON.parse(result.content[1].text).plan_changed).toBe(true);
-    expect(fetchCallSummary().filter((c) => !c.startsWith("GET"))).toEqual([]);
-    expect(await claimPostEditLease("6001_888", "next-edit")).toBe(true);
+      expect(JSON.parse(result.content[1].text).plan_changed).toBe(true);
+      expect(fetchCallSummary().filter((c) => !c.startsWith("GET"))).toEqual([]);
+      // Released: free once the post has settled, well before the lease would expire.
+      vi.setSystemTime(Date.now() + 3 * 60_000 + 1_000);
+      expect(await claimPostEditLease("6001_888", "next-edit")).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("applies the approved plan when Meta lists the ads on the post in another order", async () => {

@@ -5,12 +5,15 @@ import { getFirestore, isFirestoreEnabled } from "./firestore.js";
 // same post would each move the other's ads. A lease outlives a crashed
 // holder by at most LEASE_MS, longer than an edit can take.
 //
-// Each post also counts the edits started on it (its generation). A plan
-// binds the count it was previewed at: Meta's reads can lag behind an edit
-// that already ran, but this count is read where it is written, so an edit
-// started since the preview always shows.
+// Meta's reads can lag behind an edit that already ran, so they only count
+// when no edit of the post is running or ended less than SETTLE_MS ago: a
+// released post stays busy that long, and no edit or preview starts on it.
+// Each post also counts the edits started on it (its generation), read where
+// it is written: a plan binds it, so an edit started after the preview always
+// shows.
 const COLLECTION = "post_edit_leases";
 const LEASE_MS = 10 * 60 * 1000;
+export const SETTLE_MS = 3 * 60 * 1000;
 
 interface Lease {
   holder: string | null;
@@ -18,33 +21,45 @@ interface Lease {
   generation?: number;
 }
 
+export interface PostEditState {
+  generation: number;
+  // An edit by someone other than the asker is running, or one ended less
+  // than SETTLE_MS ago.
+  busy: boolean;
+}
+
 interface LeaseStore {
   claim(postId: string, holder: string): Promise<boolean>;
   release(postId: string, holder: string): Promise<void>;
-  generation(postId: string): Promise<number>;
+  state(postId: string, asker?: string): Promise<PostEditState>;
   advance(postId: string, holder: string): Promise<boolean>;
 }
 
 const holds = (lease: Lease | undefined, holder: string) =>
   lease !== undefined && lease.holder === holder && lease.expiresAt > Date.now();
 
+const stateOf = (lease: Lease | undefined, asker?: string): PostEditState => ({
+  generation: lease?.generation ?? 0,
+  busy: lease !== undefined && lease.expiresAt > Date.now() && (asker === undefined || lease.holder !== asker),
+});
+
 class InMemoryLeases implements LeaseStore {
   private readonly leases = new Map<string, Lease>();
 
   async claim(postId: string, holder: string): Promise<boolean> {
     const lease = this.leases.get(postId);
-    if (lease?.holder && lease.expiresAt > Date.now()) return false;
+    if (lease && lease.expiresAt > Date.now()) return false;
     this.leases.set(postId, { holder, expiresAt: Date.now() + LEASE_MS, generation: lease?.generation ?? 0 });
     return true;
   }
 
   async release(postId: string, holder: string): Promise<void> {
     const lease = this.leases.get(postId);
-    if (lease?.holder === holder) this.leases.set(postId, { ...lease, holder: null, expiresAt: 0 });
+    if (lease?.holder === holder) this.leases.set(postId, { ...lease, holder: null, expiresAt: Date.now() + SETTLE_MS });
   }
 
-  async generation(postId: string): Promise<number> {
-    return this.leases.get(postId)?.generation ?? 0;
+  async state(postId: string, asker?: string): Promise<PostEditState> {
+    return stateOf(this.leases.get(postId), asker);
   }
 
   async advance(postId: string, holder: string): Promise<boolean> {
@@ -67,7 +82,7 @@ class FirestoreLeases implements LeaseStore {
     return this.db.runTransaction(async (tx) => {
       const snap = await tx.get(ref);
       const lease = snap.exists ? (snap.data() as Lease) : undefined;
-      if (lease?.holder && lease.expiresAt > Date.now()) return false;
+      if (lease && lease.expiresAt > Date.now()) return false;
       tx.set(ref, { holder, expiresAt: Date.now() + LEASE_MS, generation: lease?.generation ?? 0 });
       return true;
     });
@@ -78,13 +93,13 @@ class FirestoreLeases implements LeaseStore {
     const ref = this.ref(postId);
     await this.db.runTransaction(async (tx) => {
       const snap = await tx.get(ref);
-      if (snap.exists && (snap.data() as Lease).holder === holder) tx.update(ref, { holder: null, expiresAt: 0 });
+      if (snap.exists && (snap.data() as Lease).holder === holder) tx.update(ref, { holder: null, expiresAt: Date.now() + SETTLE_MS });
     });
   }
 
-  async generation(postId: string): Promise<number> {
+  async state(postId: string, asker?: string): Promise<PostEditState> {
     const snap = await this.ref(postId).get();
-    return snap.exists ? ((snap.data() as Lease).generation ?? 0) : 0;
+    return stateOf(snap.exists ? (snap.data() as Lease) : undefined, asker);
   }
 
   async advance(postId: string, holder: string): Promise<boolean> {
@@ -114,8 +129,8 @@ export function releasePostEditLease(postId: string, holder: string): Promise<vo
   return leases().release(postId, holder);
 }
 
-export function postEditGeneration(postId: string): Promise<number> {
-  return leases().generation(postId);
+export function postEditState(postId: string, asker?: string): Promise<PostEditState> {
+  return leases().state(postId, asker);
 }
 
 // Counts an edit of the post as started, only for the current holder of its

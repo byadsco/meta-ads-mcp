@@ -67,7 +67,8 @@ export type ReasonCode =
   | "post_edit_scan_incomplete"
   | "post_edit_too_many_ads"
   | "post_edit_no_temporary"
-  | "post_edit_active_text_options";
+  | "post_edit_active_text_options"
+  | "post_edit_recent";
 
 export interface ContentPlan {
   before: Copy;

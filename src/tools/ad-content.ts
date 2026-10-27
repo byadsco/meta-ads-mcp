@@ -27,23 +27,29 @@ import {
 import {
   advancePostEditGeneration,
   claimPostEditLease,
-  postEditGeneration,
+  postEditState,
   releasePostEditLease,
+  SETTLE_MS,
+  type PostEditState,
 } from "../store/post-edit-lease.js";
 
 interface PostEditLeases {
   claim(postId: string, holder: string): Promise<boolean>;
   release(postId: string, holder: string): Promise<void>;
-  generation(postId: string): Promise<number>;
+  state(postId: string, asker?: string): Promise<PostEditState>;
   advance(postId: string, holder: string): Promise<boolean>;
 }
 
 const sharedLeases: PostEditLeases = {
   claim: claimPostEditLease,
   release: releasePostEditLease,
-  generation: postEditGeneration,
+  state: postEditState,
   advance: advancePostEditGeneration,
 };
+// The reads of a route-B plan count only when they took at most this long:
+// with the post found idle right after them, no edit of it ran during them
+// or ended less than SETTLE_MS - READ_WINDOW_MS before them.
+const READ_WINDOW_MS = 60_000;
 const LEASE_RELEASE_MS = 5_000;
 
 async function releaseWithin(release: Promise<void>, ms: number): Promise<void> {
@@ -322,7 +328,7 @@ export function registerAdContentTools(server: McpServer, options: { clock?: Clo
   server.registerTool(
     "ads_update_ad_content",
     {
-      description: `${WRITE_WARNING}Change the copy, link, button or media of live ads: add, remove or replace primary texts, headlines and descriptions, including removing one option of several. Meta creatives are immutable, so each ad gets a replacement creative and goes back through review; the ad keeps its ID, history and previous creative (point it back with ads_update_ad to undo, which brings its post back too). Likes, comments and shares live on the ad's post. When only primary texts change and at least two remain, the ad keeps its Facebook post and that engagement (its Instagram side starts over and the Facebook headline stays the post's own). Anything else creates a new post, which resets the visible engagement, and only happens with allow_new_post: true. With allow_post_edit: true, an ad with one primary text (an image or link ad, or a promoted post) can instead have its post itself edited: the Facebook post and its engagement stay, and Instagram too when the ad reuses the post rather than having created it. The new text then shows on every ad using the post, which the preview lists; while the post is edited (about a minute) active ads keep running on a temporary copy of the ad with the new text; headline and description cannot change this way; one post per call, with no other change, at most 5 ads on the post, none of them active with several text options, and one edit of a post at a time; the token needs pages_manage_posts. dry_run defaults to true: the first call shows, per creative, the copy before and after, any link, button, media or url_tags change, the route and the engagement at stake, without changing anything. The preview is read from the replacement that would be sent, so it includes what a change brings along (a video given a new link and no button gets a LEARN_MORE button). Show that to the person and, once they agree, call again with dry_run: false and the plan_token the dry run returned. Only that exact plan is applied: if the ads or the request changed since, nothing is written and the reply is the new preview with a new plan_token. Nothing changes if any ad cannot be read, has an invalid change or would need a route that is not allowed, or if any replacement creative cannot be created: all replacements are created before any ad is repointed. Right before each repoint the ad is read again; an ad someone moved to another creative meanwhile is left untouched. If Meta then refuses to repoint an ad, ads already repointed stay changed, and the response lists each one with its previous creative so it can be undone. Repeating a set, link, button or media change that is already applied does nothing; add and remove are not repeatable, so after a partial failure preview again with only the ads that failed. An ad with per-platform media (platform_customizations) cannot have its image or video changed here. Carousels, dynamic creative and other asset feeds are not supported. Meta lets an ad change creative at most once every 30 seconds (error 613): wait before changing the same ad again.`,
+      description: `${WRITE_WARNING}Change the copy, link, button or media of live ads: add, remove or replace primary texts, headlines and descriptions, including removing one option of several. Meta creatives are immutable, so each ad gets a replacement creative and goes back through review; the ad keeps its ID, history and previous creative (point it back with ads_update_ad to undo, which brings its post back too). Likes, comments and shares live on the ad's post. When only primary texts change and at least two remain, the ad keeps its Facebook post and that engagement (its Instagram side starts over and the Facebook headline stays the post's own). Anything else creates a new post, which resets the visible engagement, and only happens with allow_new_post: true. With allow_post_edit: true, an ad with one primary text (an image or link ad, or a promoted post) can instead have its post itself edited: the Facebook post and its engagement stay, and Instagram too when the ad reuses the post rather than having created it. The new text then shows on every ad using the post, which the preview lists; while the post is edited (about a minute) active ads keep running on a temporary copy of the ad with the new text; headline and description cannot change this way; one post per call, with no other change, at most 5 ads on the post, none of them active with several text options, and one edit of a post at a time, none within three minutes of the last one (Meta's reads catch up meanwhile); the token needs pages_manage_posts. dry_run defaults to true: the first call shows, per creative, the copy before and after, any link, button, media or url_tags change, the route and the engagement at stake, without changing anything. The preview is read from the replacement that would be sent, so it includes what a change brings along (a video given a new link and no button gets a LEARN_MORE button). Show that to the person and, once they agree, call again with dry_run: false and the plan_token the dry run returned. Only that exact plan is applied: if the ads or the request changed since, nothing is written and the reply is the new preview with a new plan_token. Nothing changes if any ad cannot be read, has an invalid change or would need a route that is not allowed, or if any replacement creative cannot be created: all replacements are created before any ad is repointed. Right before each repoint the ad is read again; an ad someone moved to another creative meanwhile is left untouched. If Meta then refuses to repoint an ad, ads already repointed stay changed, and the response lists each one with its previous creative so it can be undone. Repeating a set, link, button or media change that is already applied does nothing; add and remove are not repeatable, so after a partial failure preview again with only the ads that failed. An ad with per-platform media (platform_customizations) cannot have its image or video changed here. Carousels, dynamic creative and other asset feeds are not supported. Meta lets an ad change creative at most once every 30 seconds (error 613): wait before changing the same ad again.`,
       inputSchema: {
         ad_ids: z.array(z.string()).min(1).max(50).describe("Ad IDs to change (1-50). Ads sharing a creative get one replacement."),
         primary_texts: textChange("primary text"),
@@ -385,7 +391,9 @@ export function registerAdContentTools(server: McpServer, options: { clock?: Clo
         }
       }
 
+      const leaseHolder = randomUUID();
       const readPlan = async () => {
+        const readStartedAt = clock.now();
         const grouped = await groupAdsByCreative(ad_ids);
         const failed: KindedFailure[] = grouped.failed.map((f) => ({ ...f, kind: "read_failed" }));
         const reports: GroupReport[] = [];
@@ -433,8 +441,25 @@ export function registerAdContentTools(server: McpServer, options: { clock?: Clo
           if (plan.route && plan.body) actionable.push({ group, body: plan.body });
         }
         await preparePostEdits(routed);
-        const postScope = reports.find((r) => r.route === "edit_post")?.post_scope;
-        if (postScope) postScope.generation = await leases.generation(postScope.post.post_id);
+        let postScope = reports.find((r) => r.route === "edit_post")?.post_scope;
+        if (postScope) {
+          // Checked after the reads: see READ_WINDOW_MS. The lease's own
+          // holder is not kept out by its own edit.
+          const state = await leases.state(postScope.post.post_id, leaseHolder);
+          const reason = state.busy
+            ? `another edit of this post is running or ended less than ${SETTLE_MS / 60_000} minutes ago, and Meta's reads may not show it yet. Preview again in a few minutes`
+            : clock.now() - readStartedAt > READ_WINDOW_MS
+              ? "reading the ads took too long to rule out an edit of this post in the meantime. Preview again"
+              : undefined;
+          if (reason) {
+            for (const report of reports.filter((r) => r.route === "edit_post")) {
+              Object.assign(report, { route: undefined, social_proof: undefined, post_scope: undefined, blocking: true, reason_code: "post_edit_recent", reason });
+            }
+            postScope = undefined;
+          } else {
+            postScope.generation = state.generation;
+          }
+        }
         const token = planToken(reports, planningErrors, failed);
         // Every ad has to be read and planned before anything is written, and
         // any ad left out (unreadable, invalid change, refused route) stops
@@ -460,7 +485,6 @@ export function registerAdContentTools(server: McpServer, options: { clock?: Clo
       // post's count of edits included, since Meta's reads may not show that
       // edit yet. The count then goes up before the first write, so every
       // other approval of the post stops applying.
-      const leaseHolder = randomUUID();
       let lockedPost: string | undefined;
       if (!preview && !planChanged && !plan.blocked && plan.postScope) {
         if (await leases.claim(plan.postScope.post.post_id, leaseHolder)) lockedPost = plan.postScope.post.post_id;
@@ -614,7 +638,7 @@ function summarize(
   const lines: string[] = [];
   const editedPost = reports.find((r) => r.route === "edit_post")?.post_scope?.post.post_id;
   if (state.postEditBusy) {
-    lines.push(`Nothing was changed: another edit of post ${editedPost} is running. Run a new dry run in a few minutes.`);
+    lines.push(`Nothing was changed: another edit of post ${editedPost} is running or ended moments ago. Run a new dry run in a few minutes.`);
   } else if (state.planChanged) {
     lines.push(`Nothing was changed: the plan differs from the dry run that plan_token came from (the ads or the request changed). This is the new plan: show it to the person and apply it with dry_run: false and plan_token: ${state.token}`);
   } else if (state.aborted) {
