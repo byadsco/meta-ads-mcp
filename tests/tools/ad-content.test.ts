@@ -836,6 +836,53 @@ describe("ads_update_ad_content — editing the post (allow_post_edit)", () => {
     expect(result.content[0].text).toMatch(/not edited/);
   });
 
+  it("writes nothing when the post's text changed after the preview", async () => {
+    const plan_token = await approvedToken(ARGS, OBJECTS);
+    // Meta shows a post's current text in each creative on it.
+    routeFetch({ ...OBJECTS, 4005: { ...REUSE, body: "Texto que otro puso" } });
+
+    const result = await tool().handler({ ...ARGS, dry_run: false, plan_token }) as ToolResult;
+
+    expect(JSON.parse(result.content[1].text).plan_changed).toBe(true);
+    expect(fetchCallSummary().filter((c) => !c.startsWith("GET"))).toEqual([]);
+  });
+
+  it("refuses while an active ad on the post shows text options its copy could not reproduce", async () => {
+    const withOptions = { ...REUSE, asset_feed_spec: { bodies: [{ text: "A" }, { text: "B" }], titles: [{ text: "T1" }, { text: "T2" }], optimization_type: "DEGREES_OF_FREEDOM" } };
+    const scan = { data: [
+      { id: "3001", status: "PAUSED", creative: { id: "4002", effective_object_story_id: "6001_888" } },
+      { id: "3005", status: "ACTIVE", creative: { id: "4005", effective_object_story_id: "6001_888" } },
+    ] };
+    routeFetch({ ...OBJECTS, 4005: withOptions, ads: scan });
+
+    const result = await tool().handler(ARGS) as ToolResult;
+
+    expect(JSON.parse(result.content[1].text).plans[0]).toMatchObject({ blocking: true, reason_code: "post_edit_active_text_options" });
+  });
+
+  it("reports an ad whose move back got no clear answer as unconfirmed, not as stuck", async () => {
+    const plan_token = await approvedToken(ARGS, OBJECTS);
+    stubMeta({
+      ...READS,
+      "POST /act_123/adcreatives": [{ id: "4900" }, { id: "4950" }],
+      "GET /4900": [{ id: "4900", effective_object_story_id: "6001_999" }],
+      "GET /6001": [{ id: "6001", access_token: "page-token" }],
+      "POST /6001_888": [{ success: true }],
+      // moved off, then the answer to moving it back is lost
+      "POST /3001": [{ success: true }, { error: "connection reset by a proxy" }],
+      "GET /3001": [AD, { id: "3001", creative: { id: "4900" } }],
+      "DELETE /4900": [{ error: { code: 100, message: "In use" } }],
+    });
+
+    const result = await tool().handler({ ...ARGS, dry_run: false, plan_token }) as ToolResult;
+
+    expect(JSON.parse(result.content[1].text).failed).toEqual([{ ad_id: "3001", kind: "move_back_unconfirmed" }]);
+    const text = result.content[0].text;
+    expect(text).toMatch(/may already be back/);
+    expect(text).toMatch(/ad 3001 may still be on it/);
+    expect(text).not.toMatch(/No ad uses it/);
+  });
+
   it("writes nothing when another ad started using the post after the preview", async () => {
     const plan_token = await approvedToken(ARGS, OBJECTS);
     const joined = { data: [...SCAN.data, { id: "3007", status: "ACTIVE", creative: { id: "4005", effective_object_story_id: "6001_888" } }] };

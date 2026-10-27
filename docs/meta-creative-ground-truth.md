@@ -80,6 +80,7 @@ Route B (editing the post):
 - `/act_{id}/ads` cannot filter by `effective_object_story_id` (nor `creative.effective_object_story_id`, `creative.object_story_id`): finding the ads on a post means reading the account's ads.
 - Deleting the temporary creative once its ads moved back: refused once (`subcode 3858800`, content used in ads), and accepted right away in two later runs, after the post edit went through.
 - Ad posts report `is_published: false`, `status_type: "shared_story"`.
+- Meta's reads can lag behind its own writes. In one run, an ad whose move back was reported as failed had in fact moved, and an ad created minutes earlier was missing from the `/act_{id}/ads` scan.
 
 ## Changing an ad's creative
 

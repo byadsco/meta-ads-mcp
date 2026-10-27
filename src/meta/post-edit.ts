@@ -49,7 +49,9 @@ export interface PostEditInput {
 
 export interface PostEditAd {
   ad_id: string;
-  outcome: "updated" | "restored" | "unchanged" | "left_on_temporary";
+  // "unconfirmed": moving it back got no clear answer and Meta's read still
+  // showed the copy; its reads can lag behind its writes, so it may be back.
+  outcome: "updated" | "restored" | "unchanged" | "left_on_temporary" | "unconfirmed";
   creative_id: string;
   previous_creative_id: string;
   instagram: "kept" | "reset";
@@ -209,13 +211,14 @@ export async function editPost(
   }]));
   const result: PostEditOutcome = { edited: false, ads: [...ads.values()], temporary_creatives: [], temporary_left: [], new_creatives: [] };
 
-  // Returns Meta's message when the write failed.
-  const pointAt = async (adId: string, creativeId: string): Promise<string | undefined> => {
+  // Meta's message when the write failed, and whether Meta turned it down
+  // (nothing written) rather than leaving it unknown.
+  const pointAt = async (adId: string, creativeId: string): Promise<{ error?: string; refused?: boolean }> => {
     try {
       await metaApiClient.postForm(`/${adId}`, { creative: JSON.stringify({ creative_id: creativeId }) }, bounded);
-      return undefined;
+      return {};
     } catch (err) {
-      return errorMessage(err);
+      return { error: errorMessage(err), refused: wasRefused(err) };
     }
   };
   // undefined when it cannot be read.
@@ -282,18 +285,27 @@ export async function editPost(
       }
       const wait = since + CREATIVE_CHANGE_GAP_MS - clock.now();
       if (wait > 0) await clock.sleep(wait);
-      const error = await pointAt(user.ad_id, target);
+      const { error, refused } = await pointAt(user.ad_id, target);
       // The answer may be lost with the write applied.
       const now = error === undefined ? target : await creativeOf(user.ad_id);
       if (now === target) {
         Object.assign(ad, { creative_id: target, outcome });
         continue;
       }
+      if (refused) {
+        Object.assign(ad, {
+          outcome: "left_on_temporary",
+          creative_id: now ?? temporaryOf(user),
+          instagram: "reset",
+          error: now === undefined ? `${error} Its creative could not be read back.` : error,
+        });
+        continue;
+      }
       Object.assign(ad, {
-        outcome: "left_on_temporary",
+        outcome: "unconfirmed",
         creative_id: now ?? temporaryOf(user),
         instagram: "reset",
-        error: now === undefined ? `${error} Its creative could not be read back.` : error,
+        error: `Meta gave no clear answer to moving it back to creative ${target} (${error}), and its creative read back as ${now ?? "unreadable"}; Meta's reads can lag behind its writes, so it may already be back.`,
       });
     }
   };
@@ -314,7 +326,7 @@ export async function editPost(
     // The move, a read back if it fails, and moving everything back after it.
     if (clock.now() + 2 * CALL_MS + putBackCost(detachedAt.size + 1) > deadline) return stopAndRestore("time", TOO_SLOW);
     const temporary = temporaryOf(user);
-    const error = await pointAt(user.ad_id, temporary);
+    const { error, refused } = await pointAt(user.ad_id, temporary);
     const now = error === undefined ? temporary : await creativeOf(user.ad_id);
     if (now === temporary) {
       detachedAt.set(user.ad_id, clock.now());
@@ -322,10 +334,11 @@ export async function editPost(
     }
     const ad = ads.get(user.ad_id)!;
     ad.error = error;
-    // Unreadable, it may be on the temporary creative: it is moved back like
-    // the ones that did move.
-    if (now === undefined) detachedAt.set(user.ad_id, clock.now());
-    else ad.creative_id = now;
+    // Without a clear refusal the move may still land (Meta's reads lag
+    // behind its writes): unless the ad reads back on a creative of someone
+    // else's, it is moved back to its own like the ones that did move.
+    if (!refused && (now === undefined || now === user.creative_id)) detachedAt.set(user.ad_id, clock.now());
+    else if (now !== undefined) ad.creative_id = now;
     return stopAndRestore("detach", error ?? "It could not be moved off the post.");
   }
 

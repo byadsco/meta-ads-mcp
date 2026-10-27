@@ -206,6 +206,23 @@ describe("editPost", () => {
     expect(outcome.ads[1]).toMatchObject({ ad_id: "3002", outcome: "restored", creative_id: "4002" });
   });
 
+  it("moves back an ad whose move off got no clear answer even when its creative reads back unchanged", async () => {
+    const clock = fakeClock();
+    stubMeta({
+      "POST /act_123/adcreatives": [{ id: "4900" }, { id: "4901" }],
+      // Meta's reads can lag: the move may still land after this read.
+      "POST /3002": [lostAnswer, { success: true }],
+      "GET /3002": [{ id: "3002", creative: { id: "4002" } }],
+    }, clock);
+
+    const outcome = await editPost(input(), clock);
+
+    const lastMove = fetchCallSummary().lastIndexOf("POST /3002");
+    expect(lastMove).toBeGreaterThan(fetchCallSummary().indexOf("POST /3002"));
+    expect(json(body(lastMove).get("creative"))).toEqual({ creative_id: "4002" });
+    expect(outcome.ads[1]).toMatchObject({ ad_id: "3002", outcome: "restored", creative_id: "4002" });
+  });
+
   it("leaves alone an ad read back on a creative this edit did not set", async () => {
     const clock = fakeClock();
     stubMeta({
@@ -249,6 +266,22 @@ describe("editPost", () => {
 
     expect(outcome.ads[0]).toMatchObject({ ad_id: "3001", outcome: "left_on_temporary", creative_id: "4900" });
     expect(outcome.ads[0].error).toContain("Refused");
+    expect(outcome.ads[1]).toMatchObject({ ad_id: "3002", outcome: "updated" });
+  });
+
+  it("calls a move back unconfirmed, not failed, when its answer was lost and Meta's read still lags", async () => {
+    const clock = fakeClock();
+    stubMeta({
+      ...READY,
+      "POST /6001_888": [{ success: true }],
+      // Moved off, then the move back's answer is lost; the read still shows the copy.
+      "POST /3001": [{ success: true }, lostAnswer],
+      "GET /3001": [{ id: "3001", creative: { id: "4900" } }],
+    }, clock);
+
+    const outcome = await editPost(input(), clock);
+
+    expect(outcome.ads[0]).toMatchObject({ ad_id: "3001", outcome: "unconfirmed", creative_id: "4900" });
     expect(outcome.ads[1]).toMatchObject({ ad_id: "3002", outcome: "updated" });
   });
 

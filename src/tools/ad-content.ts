@@ -51,6 +51,7 @@ import {
   deleteCreative,
   errorMessage,
   groupAdsByCreative,
+  hasFeedContent,
   readCreativeForRebuild,
   repointGroup,
   type CreativeGroup,
@@ -83,7 +84,7 @@ interface PlanningProblem {
 }
 
 type KindedFailure = FailedAd & {
-  kind: "read_failed" | "create_failed" | "repoint_failed" | "changed_meanwhile" | "post_edit_failed" | "left_on_temporary";
+  kind: "read_failed" | "create_failed" | "repoint_failed" | "changed_meanwhile" | "post_edit_failed" | "left_on_temporary" | "move_back_unconfirmed";
 };
 
 // Every ad of the account on the post a route-B plan edits, with each one's
@@ -124,10 +125,15 @@ const MAX_POST_EDIT_ADS = 5;
 // creatives, routes and replacement bodies, and the same problems. Creatives
 // are immutable, so the same source creative gives the same body.
 function planToken(reports: GroupReport[], planningErrors: PlanningProblem[], failed: KindedFailure[]): string {
+  // Meta shows a post's current text in the body and title of every creative
+  // on it, so an edit of the post since the preview changes the token.
   const postScope = (r: GroupReport) => r.post_scope && [
     r.post_scope.post.post_id,
     ["text", r.post_scope.post.message],
-    r.post_scope.users.map((u) => [u.ad_id, u.creative_id, u.status]),
+    r.post_scope.users.map((u) => {
+      const shown = r.post_scope!.creatives[u.creative_id];
+      return [u.ad_id, u.creative_id, u.status, ["text", shown?.body ?? null], ["text", shown?.title ?? null]];
+    }),
   ];
   const plan = {
     plans: reports.map((r) => [
@@ -285,6 +291,11 @@ async function preparePostEdits(entries: Array<{ report: GroupReport; creative: 
   if (users.some((u) => u.status === "ACTIVE") && !hasServableTemporary({ users, creatives })) {
     return refuse("post_edit_no_temporary", "an active ad uses this post and no creative on it can be copied to keep it running while the post is edited (it is a promoted post). Pause those ads first, or use allow_new_post");
   }
+  // An ad with text options would run on a copy with its options over the
+  // post's own link and media, which can show headlines the ad never showed.
+  if (users.some((u) => u.status === "ACTIVE" && hasFeedContent(creatives[u.creative_id]))) {
+    return refuse("post_edit_active_text_options", "an active ad on this post has several text options, and its temporary copy could not show exactly what it shows while the post is edited. Pause it first, or use allow_new_post");
+  }
   const scope: PostScope = { account_id: accountId, post, users, creatives };
   for (const { report } of edits) report.post_scope = scope;
 }
@@ -295,7 +306,7 @@ export function registerAdContentTools(server: McpServer, options: { clock?: Clo
   server.registerTool(
     "ads_update_ad_content",
     {
-      description: `${WRITE_WARNING}Change the copy, link, button or media of live ads: add, remove or replace primary texts, headlines and descriptions, including removing one option of several. Meta creatives are immutable, so each ad gets a replacement creative and goes back through review; the ad keeps its ID, history and previous creative (point it back with ads_update_ad to undo, which brings its post back too). Likes, comments and shares live on the ad's post. When only primary texts change and at least two remain, the ad keeps its Facebook post and that engagement (its Instagram side starts over and the Facebook headline stays the post's own). Anything else creates a new post, which resets the visible engagement, and only happens with allow_new_post: true. With allow_post_edit: true, an ad with one primary text (an image or link ad, or a promoted post) can instead have its post itself edited: the Facebook post and its engagement stay, and Instagram too when the ad reuses the post rather than having created it. The new text then shows on every ad using the post, which the preview lists; while the post is edited (about a minute) active ads keep running on a temporary copy of the ad with the new text; headline and description cannot change this way; one post per call, with no other change, at most 5 ads on the post, and one edit of a post at a time; the token needs pages_manage_posts. dry_run defaults to true: the first call shows, per creative, the copy before and after, any link, button, media or url_tags change, the route and the engagement at stake, without changing anything. The preview is read from the replacement that would be sent, so it includes what a change brings along (a video given a new link and no button gets a LEARN_MORE button). Show that to the person and, once they agree, call again with dry_run: false and the plan_token the dry run returned. Only that exact plan is applied: if the ads or the request changed since, nothing is written and the reply is the new preview with a new plan_token. Nothing changes if any ad cannot be read, has an invalid change or would need a route that is not allowed, or if any replacement creative cannot be created: all replacements are created before any ad is repointed. Right before each repoint the ad is read again; an ad someone moved to another creative meanwhile is left untouched. If Meta then refuses to repoint an ad, ads already repointed stay changed, and the response lists each one with its previous creative so it can be undone. Repeating a set, link, button or media change that is already applied does nothing; add and remove are not repeatable, so after a partial failure preview again with only the ads that failed. An ad with per-platform media (platform_customizations) cannot have its image or video changed here. Carousels, dynamic creative and other asset feeds are not supported. Meta lets an ad change creative at most once every 30 seconds (error 613): wait before changing the same ad again.`,
+      description: `${WRITE_WARNING}Change the copy, link, button or media of live ads: add, remove or replace primary texts, headlines and descriptions, including removing one option of several. Meta creatives are immutable, so each ad gets a replacement creative and goes back through review; the ad keeps its ID, history and previous creative (point it back with ads_update_ad to undo, which brings its post back too). Likes, comments and shares live on the ad's post. When only primary texts change and at least two remain, the ad keeps its Facebook post and that engagement (its Instagram side starts over and the Facebook headline stays the post's own). Anything else creates a new post, which resets the visible engagement, and only happens with allow_new_post: true. With allow_post_edit: true, an ad with one primary text (an image or link ad, or a promoted post) can instead have its post itself edited: the Facebook post and its engagement stay, and Instagram too when the ad reuses the post rather than having created it. The new text then shows on every ad using the post, which the preview lists; while the post is edited (about a minute) active ads keep running on a temporary copy of the ad with the new text; headline and description cannot change this way; one post per call, with no other change, at most 5 ads on the post, none of them active with several text options, and one edit of a post at a time; the token needs pages_manage_posts. dry_run defaults to true: the first call shows, per creative, the copy before and after, any link, button, media or url_tags change, the route and the engagement at stake, without changing anything. The preview is read from the replacement that would be sent, so it includes what a change brings along (a video given a new link and no button gets a LEARN_MORE button). Show that to the person and, once they agree, call again with dry_run: false and the plan_token the dry run returned. Only that exact plan is applied: if the ads or the request changed since, nothing is written and the reply is the new preview with a new plan_token. Nothing changes if any ad cannot be read, has an invalid change or would need a route that is not allowed, or if any replacement creative cannot be created: all replacements are created before any ad is repointed. Right before each repoint the ad is read again; an ad someone moved to another creative meanwhile is left untouched. If Meta then refuses to repoint an ad, ads already repointed stay changed, and the response lists each one with its previous creative so it can be undone. Repeating a set, link, button or media change that is already applied does nothing; add and remove are not repeatable, so after a partial failure preview again with only the ads that failed. An ad with per-platform media (platform_customizations) cannot have its image or video changed here. Carousels, dynamic creative and other asset feeds are not supported. Meta lets an ad change creative at most once every 30 seconds (error 613): wait before changing the same ad again.`,
       inputSchema: {
         ad_ids: z.array(z.string()).min(1).max(50).describe("Ad IDs to change (1-50). Ads sharing a creative get one replacement."),
         primary_texts: textChange("primary text"),
@@ -449,6 +460,12 @@ export function registerAdContentTools(server: McpServer, options: { clock?: Clo
           if (ad.outcome === "updated") {
             updated.push({ ad_id: ad.ad_id, old_creative_id: ad.previous_creative_id, new_creative_id: ad.creative_id });
             if (ad.error) warnings.push(`Ad ${ad.ad_id}: ${ad.error}`);
+          } else if (ad.outcome === "unconfirmed") {
+            failed.push({
+              ad_id: ad.ad_id,
+              kind: "move_back_unconfirmed",
+              error: `Unconfirmed: read the ad again in a minute; if it still shows creative ${ad.creative_id}, point it with ads_update_ad at the creative named here. ${ad.error ?? ""}`,
+            });
           } else {
             failed.push({
               ad_id: ad.ad_id,
@@ -624,7 +641,9 @@ function summarize(
       lines.push(`Creative ${id} could not be deleted. No ad uses it; delete it in Ads Manager.`);
       continue;
     }
-    const stuck = outcome.ads.filter((a) => a.outcome === "left_on_temporary" && a.creative_id === id).map((a) => a.ad_id);
+    const stuck = outcome.ads
+      .filter((a) => (a.outcome === "left_on_temporary" || a.outcome === "unconfirmed") && a.creative_id === id)
+      .map((a) => a.ad_id);
     lines.push(stuck.length > 0
       ? `Creative ${id}, the temporary one, stays in the account and ad${stuck.length > 1 ? "s" : ""} ${stuck.join(", ")} may still be on it (see Failed).`
       : `Creative ${id}, the temporary one the edit needed, stays in the account: Meta refused to delete it. No ad uses it.`);
