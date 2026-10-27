@@ -1,7 +1,7 @@
-import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { normalizeAccountId } from "../utils/format.js";
 import type { PostEdit } from "./ad-content.js";
 import { metaApiClient } from "./client.js";
+import { wasRefused } from "./errors.js";
 import {
   asRecord,
   carryOverFields,
@@ -179,13 +179,6 @@ function reusingCreativeBody(own: AdCreative, postId: string): Record<string, st
   Object.assign(body, carryOverFields(own).body);
   if (own.url_tags) body.url_tags = own.url_tags;
   return body;
-}
-
-// Meta answered and turned the call down, or it was never sent: nothing was
-// written. Anything else (a lost answer, a timeout, Meta's own "unknown
-// error" or "service unavailable") may hide a write that went through.
-function wasRefused(err: unknown): boolean {
-  return err instanceof McpError && (err.code === ErrorCode.InvalidParams || err.code === ErrorCode.InvalidRequest);
 }
 
 /**

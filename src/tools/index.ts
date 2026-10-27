@@ -32,6 +32,7 @@ import { registerHelpTools } from "./help.js";
 import { registerMacroTools } from "./macros.js";
 import { registerBulkAdTools } from "./bulk-ads.js";
 import { registerAdContentTools } from "./ad-content.js";
+import { registerSocialProofTools } from "./social-proof.js";
 import { registerWhatsAppTools } from "./whatsapp.js";
 import { registerWhatsAppTemplateTools } from "./whatsapp-templates.js";
 import { registerWhatsAppFlowTools } from "./whatsapp-flows.js";
@@ -83,6 +84,7 @@ export function registerAllTools(server: McpServer): void {
   registerMacroTools(server);        // 2 tools — diagnose_underperformance, portfolio_summary
   registerBulkAdTools(server);       // 1 tool  — ads_bulk_create_video_ads (upload → creative → ad)
   registerAdContentTools(server);    // 1 tool  — ads_update_ad_content (edit copy/link/media of live ads)
+  registerSocialProofTools(server);  // 2 tools — ads_duplicate_ad (keeps the post) + ads_get_ad_social_proof
 
   // ─── Instagram ──────────────────────────────────────────
   registerInstagramTools(server);    // 2 tools — IG account & media lookup

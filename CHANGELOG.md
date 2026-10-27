@@ -9,6 +9,21 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
+- **`ads_duplicate_ad` copies an ad into other ad sets of its account, keeping its social proof.** Measured against the live API:
+  - By default every copy uses the source ad's own creative. It shows the same Facebook post and the same Instagram media, so the copies share their likes, comments and shares, and every text option comes along. Meta's own ad copy (`/copies`) and a new creative reusing the post both start Instagram over; the first also starts Facebook over.
+  - Each copy carries the source's tracking specs, conversion domain and ad labels. Copies are created paused unless `status` says otherwise.
+  - With `keep_social_proof: false`, Meta's own ad copy gives each copy a creative and post of its own.
+  - An ad set of another ad account is left out: a creative is used only in its own account.
+  - A real run needs an `idempotency_key`, kept in the store `ads_clone_ad_set_bundle` uses. The source ad is read with the caller's token first, so only someone who reaches it gets an earlier result. The same key and payload return the first result. A key whose run did not finish is never run again, however old: the run may have created copies its record never got. The store's claim takes an option for that; the ad set clone keeps taking over stale runs.
+  - A run whose record cannot be saved stops creating and lists the ad sets it did not attempt. Creating copies needs the server's Firestore store: a record kept in memory would not survive a restart, nor be seen by other instances. Without it only `dry_run` works.
+  - Meta's client never retries a create. A create Meta turned down wrote nothing. Any other failure, or an answer that names no ad, may hide a copy: the ad set is reported `unconfirmed`, with the ads made there since the run started (on the source's creative, or copied from the source ad) as candidates. None is ever reported or renamed as this run's own, since another run can make the same.
+  - `dry_run` checks the source and every ad set without creating anything. Malformed IDs are named by their position, never repeated.
+- **`ads_get_ad_social_proof` reads the likes, comments and shares behind ads, grouped by post.**
+  - Each post's Facebook reactions, comments and shares, and each Instagram media's likes and comments, read once however many ads share them. Meta returns a post's Facebook counts only with `pages_read_user_content`; without it the reply says so.
+  - Each ad's own reactions, comments, shares and saves since it started, from one insights call per account. They need no Page permission.
+  - Every other ad of the account showing the same post, from one scan of the account's ads (up to 5,000; `find_other_ads: false` skips it). The list counts as complete only when every account showing the post was read in full.
+  - Ad names and Meta's messages stay inside the untrusted-content fence; the JSON block carries IDs, statuses and counts. Post and media IDs from Meta's answers are used only in an ID's shape.
+- **Engagement reads never request an ID that is not a Meta ID, and take only whole numbers as counts.** A post or Instagram media ID Meta reports in another shape, or a count that is not a number, makes that side unavailable (`ads_update_ad_content` included).
 - **`ads_update_ad_content` can edit the ad's post itself (`allow_post_edit`).** For an ad with one primary text (an image or link ad, or a promoted post), the post gets the new text and keeps its likes, comments and shares on Facebook. Measured against the live API:
   - Meta refuses to edit a post while any ad uses it. Every ad on the post moves to a temporary creative of its own: a copy of the ad, on a post of its own.
     - The copy keeps the post's link, media and button, with the new text, or with the ad's text options when it shows them.

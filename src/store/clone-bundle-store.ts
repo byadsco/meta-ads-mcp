@@ -26,22 +26,30 @@ export interface CloneBundleRecord {
 const COLLECTION = "clone_bundle_operations";
 export const STALE_IN_PROGRESS_MS = 15 * 60 * 1000;
 
+export interface ClaimOptions {
+  // A run in progress past STALE_IN_PROGRESS_MS is taken over by default. A
+  // tool whose creates cannot be matched back to a run turns that off: an
+  // unfinished run may have created things its record never got.
+  reclaimStale?: boolean;
+}
+
+function canReclaim(existing: CloneBundleRecord, options: ClaimOptions): boolean {
+  return options.reclaimStale !== false
+    && existing.state === "in_progress"
+    && Date.now() - existing.startedAt > STALE_IN_PROGRESS_MS;
+}
+
 class InMemoryStore {
+  readonly persistent = false;
   private readonly map = new Map<string, CloneBundleRecord>();
 
   async getDoc(key: string): Promise<CloneBundleRecord | undefined> {
     return this.map.get(key);
   }
 
-  async claim(key: string, signature: string): Promise<{ status: "claimed" | "duplicate"; existing?: CloneBundleRecord }> {
+  async claim(key: string, signature: string, options: ClaimOptions = {}): Promise<{ status: "claimed" | "duplicate"; existing?: CloneBundleRecord }> {
     const existing = this.map.get(key);
-    if (existing) {
-      if (existing.state === "in_progress" && Date.now() - existing.startedAt > STALE_IN_PROGRESS_MS) {
-        // Stale lock — allow re-claim.
-      } else {
-        return { status: "duplicate", existing };
-      }
-    }
+    if (existing && !canReclaim(existing, options)) return { status: "duplicate", existing };
     this.map.set(key, {
       cacheKey: key,
       signature,
@@ -60,6 +68,7 @@ class InMemoryStore {
 }
 
 class FirestoreStore {
+  readonly persistent = true;
   constructor(private readonly db: Firestore) {}
 
   private docRef(key: string) {
@@ -71,16 +80,13 @@ class FirestoreStore {
     return snap.exists ? (snap.data() as CloneBundleRecord) : undefined;
   }
 
-  async claim(key: string, signature: string): Promise<{ status: "claimed" | "duplicate"; existing?: CloneBundleRecord }> {
+  async claim(key: string, signature: string, options: ClaimOptions = {}): Promise<{ status: "claimed" | "duplicate"; existing?: CloneBundleRecord }> {
     const ref = this.docRef(key);
     return this.db.runTransaction(async (tx) => {
       const snap = await tx.get(ref);
       if (snap.exists) {
         const existing = snap.data() as CloneBundleRecord;
-        const isStaleInFlight =
-          existing.state === "in_progress" &&
-          Date.now() - existing.startedAt > STALE_IN_PROGRESS_MS;
-        if (!isStaleInFlight) {
+        if (!canReclaim(existing, options)) {
           return { status: "duplicate", existing };
         }
         logger.warn({ cacheKey: key, startedAt: existing.startedAt }, "Reclaiming stale clone bundle lock");
@@ -103,8 +109,10 @@ class FirestoreStore {
 }
 
 export interface CloneBundleStore {
+  // Whether records outlive this process and are shared by every instance.
+  readonly persistent: boolean;
   getDoc(key: string): Promise<CloneBundleRecord | undefined>;
-  claim(key: string, signature: string): Promise<{ status: "claimed" | "duplicate"; existing?: CloneBundleRecord }>;
+  claim(key: string, signature: string, options?: ClaimOptions): Promise<{ status: "claimed" | "duplicate"; existing?: CloneBundleRecord }>;
   update(key: string, partial: Partial<CloneBundleRecord>): Promise<void>;
 }
 
@@ -116,6 +124,6 @@ export function getCloneBundleStore(): CloneBundleStore {
   return cachedStore;
 }
 
-export function resetCloneBundleStoreForTests(): void {
-  cachedStore = undefined;
+export function resetCloneBundleStoreForTests(db?: Firestore): void {
+  cachedStore = db ? new FirestoreStore(db) : undefined;
 }

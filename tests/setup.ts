@@ -2,7 +2,34 @@
  * Shared test helpers and mocks.
  */
 import { vi } from "vitest";
+import type { Firestore } from "@google-cloud/firestore";
 import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
+
+/**
+ * The parts of Firestore the stores use, kept in a map: a read always sees
+ * the last write, as Firestore's own reads do.
+ */
+export function fakeFirestore(): Firestore {
+  const docs = new Map<string, Record<string, unknown>>();
+  const snap = (key: string) => ({ exists: docs.has(key), data: () => docs.get(key) });
+  const ref = (key: string) => ({
+    key,
+    get: async () => snap(key),
+    set: async (data: Record<string, unknown>, options?: { merge?: boolean }) => {
+      docs.set(key, options?.merge ? { ...docs.get(key), ...data } : { ...data });
+    },
+  });
+  type Ref = ReturnType<typeof ref>;
+  return {
+    collection: (name: string) => ({ doc: (id: string) => ref(`${name}/${id}`) }),
+    runTransaction: async (work: (tx: unknown) => Promise<unknown>) => work({
+      get: async (r: Ref) => snap(r.key),
+      set: (r: Ref, data: Record<string, unknown>) => { docs.set(r.key, { ...data }); },
+      update: (r: Ref, data: Record<string, unknown>) => { docs.set(r.key, { ...docs.get(r.key), ...data }); },
+      delete: (r: Ref) => { docs.delete(r.key); },
+    }),
+  } as unknown as Firestore;
+}
 
 /**
  * Set a META_ACCESS_TOKEN env var so getAccessToken() doesn't throw.

@@ -1,6 +1,6 @@
 # Tool map
 
-Every tool this server registers, grouped by what you are trying to do. 143 in total; 79 are read-only.
+Every tool this server registers, grouped by what you are trying to do. 145 in total; 80 are read-only.
 
 A ⚠️ marks a tool that changes live data, spends money or touches stored credentials. Read the tool's own description before calling one: it carries the argument rules this map deliberately leaves out.
 
@@ -35,6 +35,8 @@ A ⚠️ marks a tool that changes live data, spends money or touches stored cre
 - `ads_update_ad` ⚠️ — Change an ad's name, status or creative.
 - `ads_update_ad_url_tags` ⚠️ — Rewrite the UTM tags of live ads by cloning each creative onto the same post. Skips ads with several text options unless allow_new_post.
 - `ads_update_ad_content` ⚠️ — Add, remove or replace the copy of live ads, or change link, button or media. Dry run first; shows what happens to likes and comments. `allow_post_edit` edits the post itself for one-text ads (needs `pages_manage_posts`).
+- `ads_duplicate_ad` ⚠️ — Copy an ad into other ad sets of its account. By default the copies share its post and Instagram media, so its likes, comments and shares carry over; needs an idempotency_key.
+- `ads_get_ad_social_proof` — Likes, comments and shares behind ads, grouped by post, with every ad of the account that shows each post.
 - `ads_delete_ad` ⚠️ — Delete an ad. Pausing it with ads_activate_entity is reversible; this is not.
 
 ## Creatives and assets

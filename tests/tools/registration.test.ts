@@ -5,7 +5,7 @@ import { MINOR_UNIT_NOTE } from "../../src/meta/currency.js";
 import { createMockMcpServer } from "../setup.js";
 
 describe("registerAllTools", () => {
-  it("registers exactly 143 tools total", () => {
+  it("registers exactly 145 tools total", () => {
     // 79 v2 tools renamed (with account_insights removed → 79) + 14 new in v3 +
     //   3 audience-sharing tools (share / unshare / get-shared-accounts) +
     //   1 invoices tool (ads_get_invoices) +
@@ -18,10 +18,11 @@ describe("registerAllTools", () => {
     //   1 Ad Library details tool (ads_library_get_ad_details) +
     //   1 Gemini video analysis tool (ads_analyze_video) +
     //   3 Gemini key management tools (ads_register_gemini_key / status / delete) +
-    //   1 ad dossier tool (ads_get_ad_dossier).
+    //   1 ad dossier tool (ads_get_ad_dossier) +
+    //   2 social proof tools (ads_duplicate_ad / ads_get_ad_social_proof).
     const server = createMockMcpServer();
     registerAllTools(server as never);
-    expect(server.registerTool).toHaveBeenCalledTimes(143);
+    expect(server.registerTool).toHaveBeenCalledTimes(145);
   });
 
   it("registers all tools with unique names", () => {
@@ -136,6 +137,8 @@ describe("registerAllTools", () => {
     expect(names).toContain("ads_get_video_media");
     expect(names).toContain("ads_update_ad_url_tags");
     expect(names).toContain("ads_clone_ad_set_bundle");
+    expect(names).toContain("ads_duplicate_ad");
+    expect(names).toContain("ads_get_ad_social_proof");
 
     // Token management tools
     expect(names).toContain("ads_list_tokens");
