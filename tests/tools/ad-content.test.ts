@@ -941,6 +941,57 @@ describe("ads_update_ad_content — editing the post (allow_post_edit)", () => {
     expect(scans).toEqual([true]);
   });
 
+  it("never edits without the post's lock, even when a read that failed at first matches the approval later", async () => {
+    const both = { ...ARGS, ad_ids: ["3001", "3005"] };
+    const AD_3005 = { id: "3005", account_id: "123", creative: { id: "4005" } };
+    const plan_token = await approvedToken(both, { ...OBJECTS, 3005: AD_3005 });
+    stubMeta({
+      ...READS,
+      // Unreadable when the post to lock is looked for, readable right after.
+      "GET /3005": [{ error: { code: 100, message: "Unavailable" } }, AD_3005],
+      "POST /act_123/adcreatives": [{ id: "4900" }, { id: "4950" }],
+      "GET /4900": [{ id: "4900", effective_object_story_id: "6001_999" }],
+      "GET /6001": [{ id: "6001", access_token: "page-token" }],
+    });
+
+    const result = await tool().handler({ ...both, dry_run: false, plan_token }) as ToolResult;
+
+    expect(fetchCallSummary().filter((c) => !c.startsWith("GET"))).toEqual([]);
+    expect(JSON.parse(result.content[1].text)).toMatchObject({ aborted: true });
+    expect(result.content[0].text).toMatch(/Nothing was changed/);
+  });
+
+  it("never edits a post other than the one it locked", async () => {
+    const plan_token = await approvedToken(ARGS, OBJECTS);
+    stubMeta({
+      ...READS,
+      // First seen on another post, then back on the approved one.
+      "GET /4002": [{ ...SINGLE, effective_object_story_id: "6001_777" }, SINGLE],
+      "POST /act_123/adcreatives": [{ id: "4900" }, { id: "4950" }],
+      "GET /4900": [{ id: "4900", effective_object_story_id: "6001_999" }],
+      "GET /6001": [{ id: "6001", access_token: "page-token" }],
+    });
+    const claimed: string[] = [];
+    const counted: string[] = [];
+    const server = createMockMcpServer();
+    registerAdContentTools(server as never, {
+      clock: fakeClock(),
+      leases: {
+        ...UNCOUNTED,
+        claim: async (post: string) => (claimed.push(post), true),
+        release: async () => {},
+        advance: async (post: string) => (counted.push(post), true),
+      },
+    });
+
+    const result = await server._registeredTools[0].handler({ ...ARGS, dry_run: false, plan_token }) as ToolResult;
+
+    expect(claimed).toEqual(["6001_777"]);
+    expect(counted).toEqual([]);
+    expect(fetchCallSummary().filter((c) => !c.startsWith("GET"))).toEqual([]);
+    expect(JSON.parse(result.content[1].text)).toMatchObject({ aborted: true });
+  });
+
   it("checks the approval while it holds the post's lock, and frees the lock when the plan changed", async () => {
     const plan_token = await approvedToken(ARGS, OBJECTS);
     stubMeta({

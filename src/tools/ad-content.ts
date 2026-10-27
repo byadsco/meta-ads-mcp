@@ -483,11 +483,13 @@ export function registerAdContentTools(server: McpServer, options: { clock?: Clo
       const leftover: string[] = [];
       let postEditOutcome: PostEditOutcome | undefined;
       let postEditBusy = false;
+      let postEditUnlocked = false;
       // Two edits of one post at once would move each other's ads, so a post
       // edit is planned and checked against the approval under the post's
       // lock, the post's count of edits included, since Meta's reads may not
       // show another edit yet. The count then goes up before the first write,
-      // so every other approval of the post stops applying.
+      // so every other approval of the post stops applying. A plan read
+      // without that very lock only ever serves as the reply.
       const postToLock = preview ? undefined : plan.reports.find((r) => r.route === "edit_post")?.post_edit?.post_id;
       let lockedPost: string | undefined;
       if (postToLock && !plan.blocked) {
@@ -500,9 +502,14 @@ export function registerAdContentTools(server: McpServer, options: { clock?: Clo
         if (postToLock) plan = await readPlan(lockedPost ? "locked" : "preview");
         planChanged = !preview && plan_token !== plan.token;
         aborted = postEditBusy || planChanged || (!preview && plan.blocked);
-        if (lockedPost && !aborted && !(await leases.advance(lockedPost, leaseHolder))) {
-          aborted = true;
-          postEditBusy = true;
+        if (!preview && !aborted && plan.postScope) {
+          if (plan.postScope.post.post_id !== lockedPost) {
+            aborted = true;
+            postEditUnlocked = true;
+          } else if (!(await leases.advance(lockedPost, leaseHolder))) {
+            aborted = true;
+            postEditBusy = true;
+          }
         }
         if (preview || planChanged) {
           for (const { report, creative } of plan.routed) {
@@ -525,7 +532,7 @@ export function registerAdContentTools(server: McpServer, options: { clock?: Clo
       const { reports, planningErrors, failed, token } = plan;
       return {
         content: [
-          { type: "text", text: summarize(reports, planningErrors, updated, failed, warnings, leftover, { preview, aborted, planChanged, token, postEditOutcome, postEditBusy }) },
+          { type: "text", text: summarize(reports, planningErrors, updated, failed, warnings, leftover, { preview, aborted, planChanged, token, postEditOutcome, postEditBusy, postEditUnlocked }) },
           {
             type: "text",
             text: JSON.stringify({
@@ -539,7 +546,7 @@ export function registerAdContentTools(server: McpServer, options: { clock?: Clo
               failed: failed.map(failureJson),
               repoint_notes: warnings.length,
               leftover_creatives: leftover,
-              post_edit: postEditBusy ? { busy: true } : postEditOutcome && postEditJson(postEditOutcome),
+              post_edit: postEditBusy ? { busy: true } : postEditUnlocked ? { not_locked: true } : postEditOutcome && postEditJson(postEditOutcome),
             }, null, 2),
           },
         ],
@@ -636,12 +643,14 @@ function summarize(
   failed: FailedAd[],
   repointNotes: string[],
   leftover: string[],
-  state: { preview: boolean; aborted: boolean; planChanged: boolean; token: string; postEditOutcome?: PostEditOutcome; postEditBusy?: boolean },
+  state: { preview: boolean; aborted: boolean; planChanged: boolean; token: string; postEditOutcome?: PostEditOutcome; postEditBusy?: boolean; postEditUnlocked?: boolean },
 ): string {
   const lines: string[] = [];
   const editedPost = reports.find((r) => r.post_edit)?.post_edit?.post_id;
   if (state.postEditBusy) {
     lines.push(`Nothing was changed: another edit of post ${editedPost} is running or ended moments ago. Run a new dry run in a few minutes.`);
+  } else if (state.postEditUnlocked) {
+    lines.push(`Nothing was changed: the ads read differently while post ${editedPost} was being locked for the edit. Run it again with the same plan_token, or run a new dry run.`);
   } else if (state.planChanged) {
     lines.push(`Nothing was changed: the plan differs from the dry run that plan_token came from (the ads or the request changed). This is the new plan: show it to the person and apply it with dry_run: false and plan_token: ${state.token}`);
   } else if (state.aborted) {
