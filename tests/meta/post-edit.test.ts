@@ -347,6 +347,20 @@ describe("editPost", () => {
     expect(outcome.ads.map((a) => a.outcome)).toEqual(["updated", "updated"]);
   });
 
+  it("does not take the old text read back as the new one when they differ only in surrounding spaces", async () => {
+    const clock = fakeClock();
+    stubMeta({
+      ...READY,
+      "POST /6001_888": [lostAnswer, failedEdit],
+      // The approved text is the old one with a trailing line break; the edit never landed.
+      "GET /6001_888": [{ id: "6001_888", message: "Viejo" }],
+    }, clock);
+
+    const outcome = await editPost(input({ post: { post_id: "6001_888", page_id: "6001", message: "Viejo\n", reuses_post: false } }), clock);
+
+    expect(outcome).toMatchObject({ edited: false, edit_unconfirmed: true });
+  });
+
   it("treats an edit that may have gone through as unknown, even when a later attempt is turned down", async () => {
     const clock = fakeClock();
     stubMeta({

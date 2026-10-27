@@ -469,7 +469,9 @@ async function editMessage(post: PostEdit, clock: Clock, until: number): Promise
 async function hasNewText(post: PostEdit): Promise<boolean> {
   try {
     const read = await metaApiClient.get<{ message?: string }>(`/${post.post_id}`, { fields: "message" }, { timeoutMs: CALL_MS });
-    return (read.message ?? "").trim() === post.message.trim();
+    // Exactly the approved text: a change of spacing alone is a change too.
+    // If Meta stored it trimmed, the edit is reported unconfirmed.
+    return read.message === post.message;
   } catch {
     return false;
   }
