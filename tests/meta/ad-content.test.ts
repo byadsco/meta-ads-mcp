@@ -107,6 +107,8 @@ describe("planContentEdit — same post (route A)", () => {
   it("applies a new url_tags value on the same post", () => {
     const plan = planContentEdit(multiText(), { primary_texts: { add: ["Tres"] }, url_tags: "utm_source=x" }, false);
     expect(plan.body?.url_tags).toBe("utm_source=x");
+    // The reused post keeps its link, button and media: only url_tags shows.
+    expect(plan.field_changes).toEqual([{ field: "url_tags", before: "utm_source=meta", after: "utm_source=x" }]);
   });
 });
 
@@ -193,6 +195,27 @@ describe("planContentEdit — new post", () => {
     expect(parse(plan.body?.object_story_spec).video_data.call_to_action).toEqual({
       type: "LEARN_MORE", value: { link: "https://example.com/v" },
     });
+    // The preview is read from the replacement, so the added button shows up
+    // even though only the link was asked for.
+    expect(plan.field_changes).toEqual([
+      { field: "link_url", before: undefined, after: "https://example.com/v" },
+      { field: "call_to_action_type", before: undefined, after: "LEARN_MORE" },
+    ]);
+  });
+
+  it("previews the copy and fields of the replacement it will send", () => {
+    const plan = planContentEdit(singleImage(), { headlines: { add: ["Otro"] }, image_hash: "h2", url_tags: "" }, true);
+    expect(plan.route).toBe("new_post");
+    expect(plan.after).toEqual({ primary: ["Texto"], headlines: ["Titular", "Otro"], descriptions: ["Desc"] });
+    expect(plan.field_changes).toEqual([{ field: "image_hash", before: "h1", after: "h2" }]);
+    const sent: AdCreative = { id: "", name: "", object_story_spec: parse(plan.body?.object_story_spec), asset_feed_spec: parse(plan.body?.asset_feed_spec) };
+    expect(readCopy(sent)).toEqual({ source: "text_options", copy: plan.after });
+  });
+
+  it("shows a cleared url_tags as a change to none", () => {
+    const plan = planContentEdit(singleImage({ url_tags: "utm_source=meta" }), { headlines: { set: ["Nuevo"] }, url_tags: "" }, true);
+    expect(plan.body?.url_tags).toBeUndefined();
+    expect(plan.field_changes).toEqual([{ field: "url_tags", before: "utm_source=meta", after: undefined }]);
   });
 
   it("keeps a video's description in link_description", () => {
@@ -264,5 +287,23 @@ describe("planContentEdit — refusals", () => {
 
   it("refuses to switch an image ad to video", () => {
     expect(planContentEdit(singleImage(), { video_id: "800" }, true).reason).toMatch(/image ad to video/);
+  });
+
+  it("gives every outcome without a route a code the JSON can carry", () => {
+    const customized = singleImage({ platform_customizations: { instagram: { image_hash: "ig1" } } } as Partial<AdCreative>);
+    const post: AdCreative = { id: "1", name: "p", effective_object_story_id: "6001_9", body: "Post text" };
+    const codes = [
+      planContentEdit({ id: "1", name: "c" }, { headlines: { set: ["H"] } }, true),
+      planContentEdit(multiText(), { url_tags: "utm_source=other" }, true),
+      planContentEdit(multiText(), {}, true),
+      planContentEdit(customized, { image_hash: "h2" }, true),
+      planContentEdit(post, { headlines: { set: ["H"] } }, true),
+      planContentEdit(multiText(), { headlines: { set: ["Nuevo"] } }, false),
+      planContentEdit(singleImage(), { video_id: "800" }, true),
+    ].map((plan) => plan.reason_code);
+    expect(codes).toEqual([
+      "unsupported_creative", "url_tags_only", "nothing_to_change", "per_platform_media",
+      "promoted_post", "needs_new_post", "image_to_video",
+    ]);
   });
 });

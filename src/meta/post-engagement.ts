@@ -4,6 +4,8 @@ import { errorMessage } from "./creative-rebuild.js";
 export interface Engagement {
   facebook?: { reactions: number; comments: number; shares: number };
   instagram?: { likes: number; comments: number };
+  unavailable: Array<"facebook" | "instagram">;
+  // Meta's message for each unavailable side: untrusted text.
   notes: string[];
 }
 
@@ -17,7 +19,7 @@ interface PostCounts {
 // pages_read_user_content (or Page Public Content Access), and an Instagram
 // media's counts with instagram_basic. A missing permission becomes a note.
 export async function readEngagement(postId?: string, instagramMediaId?: string): Promise<Engagement> {
-  const engagement: Engagement = { notes: [] };
+  const engagement: Engagement = { unavailable: [], notes: [] };
   if (postId) {
     try {
       const post = await metaApiClient.get<PostCounts>(`/${postId}`, {
@@ -29,6 +31,7 @@ export async function readEngagement(postId?: string, instagramMediaId?: string)
         shares: post.shares?.count ?? 0,
       };
     } catch (err) {
+      engagement.unavailable.push("facebook");
       engagement.notes.push(`Facebook counts unavailable: ${errorMessage(err).slice(0, 160)}`);
     }
   }
@@ -39,6 +42,7 @@ export async function readEngagement(postId?: string, instagramMediaId?: string)
       });
       engagement.instagram = { likes: media.like_count ?? 0, comments: media.comments_count ?? 0 };
     } catch (err) {
+      engagement.unavailable.push("instagram");
       engagement.notes.push(`Instagram counts unavailable: ${errorMessage(err).slice(0, 160)}`);
     }
   }
