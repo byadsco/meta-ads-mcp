@@ -34,13 +34,17 @@ function bodyOf(index: number): URLSearchParams {
 
 const AD_3001 = { id: "3001", account_id: "123", creative: { id: "4001" } };
 
-// Runs the dry run the person approves, answering each read by the object's
-// ID (an object with an error is a failed read), and returns its plan_token.
-async function approvedToken(args: Record<string, unknown>, objects: Record<string, unknown>): Promise<string> {
+// Answers each request by the object's ID; an object with an error is a failed read.
+function routeFetch(objects: Record<string, unknown>): void {
   vi.stubGlobal("fetch", vi.fn(async (input: string) => {
     const body = objects[new URL(input).pathname.split("/").pop() ?? ""] ?? {};
     return mockFetchResponse(body, { status: (body as { error?: unknown }).error ? 400 : 200 });
   }));
+}
+
+// Runs the dry run the person approves and returns its plan_token.
+async function approvedToken(args: Record<string, unknown>, objects: Record<string, unknown>): Promise<string> {
+  routeFetch(objects);
   const preview = await tool().handler({ ...args, dry_run: true }) as ToolResult;
   return JSON.parse(preview.content[1].text).plan_token;
 }
@@ -177,6 +181,19 @@ describe("ads_update_ad_content", () => {
     };
     const first = await approvedToken(args, { 3001: AD_3001, 4001: MULTI_TEXT_CREATIVE });
     expect(await approvedToken(args, { 3001: AD_3001, 4001: reordered })).toBe(first);
+  });
+
+  it("compares text fields literally, so a value that would parse like the approved one is not applied with its token", async () => {
+    const variants = [["utm_source=approved", '"utm_source=approved"'], ["100", "1e2"]];
+    for (const [approved, sent] of variants) {
+      const plan_token = await approvedToken({ ...ONE_AD, url_tags: approved }, ONE_AD_OBJECTS);
+      routeFetch(ONE_AD_OBJECTS);
+
+      const result = await tool().handler({ ...ONE_AD, url_tags: sent, dry_run: false, plan_token }) as ToolResult;
+
+      expect(JSON.parse(result.content[1].text).plan_changed).toBe(true);
+      expect(fetchCallSummary().filter((call) => !call.startsWith("GET"))).toEqual([]);
+    }
   });
 
   it("writes nothing when the ads changed since the preview, and returns the new preview to approve", async () => {

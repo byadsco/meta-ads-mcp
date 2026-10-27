@@ -81,18 +81,27 @@ function planToken(reports: GroupReport[], planningErrors: PlanningProblem[], fa
   return createHash("sha256").update(JSON.stringify(plan)).digest("hex").slice(0, 32);
 }
 
-// Key order is not part of a plan: Meta may return the same creative with its
-// keys in another order, and the body's JSON fields inherit that order.
-function canonicalBody(body: Record<string, string>): unknown {
-  return sortKeys(Object.fromEntries(Object.entries(body).map(([key, value]) => [key, parseJson(value)])));
-}
+// The body fields the rebuild writes with JSON.stringify. Every other field
+// (name, url_tags, link_url, IDs) is text Meta receives as is.
+const JSON_BODY_FIELDS = new Set([
+  "object_story_spec", "asset_feed_spec", "degrees_of_freedom_spec", "destination_spec",
+  "wamo_whatsapp_identity_spec", "contextual_multi_ads", "platform_customizations", "adlabels",
+]);
 
-function parseJson(value: string): unknown {
-  try {
-    return JSON.parse(value) as unknown;
-  } catch {
-    return value;
-  }
+// Key order is not part of a plan: Meta may return the same creative with its
+// keys in another order, and the JSON fields inherit that order. Text fields
+// are compared literally, tagged apart from JSON ones, so no text can stand in
+// for another value.
+function canonicalBody(body: Record<string, string>): unknown {
+  return Object.keys(body).sort().map((key) => {
+    const value = body[key];
+    if (!JSON_BODY_FIELDS.has(key)) return [key, "text", value];
+    try {
+      return [key, "json", sortKeys(JSON.parse(value))];
+    } catch {
+      return [key, "text", value];
+    }
+  });
 }
 
 function sortKeys(value: unknown): unknown {
