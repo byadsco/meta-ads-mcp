@@ -15,3 +15,4 @@ export * from "./rule.js";
 export * from "./study.js";
 export * from "./instagram.js";
 export * from "./whatsapp.js";
+export * from "./business.js";

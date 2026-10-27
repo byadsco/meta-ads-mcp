@@ -5,7 +5,7 @@ import { MINOR_UNIT_NOTE } from "../../src/meta/currency.js";
 import { createMockMcpServer } from "../setup.js";
 
 describe("registerAllTools", () => {
-  it("registers exactly 145 tools total", () => {
+  it("registers exactly 149 tools total", () => {
     // 79 v2 tools renamed (with account_insights removed → 79) + 14 new in v3 +
     //   3 audience-sharing tools (share / unshare / get-shared-accounts) +
     //   1 invoices tool (ads_get_invoices) +
@@ -19,10 +19,12 @@ describe("registerAllTools", () => {
     //   1 Gemini video analysis tool (ads_analyze_video) +
     //   3 Gemini key management tools (ads_register_gemini_key / status / delete) +
     //   1 ad dossier tool (ads_get_ad_dossier) +
-    //   2 social proof tools (ads_duplicate_ad / ads_get_ad_social_proof).
+    //   2 social proof tools (ads_duplicate_ad / ads_get_ad_social_proof) +
+    //   4 Business Manager access tools (ads_get_business_users / ads_get_asset_users /
+    //     ads_assign_user_to_asset / ads_remove_user_from_asset).
     const server = createMockMcpServer();
     registerAllTools(server as never);
-    expect(server.registerTool).toHaveBeenCalledTimes(145);
+    expect(server.registerTool).toHaveBeenCalledTimes(149);
   });
 
   it("registers all tools with unique names", () => {
@@ -161,6 +163,12 @@ describe("registerAllTools", () => {
     expect(names).toContain("ads_create_async_report");
     expect(names).toContain("ads_get_billing_info");
     expect(names).toContain("ads_get_invoices");
+
+    // Business Manager access tools
+    expect(names).toContain("ads_get_business_users");
+    expect(names).toContain("ads_get_asset_users");
+    expect(names).toContain("ads_assign_user_to_asset");
+    expect(names).toContain("ads_remove_user_from_asset");
 
     // WhatsApp Business tools
     expect(names).toContain("whatsapp_get_business_accounts");
