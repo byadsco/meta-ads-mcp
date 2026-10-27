@@ -1,7 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { registerAdContentTools } from "../../src/tools/ad-content.js";
 import { metaApiClient } from "../../src/meta/client.js";
-import { claimPostEditLease, resetPostEditLeasesForTests } from "../../src/store/post-edit-lease.js";
+import {
+  advancePostEditGeneration,
+  claimPostEditLease,
+  postEditGeneration,
+  releasePostEditLease,
+  resetPostEditLeasesForTests,
+} from "../../src/store/post-edit-lease.js";
 import { createMockMcpServer, setupTestToken, cleanupTestToken, mockFetchResponse, fetchCallSummary } from "../setup.js";
 
 type ToolResult = { content: Array<{ text: string }> };
@@ -601,6 +607,8 @@ describe("ads_update_ad_content — editing the post (allow_post_edit)", () => {
     "GET /3001": [AD], "GET /4002": [SINGLE], "GET /4005": [REUSE],
     "GET /me/permissions": [GRANTED], "GET /act_123/ads": [SCAN],
   };
+  // For lease fakes that only test claim and release.
+  const UNCOUNTED = { generation: async () => 0, advance: async () => true };
 
   beforeEach(() => {
     setupTestToken();
@@ -693,6 +701,8 @@ describe("ads_update_ad_content — editing the post (allow_post_edit)", () => {
     // Both ads' copies would be the same, so they share one temporary creative.
     expect(report.post_edit).toMatchObject({ edited: true, temporary_creatives: ["4900"], temporary_left: ["4900"], new_creatives: ["4950"] });
     expect(report.leftover_creatives).toEqual(["4900"]);
+    // Counted before its first write: every earlier approval of the post is stale.
+    expect(await postEditGeneration("6001_888")).toBe(1);
     expect(result.content[1].text).not.toContain("page-token");
     const text = result.content[0].text;
     expect(text).toMatch(/post 6001_888 was edited/i);
@@ -747,6 +757,21 @@ describe("ads_update_ad_content — editing the post (allow_post_edit)", () => {
     expect(result.content[0].text).toMatch(/another edit of post 6001_888 is running/);
   });
 
+  it("writes nothing when its lock ran out before the edit could be counted", async () => {
+    const plan_token = await approvedToken(ARGS, OBJECTS);
+    stubMeta(READS);
+    const server = createMockMcpServer();
+    registerAdContentTools(server as never, {
+      clock: fakeClock(),
+      leases: { claim: async () => true, release: async () => {}, generation: async () => 0, advance: async () => false },
+    });
+
+    const result = await server._registeredTools[0].handler({ ...ARGS, dry_run: false, plan_token }) as ToolResult;
+
+    expect(fetchCallSummary().filter((c) => !c.startsWith("GET"))).toEqual([]);
+    expect(JSON.parse(result.content[1].text)).toMatchObject({ aborted: true, post_edit: { busy: true } });
+  });
+
   it("still reports what the edit did when its lock cannot be released", async () => {
     const plan_token = await approvedToken(ARGS, OBJECTS);
     stubMeta({
@@ -759,7 +784,7 @@ describe("ads_update_ad_content — editing the post (allow_post_edit)", () => {
     const server = createMockMcpServer();
     registerAdContentTools(server as never, {
       clock: fakeClock(),
-      leases: { claim: async () => true, release: async () => { throw new Error("Firestore unavailable"); } },
+      leases: { ...UNCOUNTED, claim: async () => true, release: async () => { throw new Error("Firestore unavailable"); } },
     });
 
     const result = await server._registeredTools[0].handler({ ...ARGS, dry_run: false, plan_token }) as ToolResult;
@@ -780,7 +805,7 @@ describe("ads_update_ad_content — editing the post (allow_post_edit)", () => {
     const server = createMockMcpServer();
     registerAdContentTools(server as never, {
       clock: fakeClock(),
-      leases: { claim: async () => true, release: () => new Promise(() => {}) },
+      leases: { ...UNCOUNTED, claim: async () => true, release: () => new Promise(() => {}) },
     });
 
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
@@ -863,6 +888,35 @@ describe("ads_update_ad_content — editing the post (allow_post_edit)", () => {
     expect(JSON.parse(result.content[1].text).plan_changed).toBe(true);
     expect(fetchCallSummary().filter((c) => !c.startsWith("GET"))).toEqual([]);
     expect(await claimPostEditLease("6001_888", "next-edit")).toBe(true);
+  });
+
+  it("applies the approved plan when Meta lists the ads on the post in another order", async () => {
+    const plan_token = await approvedToken(ARGS, OBJECTS);
+    stubMeta({
+      ...READS,
+      "GET /act_123/ads": [{ data: [...SCAN.data].reverse() }],
+      "POST /act_123/adcreatives": [{ id: "4900" }, { id: "4950" }],
+      "GET /4900": [{ id: "4900", effective_object_story_id: "6001_999" }],
+      "GET /6001": [{ id: "6001", access_token: "page-token" }],
+    });
+
+    const result = await tool().handler({ ...ARGS, dry_run: false, plan_token }) as ToolResult;
+
+    expect(JSON.parse(result.content[1].text)).toMatchObject({ plan_changed: false, post_edit: { edited: true } });
+  });
+
+  it("writes nothing once an edit of the post started since the preview, even while Meta's reads still show the approved text", async () => {
+    const plan_token = await approvedToken(ARGS, OBJECTS);
+    // Another edit of the post ran to the end; Meta's reads lag behind it.
+    await claimPostEditLease("6001_888", "another-edit");
+    await advancePostEditGeneration("6001_888", "another-edit");
+    await releasePostEditLease("6001_888", "another-edit");
+    stubMeta(READS);
+
+    const result = await tool().handler({ ...ARGS, dry_run: false, plan_token }) as ToolResult;
+
+    expect(JSON.parse(result.content[1].text).plan_changed).toBe(true);
+    expect(fetchCallSummary().filter((c) => !c.startsWith("GET"))).toEqual([]);
   });
 
   it("refuses while an active ad on the post shows text options its copy could not reproduce", async () => {

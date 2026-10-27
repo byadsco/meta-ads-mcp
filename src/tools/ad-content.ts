@@ -24,14 +24,26 @@ import {
   type PostEditOutcome,
   type PostUser,
 } from "../meta/post-edit.js";
-import { claimPostEditLease, releasePostEditLease } from "../store/post-edit-lease.js";
+import {
+  advancePostEditGeneration,
+  claimPostEditLease,
+  postEditGeneration,
+  releasePostEditLease,
+} from "../store/post-edit-lease.js";
 
 interface PostEditLeases {
   claim(postId: string, holder: string): Promise<boolean>;
   release(postId: string, holder: string): Promise<void>;
+  generation(postId: string): Promise<number>;
+  advance(postId: string, holder: string): Promise<boolean>;
 }
 
-const sharedLeases: PostEditLeases = { claim: claimPostEditLease, release: releasePostEditLease };
+const sharedLeases: PostEditLeases = {
+  claim: claimPostEditLease,
+  release: releasePostEditLease,
+  generation: postEditGeneration,
+  advance: advancePostEditGeneration,
+};
 const LEASE_RELEASE_MS = 5_000;
 
 async function releaseWithin(release: Promise<void>, ms: number): Promise<void> {
@@ -88,12 +100,14 @@ type KindedFailure = FailedAd & {
 };
 
 // Every ad of the account on the post a route-B plan edits, with each one's
-// creative, read for the preview and bound by the plan_token.
+// creative, and how many edits of the post had started, read for the preview
+// and bound by the plan_token.
 interface PostScope {
   account_id: string;
   post: PostEdit;
   users: PostUser[];
   creatives: Record<string, AdCreative>;
+  generation?: number;
 }
 
 interface GroupReport {
@@ -126,11 +140,13 @@ const MAX_POST_EDIT_ADS = 5;
 // are immutable, so the same source creative gives the same body.
 function planToken(reports: GroupReport[], planningErrors: PlanningProblem[], failed: KindedFailure[]): string {
   // Meta shows a post's current text in the body and title of every creative
-  // on it, so an edit of the post since the preview changes the token.
+  // on it, so an edit of the post since the preview changes the token. The
+  // order Meta lists the ads in varies between reads, so it is not part of it.
   const postScope = (r: GroupReport) => r.post_scope && [
     r.post_scope.post.post_id,
+    r.post_scope.generation ?? null,
     ["text", r.post_scope.post.message],
-    r.post_scope.users.map((u) => {
+    [...r.post_scope.users].sort((a, b) => a.ad_id.localeCompare(b.ad_id)).map((u) => {
       const shown = r.post_scope!.creatives[u.creative_id];
       return [u.ad_id, u.creative_id, u.status, ["text", shown?.body ?? null], ["text", shown?.title ?? null]];
     }),
@@ -417,12 +433,13 @@ export function registerAdContentTools(server: McpServer, options: { clock?: Clo
           if (plan.route && plan.body) actionable.push({ group, body: plan.body });
         }
         await preparePostEdits(routed);
+        const postScope = reports.find((r) => r.route === "edit_post")?.post_scope;
+        if (postScope) postScope.generation = await leases.generation(postScope.post.post_id);
         const token = planToken(reports, planningErrors, failed);
         // Every ad has to be read and planned before anything is written, and
         // any ad left out (unreadable, invalid change, refused route) stops
         // the batch: a batch never half-applies on a plan.
         const blocked = planningErrors.length > 0 || failed.length > 0 || reports.some((r) => r.blocking);
-        const postScope = reports.find((r) => r.route === "edit_post")?.post_scope;
         return { failed, reports, routed, actionable, planningErrors, token, blocked, postScope };
       };
 
@@ -439,7 +456,10 @@ export function registerAdContentTools(server: McpServer, options: { clock?: Clo
       let postEditBusy = false;
       // Two edits of one post at once would move each other's ads, and one
       // that ended between the reads above and the lock changed what was
-      // approved: under the lock everything is read and checked again.
+      // approved: under the lock everything is read and checked again, the
+      // post's count of edits included, since Meta's reads may not show that
+      // edit yet. The count then goes up before the first write, so every
+      // other approval of the post stops applying.
       const leaseHolder = randomUUID();
       let lockedPost: string | undefined;
       if (!preview && !planChanged && !plan.blocked && plan.postScope) {
@@ -452,6 +472,10 @@ export function registerAdContentTools(server: McpServer, options: { clock?: Clo
           plan = await readPlan();
           planChanged = plan_token !== plan.token;
           aborted = planChanged || plan.blocked;
+          if (!aborted && !(await leases.advance(lockedPost, leaseHolder))) {
+            aborted = true;
+            postEditBusy = true;
+          }
         }
         if (preview || planChanged) {
           for (const { report, creative } of plan.routed) {
