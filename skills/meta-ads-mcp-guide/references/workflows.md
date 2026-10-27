@@ -62,6 +62,30 @@ Advantage+ AI features that rewrite copy or edit media stay off unless you list 
 
 Every changed ad goes back through review. To undo, point the ad at its previous creative with `ads_update_ad`; that brings its old post and engagement back.
 
+## Keeping likes, comments and shares
+
+"Launch this winning ad in two more ad sets without losing its engagement."
+
+Likes, comments and shares live on the ad's post (and its Instagram media), not on the ad.
+
+1. `ads_get_ad_social_proof` on the ad: what its post has, which other ads show the same post, and each ad's own engagement. The post's Facebook counts need `pages_read_user_content`; each ad's own counts always come back.
+2. `ads_duplicate_ad` with the target `ad_set_ids`, a `dry_run: true` first if the person wants to see it.
+   - The copies use the same creative, so they show the same post and Instagram media and every text option, and they pile engagement onto the same post.
+   - They are created paused, with the source's tracking specs.
+   - A real run needs an `idempotency_key`, and a server with its Firestore store. If the answer is unclear, run it again with the same key: it never creates twice.
+   - `keep_social_proof: false` gives each copy a post of its own that starts from zero, for when the old post's comments should not follow.
+3. Activating the copies is a separate, confirmed step.
+
+What keeps the engagement and what resets it:
+
+- **Keeps it:**
+  - Name, status and `url_tags` changes on a one-post creative.
+  - Primary-text changes through `ads_update_ad_content` (same post; Instagram starts over unless the post itself is edited).
+  - `ads_duplicate_ad` with the default `keep_social_proof`.
+  - Pointing an ad back at its previous creative.
+- **Resets it:** anything that makes a new post, which needs `allow_new_post: true` or `keep_social_proof: false`.
+- Editing the post changes the text on every ad that shares it, the copies included.
+
 ## Budget change
 
 "Increase the budget on the winner."

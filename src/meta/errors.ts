@@ -272,6 +272,13 @@ export function mapMetaErrorToMcp(error: MetaApiError): McpError {
   return classifyMetaError(error).mcpError;
 }
 
+// Meta answered and turned the call down, or it was never sent: nothing was
+// written. Anything else (a lost answer, a timeout, Meta's own "unknown
+// error" or "service unavailable") may hide a write that went through.
+export function wasRefused(err: unknown): boolean {
+  return err instanceof McpError && (err.code === ErrorCode.InvalidParams || err.code === ErrorCode.InvalidRequest);
+}
+
 /**
  * Type guard for Meta Graph API error response bodies.
  */

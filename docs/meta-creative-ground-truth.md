@@ -54,6 +54,7 @@ Right after an ad is created, its creative may report no `effective_object_story
 | `object_story_id` + `source_instagram_media_id` together | rejected: ambiguous promoted object (subcode 1487929) | — |
 | `source_instagram_media_id` = an ad's Instagram media | rejected: not an organic post (subcode 1815897) | — |
 | `POST /{ad_id}/copies` without `creative_parameters` | **new** | **new** |
+| New ad on the source ad's own creative (`creative_id`), in another ad set | same | same: the media belongs to the creative |
 | Point the ad at another creative, then back at the original | original again | original again |
 | "Route A": new creative with `object_story_id` + `asset_feed_spec` (new bodies) | same | new |
 | "Route B": edit the post itself, then point ads that reuse the post back at their creatives | same | same |
@@ -92,6 +93,13 @@ Route B (editing the post):
 
 - Instagram: `GET /{ig_media_id}?fields=like_count,comments_count` works with `instagram_basic`.
 - Facebook post reactions, comments and shares (`reactions.summary(total_count)`, `comments.summary(total_count)`, `shares`): error #10 with a user token (`pages_read_engagement` is not enough) and with a Page token. Meta asks for `pages_read_user_content` or Page Public Content Access.
+- Each ad's own engagement needs no Page permission: `GET /act_{id}/insights?level=ad&date_preset=maximum&fields=ad_id,actions` with `filtering` on `ad.id`. The actions `post_reaction`, `comment`, `post` (shares) and `onsite_conversion.post_save` count what people did on that ad. An ad that never delivered has no row.
+
+## Duplicating an ad
+
+- A new ad in another ad set on the source ad's own creative (`creative: {"creative_id": …}`) is accepted, also for a creative with text options. It shows the same post and Instagram media, and all the text options.
+- Meta sets its tracking specs itself; on a copy into an ad set of the same campaign they matched the source's, the post's own entries included.
+- `POST /{ad_id}/copies` with `adset_id`, `status_option` and `rename_options: {"rename_strategy": "NO_RENAME"}` makes a new creative and a new post, and keeps the source's name. Its tracking specs follow the new post.
 
 ## Dynamic creative
 

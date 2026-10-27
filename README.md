@@ -17,7 +17,7 @@
 - [Who is this for?](#who-is-this-for)
 - [Aligned with Meta's official MCP](#aligned-with-metas-official-mcp)
 - [Features](#features)
-- [Tools (143 total)](#tools-143-total)
+- [Tools (145 total)](#tools-145-total)
 - [Quick start](#quick-start)
 - [Authentication — three modes](#authentication--three-modes)
 - [Setting up Sign in with Meta](#setting-up-sign-in-with-meta)
@@ -62,7 +62,7 @@ both servers.
 | | Meta's official MCP (`mcp.facebook.com/ads`) | This project |
 |---|---|---|
 | Auth model | Per-user OAuth in your AI client | **Multi-tenant**: agency operator handles N client accounts from one server |
-| Tool surface | 29 tools (campaigns, ads, catalogs, 5 insight views, opportunity_score, dataset, errors, help) | **143 tools** including the official 29-equivalent + audiences, lookalikes, lead forms, automated rules, A/B studies, async reports, billing invoices, custom conversions, asset uploads, comment moderation, cross-account macros, and full WhatsApp Business management (templates, phone numbers, flows, QR codes) |
+| Tool surface | 29 tools (campaigns, ads, catalogs, 5 insight views, opportunity_score, dataset, errors, help) | **145 tools** including the official 29-equivalent + audiences, lookalikes, lead forms, automated rules, A/B studies, async reports, billing invoices, custom conversions, asset uploads, comment moderation, cross-account macros, and full WhatsApp Business management (templates, phone numbers, flows, QR codes) |
 | Hosting | Hosted by Meta | Self-hosted on Cloud Run / your infra; tokens encrypted at rest in Firestore |
 | Cross-account | Per-user, single Meta login | Yes — `ads_portfolio_summary` aggregates across N accounts |
 | Token control | Lives in your AI client | Server-side System User token registry per agency operator |
@@ -78,7 +78,7 @@ When to use which:
 
 ## Features
 
-- **143 tools** covering campaign management, creatives, targeting, audiences, reporting, comments, billing, invoices, tokens, Instagram workflows, WhatsApp Business management, rate-limit observability, semantic insight views, diagnostics, help-center search, competitor research via the public Meta Ad Library (full ad cards with their images and videos), video analysis (keyframes or the MP4 itself for video-capable models), and agency-tier cross-account macros.
+- **145 tools** covering campaign management, creatives, targeting, audiences, reporting, comments, billing, invoices, tokens, Instagram workflows, WhatsApp Business management, rate-limit observability, semantic insight views, diagnostics, help-center search, competitor research via the public Meta Ad Library (full ad cards with their images and videos), video analysis (keyframes or the MP4 itself for video-capable models), and agency-tier cross-account macros.
 - **Aligned vocabulary** with Meta's official MCP server so agents transfer cleanly between both.
 - **Sign in with Meta (Facebook Login)** — replaces shared PINs. Each user lands their own long-lived (60-day) Meta token.
 - **System User token registry** — for tokens that don't expire, register them per user from the consent UI.
@@ -94,7 +94,7 @@ When to use which:
 - **Async reports with safe polling** — `ads_run_report_and_wait` one-shot with 5 s-min / 60 s-max backoff, proper `Job Failed` / `Job Skipped` handling.
 - **Retry logic** — exponential backoff on truly transient errors only (never on throttled requests).
 
-## Tools (143 total)
+## Tools (145 total)
 
 Ads tools use the `ads_*` naming convention, aligned with Meta's official MCP server; WhatsApp Business tools use `whatsapp_*`. Read tools declare `readOnlyHint: true`; mutating tools declare `destructiveHint` / `idempotentHint` and prefix descriptions with a `⚠️` warning.
 
@@ -126,6 +126,7 @@ Ads tools use the `ads_*` naming convention, aligned with Meta's official MCP se
 | Agency macros | 2 | `ads_diagnose_underperformance`, `ads_portfolio_summary` (cross-account) |
 | Bulk ad creation | 1 | `ads_bulk_create_video_ads` — video URLs → upload, processing wait, auto-thumbnail, creative and ad in one call |
 | Ad content editing | 1 | `ads_update_ad_content` — add, remove or replace the primary texts, headlines and descriptions of live ads, or change link, button or media; keeps the Facebook post when only primary texts change, or edits the post itself for one-text ads (`allow_post_edit`); dry run by default |
+| Social proof | 2 | `ads_duplicate_ad` — copy an ad into other ad sets on the same creative, so the copies share its Facebook post, Instagram media and text options, and with them the likes, comments and shares (creating copies needs the Firestore store); `ads_get_ad_social_proof` — those counts per post, each ad's own engagement, and every ad of the account showing the same post |
 | Instagram | 2 | IG account and media lookup |
 | Ad Library (Apify) | 9 | Competitor ad research: `ads_library_scrape` the public Meta Ad Library by keyword or Facebook page, poll run status, page through results (each with a media summary and its offset), abort runs, `ads_library_get_ad_details` for the full card of one scraped ad with its images inline and its videos as thumbnails / keyframes / links, plus per-user Apify token register/status/delete |
 | Ad dossier | 1 | `ads_get_ad_dossier` — one ad in full: ad, ad set, campaign, creative with copy and effective landing URL, targeting, performance with the video retention funnel and auction rankings, plus the media itself |
@@ -260,7 +261,7 @@ lines, so an analysis cannot forge the structure around it.
 
 ## Skills and MCP protocol surface
 
-An agent connecting to this server does not have to work out which of 143 tools
+An agent connecting to this server does not have to work out which of 145 tools
 answers a question. The server ships four **skills** and exposes them three
 ways.
 
@@ -274,7 +275,7 @@ them without any local installation:
 | `meta-ads://skills/meta-ads-video-analysis` | Which video delivery your model can ingest, how to read a hook and a retention curve |
 | `meta-ads://skills/meta-ads-competitor-research` | The Ad Library scrape-poll-read sequence, its cost, and how to read a scraped record |
 
-The guide carries three references of its own: a map of all 143 tools by intent
+The guide carries three references of its own: a map of all 145 tools by intent
 with the write tools marked, the call sequences for the recurring jobs, and a
 safety-and-costs page.
 
