@@ -735,7 +735,7 @@ describe("ads_update_ad_content — editing the post (allow_post_edit)", () => {
   });
 
   it("refuses a post used by more ads than one call can move back in time", async () => {
-    const crowded = { data: Array.from({ length: 6 }, (_, i) => ({
+    const crowded = { data: Array.from({ length: 4 }, (_, i) => ({
       id: String(3001 + i), status: "PAUSED", creative: { id: i === 0 ? "4002" : "4005", effective_object_story_id: "6001_888" },
     })) };
     routeFetch({ ...OBJECTS, ads: crowded });

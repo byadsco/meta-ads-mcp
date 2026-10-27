@@ -389,21 +389,62 @@ describe("editPost", () => {
 
     expect(outcome.stage).toBe("time");
     expect(clock.now()).toBeLessThanOrEqual(120_000);
-    expect(outcome.ads.map((a) => a.outcome)).toEqual(["restored", "restored", "unchanged", "unchanged", "unchanged"]);
+    expect(outcome.ads.map((a) => a.outcome)).toEqual(["restored", "unchanged", "unchanged", "unchanged", "unchanged"]);
     expect(fetchCallSummary()).not.toContain("POST /6001_888");
   });
 
-  it("does not start the edit when moving every ad back afterwards would not fit", async () => {
+  it("does not move another ad off the post when moving every ad back afterwards would not fit", async () => {
     const clock = fakeClock();
     stubMeta({ ...READY }, clock);
 
     const outcome = await editPost(input(), clock, 130_000);
 
     expect(outcome.stage).toBe("time");
-    expect(fetchCallSummary()).not.toContain("GET /6001");
+    expect(fetchCallSummary()).not.toContain("POST /3002");
     expect(fetchCallSummary()).not.toContain("POST /6001_888");
-    expect(outcome.ads.map((a) => a.outcome)).toEqual(["restored", "restored"]);
+    expect(outcome.ads.map((a) => a.outcome)).toEqual(["restored", "unchanged"]);
     expect(clock.now()).toBeLessThanOrEqual(130_000);
+  });
+
+  it("gives moving an ad up to 20 seconds and every other call of the edit 10", async () => {
+    const clock = fakeClock();
+    stubMeta({ ...READY, "POST /6001_888": [{ success: true }] }, clock);
+    const posts = vi.spyOn(metaApiClient, "postForm");
+    const gets = vi.spyOn(metaApiClient, "get");
+
+    await editPost(input(), clock);
+
+    // Meta's ad updates were seen taking over 10 seconds.
+    for (const [path, , scope] of posts.mock.calls) {
+      expect(scope?.timeoutMs).toBe(/^\/30\d\d$/.test(path) ? 20_000 : 10_000);
+    }
+    expect(posts.mock.calls.some(([path]) => path === "/3001")).toBe(true);
+    for (const [, , scope] of gets.mock.calls) expect(scope?.timeoutMs).toBe(10_000);
+  });
+
+  it("still leaves the edit time with three ads on the post after a minute of reads", async () => {
+    const clock = fakeClock();
+    stubMeta({
+      ...READY,
+      "POST /act_123/adcreatives": [{ id: "4900" }, { id: "4901" }, { id: "4902" }, { id: "4950" }],
+      "GET /4902": [{ id: "4902", effective_object_story_id: "6001_997" }],
+      // Meta accepts the edit on the third attempt, 30 seconds in.
+      "POST /6001_888": [failedEdit, failedEdit, { success: true }],
+    }, clock);
+    const tagged = { ...REUSE, id: "4003", url_tags: "utm_source=otro" } as AdCreative;
+
+    const outcome = await editPost(input({
+      users: [
+        { ad_id: "3001", status: "ACTIVE", creative_id: "4001" },
+        { ad_id: "3002", status: "PAUSED", creative_id: "4002" },
+        { ad_id: "3003", status: "PAUSED", creative_id: "4003" },
+      ],
+      creatives: { 4001: OWN, 4002: REUSE, 4003: tagged },
+    }), clock, 200_000);
+
+    expect(outcome.edited).toBe(true);
+    expect(outcome.ads.map((a) => a.outcome)).toEqual(["updated", "updated", "updated"]);
+    expect(clock.now()).toBeLessThanOrEqual(200_000);
   });
 
   it("keeps the text options of an own creative on its replacement", async () => {

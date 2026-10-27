@@ -24,6 +24,8 @@ const POST_WINDOW_MS = 40_000;
 // sent if pacing would hold it this long, given up after this long. That
 // bound, not how fast Meta happened to be, is what the deadline checks count.
 const CALL_MS = 10_000;
+// Moving an ad gets longer: Meta's ad updates were seen taking over 10 s.
+const MOVE_CALL_MS = 20_000;
 // A whole edit, putting every ad back included, has to end inside the
 // server's 300-second request limit: past it the request dies and nobody is
 // told where the ads are.
@@ -206,6 +208,7 @@ export async function editPost(
   const { post } = input;
   const accountId = normalizeAccountId(input.account_id);
   const bounded = { accountId, timeoutMs: CALL_MS };
+  const boundedMove = { accountId, timeoutMs: MOVE_CALL_MS };
   const ads = new Map<string, PostEditAd>(input.users.map((u) => [u.ad_id, {
     ad_id: u.ad_id,
     outcome: "unchanged",
@@ -219,7 +222,7 @@ export async function editPost(
   // (nothing written) rather than leaving it unknown.
   const pointAt = async (adId: string, creativeId: string): Promise<{ error?: string; refused?: boolean }> => {
     try {
-      await metaApiClient.postForm(`/${adId}`, { creative: JSON.stringify({ creative_id: creativeId }) }, bounded);
+      await metaApiClient.postForm(`/${adId}`, { creative: JSON.stringify({ creative_id: creativeId }) }, boundedMove);
       return {};
     } catch (err) {
       return { error: errorMessage(err), refused: wasRefused(err) };
@@ -255,9 +258,11 @@ export async function editPost(
     copies.set(key, body);
     copyOf.set(creativeId, key);
   }
-  // Moving `count` ads back at worst: the 30-second gap, a write and a read
-  // back for each, then deleting every temporary creative.
-  const putBackCost = (count: number) => CREATIVE_CHANGE_GAP_MS + (2 * count + copies.size) * CALL_MS;
+  // Moving `count` ads back at worst, once the 30-second gap since they moved
+  // off is over: a move and a read back for each, then deleting every
+  // temporary creative.
+  const moveBackWork = (count: number) => count * (MOVE_CALL_MS + CALL_MS) + copies.size * CALL_MS;
+  const putBackCost = (count: number) => CREATIVE_CHANGE_GAP_MS + moveBackWork(count);
 
   if (clock.now() + copies.size * CALL_MS + putBackCost(0) > deadline) return { ...result, stage: "time", error: TOO_SLOW };
   const temporaryOfCopy = new Map<string, string>();
@@ -344,7 +349,7 @@ export async function editPost(
 
   for (const user of input.users) {
     // The move, a read back if it fails, and moving everything back after it.
-    if (clock.now() + 2 * CALL_MS + putBackCost(detachedAt.size + 1) > deadline) return stopAndRestore("time", TOO_SLOW);
+    if (clock.now() + MOVE_CALL_MS + CALL_MS + putBackCost(detachedAt.size + 1) > deadline) return stopAndRestore("time", TOO_SLOW);
     const temporary = temporaryOf(user);
     const { error, refused } = await pointAt(user.ad_id, temporary);
     const now = error === undefined ? temporary : await creativeOf(user.ad_id);
@@ -363,9 +368,12 @@ export async function editPost(
   }
 
   // Once the post is edited every ad has to go back, through a new creative
-  // for each own one: that, and one last read of the post, have to fit.
+  // for each own one: that, and one last read of the post, have to fit. The
+  // 30-second gap is not counted again: the check before the last move off
+  // left room for it after that move, and moving back starts at the later of
+  // the two.
   const ownCreatives = new Set(input.users.map((u) => u.creative_id).filter((id) => input.creatives[id]?.object_story_spec));
-  const editUntil = Math.min(clock.now() + EDIT_WINDOW_MS, deadline - ownCreatives.size * CALL_MS - putBackCost(input.users.length) - CALL_MS);
+  const editUntil = Math.min(clock.now() + EDIT_WINDOW_MS, deadline - ownCreatives.size * CALL_MS - moveBackWork(input.users.length) - CALL_MS);
 
   // Every temporary creative has to free the post: one Meta matched to the
   // same post would keep it in use and the edit would never go through.
