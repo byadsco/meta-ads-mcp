@@ -59,6 +59,13 @@ function fakeClock(): FakeClock {
 }
 
 const failedEdit = { error: { code: 100, message: "(#100) Failed to edit object" } };
+// Not Meta's error format (a proxy, a dropped connection): the write may have
+// gone through.
+const lostAnswer = { error: "connection reset by a proxy" };
+// The client retries such answers after 1, 2 and 4 real seconds; the retries
+// themselves are not under test here.
+const skipClientBackoff = () =>
+  vi.spyOn(metaApiClient as unknown as { backoff: () => Promise<void> }, "backoff").mockResolvedValue();
 const body = (index: number) => new URLSearchParams(String(vi.mocked(fetch).mock.calls[index][1]?.body ?? ""));
 const tokenOf = (index: number) =>
   new URL(String(vi.mocked(fetch).mock.calls[index][0])).searchParams.get("access_token") ?? body(index).get("access_token");
@@ -83,7 +90,6 @@ describe("editPost", () => {
       "GET /4900": [{ id: "4900", effective_object_story_id: "6001_999" }],
       "GET /6001": [{ id: "6001", access_token: PAGE_TOKEN }],
       "POST /6001_888": [failedEdit, { success: true }],
-      "GET /3001": [{ id: "3001", creative: { id: "4950" } }],
       "DELETE /4900": [{ error: { code: 100, error_subcode: 3858800, message: "In use" } }],
     }, clock);
 
@@ -96,8 +102,6 @@ describe("editPost", () => {
       "GET /6001", "POST /6001_888", "POST /6001_888",
       "POST /act_123/adcreatives",
       "POST /3001", "POST /3002",
-      // Resumed only once it is confirmed on the creative it was moved to.
-      "GET /3001", "POST /3001",
       "DELETE /4900",
     ]);
     // A temporary creative of its own post, carrying the new text.
@@ -115,9 +119,12 @@ describe("editPost", () => {
     expect(body(8).get("instagram_user_id")).toBe("17841400000000001");
     expect(body(8).get("url_tags")).toBe("utm_source=meta");
     expect(json(body(8).get("adlabels"))).toEqual([{ id: "900" }]);
+    // Moved back and resumed in one write: never active on another creative.
     expect(json(body(9).get("creative"))).toEqual({ creative_id: "4950" });
+    expect(body(9).get("status")).toBe("ACTIVE");
+    // Was paused before the edit: moved back, left paused.
     expect(json(body(10).get("creative"))).toEqual({ creative_id: "4002" });
-    expect(body(12).get("status")).toBe("ACTIVE");
+    expect(body(10).get("status")).toBeNull();
     // Meta allows one creative change per ad every 30 seconds.
     expect(times[9] - times[2]).toBeGreaterThanOrEqual(30_000);
     expect(times[10] - times[3]).toBeGreaterThanOrEqual(30_000);
@@ -152,6 +159,8 @@ describe("editPost", () => {
     const calls = fetchCallSummary();
     expect(calls.filter((c) => c === "POST /6001_888").length).toBeGreaterThan(5);
     expect(calls.filter((c) => c === "POST /act_123/adcreatives")).toHaveLength(1);
+    // Meta turned each attempt down, so nothing was written: no need to read the post.
+    expect(calls).not.toContain("GET /6001_888");
     expect(outcome).toMatchObject({
       edited: false,
       stage: "edit",
@@ -304,12 +313,13 @@ describe("editPost", () => {
   });
 
   it("goes on as edited when the edit's answer is lost but the post has the new text", async () => {
+    skipClientBackoff();
     const clock = fakeClock();
     stubMeta({
       "POST /act_123/adcreatives": [{ id: "4900" }, { id: "4950" }],
       "GET /4900": [{ id: "4900", effective_object_story_id: "6001_999" }],
       "GET /6001": [{ id: "6001", access_token: PAGE_TOKEN }],
-      "POST /6001_888": [{ error: { code: 100, message: "Unexpected error" } }],
+      "POST /6001_888": [lostAnswer],
       "GET /6001_888": [{ id: "6001_888", message: "Nuevo" }],
       "GET /3001": [{ id: "3001", creative: { id: "4950" } }],
     }, clock);
@@ -321,12 +331,13 @@ describe("editPost", () => {
   });
 
   it("moves every ad onto creatives that work either way when it cannot tell whether the post was edited", async () => {
+    skipClientBackoff();
     const clock = fakeClock();
     stubMeta({
       "POST /act_123/adcreatives": [{ id: "4900" }, { id: "4950" }],
       "GET /4900": [{ id: "4900", effective_object_story_id: "6001_999" }],
       "GET /6001": [{ id: "6001", access_token: PAGE_TOKEN }],
-      "POST /6001_888": [{ error: { code: 100, message: "Unexpected error" } }],
+      "POST /6001_888": [lostAnswer],
       "GET /6001_888": [{ error: { code: 100, message: "Unavailable" } }],
       "GET /3001": [{ id: "3001", creative: { id: "4950" } }],
     }, clock);
@@ -351,6 +362,57 @@ describe("editPost", () => {
     expect(fetchCallSummary()).not.toContain("POST /6001_888");
     expect(outcome).toMatchObject({ edited: false, stage: "time" });
     expect(outcome.ads.map((a) => a.outcome)).toEqual(["restored", "restored"]);
+  });
+
+  it("does not resume an ad read back on another ad's creative", async () => {
+    const clock = fakeClock();
+    stubMeta({
+      "POST /act_123/adcreatives": [{ id: "4900" }],
+      "POST /3001": [{ success: true }, { error: { code: 100, message: "Refused" } }],
+      // 4002 is 3002's creative, a planned one, but not 3001's.
+      "GET /3001": [{ id: "3001", status: "PAUSED", creative: { id: "4002" } }],
+    }, clock);
+
+    const outcome = await editPost(input(), clock);
+
+    expect(outcome.ads[0]).toMatchObject({ ad_id: "3001", creative_id: "4002", resumed: false });
+    expect(outcome.ads[0].error).toMatch(/stays paused/);
+    expect(fetchCallSummary().filter((c) => c === "POST /3001")).toHaveLength(2);
+  });
+
+  it("treats another text read back after a lost answer as unknown, not as unedited", async () => {
+    skipClientBackoff();
+    const clock = fakeClock();
+    stubMeta({
+      "POST /act_123/adcreatives": [{ id: "4900" }, { id: "4950" }],
+      "GET /4900": [{ id: "4900", effective_object_story_id: "6001_999" }],
+      "GET /6001": [{ id: "6001", access_token: PAGE_TOKEN }],
+      "POST /6001_888": [lostAnswer],
+      // Someone may have edited it again after this edit went through.
+      "GET /6001_888": [{ id: "6001_888", message: "Otro texto" }],
+    }, clock);
+
+    const outcome = await editPost(input(), clock);
+
+    // Back to the creative that created the post would be refused if the edit
+    // did go through: the ads move to creatives that work either way.
+    expect(outcome).toMatchObject({ edited: false, edit_unconfirmed: true });
+    expect(outcome.ads[0]).toMatchObject({ ad_id: "3001", outcome: "updated", creative_id: "4950" });
+  });
+
+  it("stops early and still ends within its deadline when Meta is very slow, with ten ads", async () => {
+    const clock = fakeClock();
+    const users = Array.from({ length: 10 }, (_, i) => ({ ad_id: String(3001 + i), status: "ACTIVE", creative_id: "4002" }));
+    stubMeta({ "POST /act_123/adcreatives": [{ id: "4900" }] }, clock, 20_000);
+
+    const outcome = await editPost(input({ users, creatives: { 4002: REUSE } }), clock);
+
+    expect(outcome.stage).toBe("time");
+    expect(clock.now()).toBeLessThanOrEqual(240_000);
+    const paused = fetchCallSummary().filter((c) => c.startsWith("POST /30")).length / 2;
+    expect(outcome.ads.filter((a) => a.resumed)).toHaveLength(paused);
+    // No ad was moved: stopping before the first move costs less than undoing it.
+    expect(vi.mocked(fetch).mock.calls.some((call) => String(call[1]?.body ?? "").includes("4900"))).toBe(false);
   });
 
   it("keeps the text options of an own creative on its replacement", async () => {

@@ -1,3 +1,4 @@
+import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { normalizeAccountId } from "../utils/format.js";
 import type { PostEdit } from "./ad-content.js";
 import { metaApiClient } from "./client.js";
@@ -8,7 +9,6 @@ import {
   deleteCreative,
   errorMessage,
   hasFeedContent,
-  readCreativeIdAfterFailedRepoint,
   resolveInstagramUserId,
 } from "./creative-rebuild.js";
 import { withPageToken } from "./page-token.js";
@@ -16,19 +16,22 @@ import type { AdCreative } from "./types/index.js";
 
 // Measured on v26.0: Meta refuses to edit a post while any ad uses it, and
 // accepts the edit about 40-50 seconds after the last ad moves off it. It
-// allows one creative change per ad every 30 seconds. The waits leave twice
-// the measured time and keep a whole edit inside the server's 300-second
-// request limit: past it, ads could be left paused with nobody told.
+// allows one creative change per ad every 30 seconds.
 const CREATIVE_CHANGE_GAP_MS = 31_000;
 const EDIT_RETRY_MS = 15_000;
 const EDIT_WINDOW_MS = 105_000;
 const POST_POLL_MS = 10_000;
 const POST_WINDOW_MS = 40_000;
-// Pausing and detaching taking longer than this means Meta is pacing writes
-// too slowly to finish: everything is put back before the post is touched.
-const PRE_EDIT_BUDGET_MS = 45_000;
+// What a Meta call is assumed to take until a slower one is seen.
+const MIN_CALL_MS = 2_000;
+// A whole edit has to end inside the server's 300-second request limit: past
+// it the request dies and nobody is told which ads are still paused. Before
+// every step the edit checks that what it already did can still be put back
+// by then, at the pace of the slowest Meta call so far.
+export const POST_EDIT_BUDGET_MS = 240_000;
 const MAX_SCANNED_ADS = 5000;
 const TEMPORARY_NAME = "Temporary creative of a post edit (no ad uses it)";
+const TOO_SLOW = "Meta answered too slowly for the edit to finish within one call: every ad touched was put back and the post was not edited.";
 
 export interface PostUser {
   ad_id: string;
@@ -59,8 +62,8 @@ export interface PostEditAd {
 export interface PostEditOutcome {
   // The post has the new text, confirmed.
   edited: boolean;
-  // Meta's answer to the edit was lost and the post could not be read back:
-  // it may have the new text or the old one.
+  // Meta's answer to the edit was lost and the post did not read back with
+  // the new text: it may have the new text or the old one.
   edit_unconfirmed?: boolean;
   stage?: "temporary_creative" | "pause" | "detach" | "time" | "wait" | "edit";
   error?: string;
@@ -75,7 +78,7 @@ export interface Clock {
   sleep(ms: number): Promise<void>;
 }
 
-const realClock: Clock = {
+export const realClock: Clock = {
   now: () => Date.now(),
   sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 };
@@ -136,19 +139,31 @@ function reusingCreativeBody(own: AdCreative, postId: string): Record<string, st
   return body;
 }
 
+// Meta answered and turned the write down, so nothing was written. Anything
+// else (a lost answer, a timeout, Meta's own "unknown error" or "service
+// unavailable") may hide a write that went through.
+function wasRefused(err: unknown): boolean {
+  return err instanceof McpError && (err.code === ErrorCode.InvalidParams || err.code === ErrorCode.InvalidRequest);
+}
+
 /**
  * Edits the message of a post that ads use (route B). Meta refuses the edit
  * while any ad uses the post, so every ad on it pauses (the active ones) and
  * moves to a temporary creative, the post is edited with a Page token, and
  * each ad moves back: to its own creative when that creative reuses the post,
- * to a new creative reusing the post when its own created it. Ads paused here
- * are resumed once they are back. Any failure before the edit puts every ad
- * back as it was. An ad that cannot be moved back stays paused on the
- * temporary creative, and the outcome says so.
+ * to a new creative reusing the post when its own created it. An ad paused
+ * here is resumed in the same write that moves it back, so it is never active
+ * on a creative that write did not just set. Any failure before the edit puts
+ * every ad back as it was. An ad that cannot be moved back stays paused on
+ * the temporary creative, and the outcome says so. `deadline` is when the
+ * whole edit, putting things back included, has to be over.
  */
-export async function editPost(input: PostEditInput, clock: Clock = realClock): Promise<PostEditOutcome> {
+export async function editPost(
+  input: PostEditInput,
+  clock: Clock = realClock,
+  deadline: number = clock.now() + POST_EDIT_BUDGET_MS,
+): Promise<PostEditOutcome> {
   const { post } = input;
-  const startedAt = clock.now();
   const scope = { accountId: normalizeAccountId(input.account_id) };
   const ads = new Map<string, PostEditAd>(input.users.map((u) => [u.ad_id, {
     ad_id: u.ad_id,
@@ -160,74 +175,91 @@ export async function editPost(input: PostEditInput, clock: Clock = realClock): 
   }]));
   const result: PostEditOutcome = { edited: false, ads: [...ads.values()], temporary_deleted: false, new_creatives: [] };
 
+  let slowest = MIN_CALL_MS;
+  const timed = async <T>(call: () => Promise<T>): Promise<T> => {
+    const start = clock.now();
+    try {
+      return await call();
+    } finally {
+      slowest = Math.max(slowest, clock.now() - start);
+    }
+  };
+  // Returns Meta's message when the write failed.
+  const update = async (adId: string, params: Record<string, string>): Promise<string | undefined> => {
+    try {
+      await timed(() => metaApiClient.postForm(`/${adId}`, params, scope));
+      return undefined;
+    } catch (err) {
+      return errorMessage(err);
+    }
+  };
+  const readAd = async (adId: string) => {
+    try {
+      return await timed(() => metaApiClient.get<{ status?: string; creative?: { id?: string } }>(`/${adId}`, { fields: "status,creative{id}" }));
+    } catch {
+      return undefined;
+    }
+  };
+
   let temporary: string;
   try {
-    temporary = await createReplacementCreative(input.account_id, { name: TEMPORARY_NAME, object_story_spec: JSON.stringify(temporarySpec(input)) });
+    temporary = await timed(() => createReplacementCreative(input.account_id, { name: TEMPORARY_NAME, object_story_spec: JSON.stringify(temporarySpec(input)) }));
   } catch (err) {
     return { ...result, stage: "temporary_creative", error: errorMessage(err) };
   }
   result.temporary_creative_id = temporary;
 
-  const paused: string[] = [];
+  const paused = new Set<string>();
   const detachedAt = new Map<string, number>();
   // Own creative -> its new creative reusing the post, once the post is edited.
   const replacements = new Map<string, string>();
+  // Whether one more step, then putting back `pending` ads, still ends in time.
+  const overruns = (pending: number) => clock.now() + (pending + 1) * slowest + CREATIVE_CHANGE_GAP_MS > deadline;
 
-  const pointAt = async (adId: string, creativeId: string): Promise<{ ok: true } | { ok: false; error: string; now?: string }> => {
-    try {
-      await metaApiClient.postForm(`/${adId}`, { creative: JSON.stringify({ creative_id: creativeId }) }, scope);
-      return { ok: true };
-    } catch (err) {
-      const now = await readCreativeIdAfterFailedRepoint(adId);
-      return now === creativeId ? { ok: true } : { ok: false, error: errorMessage(err), now };
-    }
-  };
-
-  // Moves every detached ad to its target, at least 30 s after it left.
-  const moveBack = async (targetOf: (user: PostUser) => string | undefined, outcome: PostEditAd["outcome"], failure: string) => {
+  const putBack = async (targetOf: (user: PostUser) => string | undefined, outcome: PostEditAd["outcome"], noTarget: string) => {
     for (const user of input.users) {
-      const since = detachedAt.get(user.ad_id);
-      if (since === undefined) continue;
       const ad = ads.get(user.ad_id)!;
+      const since = detachedAt.get(user.ad_id);
+      const resume = paused.has(user.ad_id);
+      if (since === undefined) {
+        if (!resume) continue;
+        // Never moved off its creative: only the pause is undone, and only
+        // while the ad is still on its own creative.
+        if (ad.creative_id !== user.creative_id) {
+          ad.error = `It stays paused: it is on creative ${ad.creative_id}, not its own, so this edit does not resume it.`;
+          continue;
+        }
+        const error = await update(user.ad_id, { status: "ACTIVE" });
+        if (error === undefined) ad.resumed = true;
+        else ad.error = `It stays paused: it could not be resumed (${error}).`;
+        continue;
+      }
       const target = targetOf(user);
       if (!target) {
-        Object.assign(ad, { outcome: "left_on_temporary", creative_id: temporary, instagram: "reset", error: failure });
+        Object.assign(ad, { outcome: "left_on_temporary", creative_id: temporary, instagram: "reset", error: noTarget });
         continue;
       }
       const wait = since + CREATIVE_CHANGE_GAP_MS - clock.now();
       if (wait > 0) await clock.sleep(wait);
-      const moved = await pointAt(user.ad_id, target);
-      if (moved.ok) {
-        ad.creative_id = target;
-        ad.outcome = outcome;
-      } else {
-        Object.assign(ad, { outcome: "left_on_temporary", creative_id: moved.now ?? temporary, instagram: "reset", error: moved.error });
+      const params: Record<string, string> = { creative: JSON.stringify({ creative_id: target }) };
+      if (resume) params.status = "ACTIVE";
+      const error = await update(user.ad_id, params);
+      if (error === undefined) {
+        Object.assign(ad, { creative_id: target, outcome, resumed: resume });
+        continue;
       }
+      // The answer may be lost with the write applied.
+      const now = await readAd(user.ad_id);
+      if (now?.creative?.id === target) {
+        Object.assign(ad, { creative_id: target, outcome, resumed: resume && now.status === "ACTIVE" });
+        if (resume && now.status !== "ACTIVE") ad.error = `It is back on creative ${target} but stays paused: ${error}`;
+        continue;
+      }
+      Object.assign(ad, { outcome: "left_on_temporary", creative_id: now?.creative?.id ?? temporary, instagram: "reset", resumed: false, error });
     }
   };
 
-  // An ad is resumed only once it is read back on a creative this edit meant
-  // for it: its own, or the one replacing it. Anything else (the temporary
-  // creative, another edit's, an unreadable state) would show the wrong ad.
-  const wrapUp = async (): Promise<PostEditOutcome> => {
-    const planned = new Set([...input.users.map((u) => u.creative_id), ...replacements.values()]);
-    for (const adId of paused) {
-      const ad = ads.get(adId)!;
-      if (ad.outcome === "left_on_temporary") continue;
-      const now = await readCreativeIdAfterFailedRepoint(adId);
-      if (now === undefined || now !== ad.creative_id || !planned.has(now)) {
-        ad.error = now === undefined
-          ? "It stays paused: its creative could not be read to confirm it is safe to resume."
-          : `It stays paused: it uses creative ${now}, which this edit did not put it on.`;
-        continue;
-      }
-      try {
-        await metaApiClient.postForm(`/${adId}`, { status: "ACTIVE" }, scope);
-        ad.resumed = true;
-      } catch (err) {
-        ad.error = `It stays paused: it could not be resumed (${errorMessage(err)}).`;
-      }
-    }
+  const finish = async (): Promise<PostEditOutcome> => {
     result.temporary_deleted = await deleteCreative(temporary);
     return result;
   };
@@ -235,65 +267,79 @@ export async function editPost(input: PostEditInput, clock: Clock = realClock): 
   const stopAndRestore = async (stage: NonNullable<PostEditOutcome["stage"]>, error: string): Promise<PostEditOutcome> => {
     result.stage = stage;
     result.error = error;
-    await moveBack((user) => user.creative_id, "restored", "It could not be moved back.");
-    return wrapUp();
+    await putBack((user) => user.creative_id, "restored", "It could not be moved back.");
+    return finish();
   };
 
   for (const user of input.users.filter((u) => u.status === "ACTIVE")) {
-    try {
-      await metaApiClient.postForm(`/${user.ad_id}`, { status: "PAUSED" }, scope);
-      paused.push(user.ad_id);
-    } catch (err) {
-      // A write can reach Meta with only its response lost: unless the ad is
-      // read back still active, it is treated as paused and resumed like the
-      // others (resuming an active ad changes nothing).
-      const status = await readStatus(user.ad_id);
-      if (status !== "ACTIVE") paused.push(user.ad_id);
-      if (status === undefined) ads.get(user.ad_id)!.error = "Its pause could not be confirmed either way: it may be paused.";
-      return stopAndRestore("pause", errorMessage(err));
+    if (overruns(paused.size + 1)) return stopAndRestore("time", TOO_SLOW);
+    const error = await update(user.ad_id, { status: "PAUSED" });
+    if (error === undefined) {
+      paused.add(user.ad_id);
+      continue;
     }
+    // A write can reach Meta with only its answer lost: unless the ad reads
+    // back active it counts as paused, and its pause is undone like the rest.
+    const now = await readAd(user.ad_id);
+    const ad = ads.get(user.ad_id)!;
+    if (now?.status !== "ACTIVE") paused.add(user.ad_id);
+    if (now === undefined) ad.error = "Its pause could not be confirmed either way: it may be paused.";
+    else if (now.creative?.id) ad.creative_id = now.creative.id;
+    return stopAndRestore("pause", error);
   }
 
   for (const user of input.users) {
-    const moved = await pointAt(user.ad_id, temporary);
-    if (!moved.ok) {
-      const ad = ads.get(user.ad_id)!;
-      ad.error = moved.error;
-      // Unreadable, it may be on the temporary creative: it is pointed back
-      // at its own like the ones that did move.
-      if (moved.now === undefined) detachedAt.set(user.ad_id, clock.now());
-      else ad.creative_id = moved.now;
-      return stopAndRestore("detach", moved.error);
+    if (overruns(new Set([...paused, ...detachedAt.keys(), user.ad_id]).size)) return stopAndRestore("time", TOO_SLOW);
+    const error = await update(user.ad_id, { creative: JSON.stringify({ creative_id: temporary }) });
+    if (error === undefined) {
+      detachedAt.set(user.ad_id, clock.now());
+      continue;
     }
-    detachedAt.set(user.ad_id, clock.now());
+    const now = await readAd(user.ad_id);
+    if (now?.creative?.id === temporary) {
+      detachedAt.set(user.ad_id, clock.now());
+      continue;
+    }
+    const ad = ads.get(user.ad_id)!;
+    ad.error = error;
+    // Unreadable, it may be on the temporary creative: it is moved back like
+    // the ones that did move.
+    if (now === undefined) detachedAt.set(user.ad_id, clock.now());
+    else if (now.creative?.id) ad.creative_id = now.creative.id;
+    return stopAndRestore("detach", error);
   }
-  if (clock.now() - startedAt > PRE_EDIT_BUDGET_MS) {
-    return stopAndRestore("time", "Meta took too long to take the ads off the post for the edit to finish within one call; every ad was put back and the post was not touched.");
-  }
+
+  // Once the post is edited every ad has to go back, through a new creative
+  // for each own one: that has to fit before the deadline too.
+  const ownCreatives = new Set(input.users.map((u) => u.creative_id).filter((id) => input.creatives[id]?.object_story_spec));
+  const afterEdit = () => (ownCreatives.size + input.users.length + 1) * slowest + CREATIVE_CHANGE_GAP_MS;
 
   // The temporary creative has to free the post: a creative Meta matched to
   // the same post would keep it in use and the edit would never go through.
-  const temporaryPost = await waitForPost(temporary, clock);
+  const temporaryPost = await waitForPost(temporary, clock, Math.min(clock.now() + POST_WINDOW_MS, deadline - afterEdit()));
   if (temporaryPost === post.post_id) {
     return stopAndRestore("wait", "The temporary creative uses the same post, so the post stays in use and cannot be edited.");
   }
+  const editDeadline = Math.min(clock.now() + EDIT_WINDOW_MS, deadline - afterEdit());
+  if (editDeadline <= clock.now()) return stopAndRestore("time", TOO_SLOW);
 
-  // A failed answer does not mean nothing was written: the post's text is
-  // read back before deciding. When it cannot be read, the ads go on as if it
-  // was edited, because a creative reusing the post carries them either way,
-  // while the creative that created the post is refused once it was edited.
+  // Meta turning the edit down wrote nothing. Any other failure may hide an
+  // edit that went through, so only the new text read back counts as edited
+  // and anything else is unknown: the ads then go on as if it was edited,
+  // because a creative reusing the post carries them either way, while the
+  // creative that created the post is refused once the post was edited.
   let editError: string | undefined;
   let editState: "edited" | "not_edited" | "unknown";
   try {
     editState = await withPageToken(post.page_id, async () => {
       try {
-        await editMessage(post, clock);
+        await editMessage(post, clock, editDeadline);
         return "edited" as const;
       } catch (err) {
         editError = errorMessage(err);
+        if (wasRefused(err)) return "not_edited" as const;
         const now = await readMessage(post.post_id);
-        if (now === undefined) return "unknown" as const;
-        return now.trim() === post.message.trim() ? "edited" as const : "not_edited" as const;
+        return now !== undefined && now.trim() === post.message.trim() ? "edited" as const : "unknown" as const;
       }
     });
   } catch (err) {
@@ -308,11 +354,9 @@ export async function editPost(input: PostEditInput, clock: Clock = realClock): 
   }
 
   const replacementErrors = new Map<string, string>();
-  for (const creativeId of new Set(input.users.map((u) => u.creative_id))) {
-    const own = input.creatives[creativeId];
-    if (!own?.object_story_spec) continue;
+  for (const creativeId of ownCreatives) {
     try {
-      const id = await createReplacementCreative(input.account_id, reusingCreativeBody(own, post.post_id));
+      const id = await timed(() => createReplacementCreative(input.account_id, reusingCreativeBody(input.creatives[creativeId], post.post_id)));
       replacements.set(creativeId, id);
       result.new_creatives.push(id);
     } catch (err) {
@@ -322,8 +366,8 @@ export async function editPost(input: PostEditInput, clock: Clock = realClock): 
   for (const user of input.users) {
     if (replacements.has(user.creative_id)) ads.get(user.ad_id)!.instagram = "reset";
   }
-  await moveBack(
-    (user) => (input.creatives[user.creative_id]?.object_story_spec ? replacements.get(user.creative_id) : user.creative_id),
+  await putBack(
+    (user) => (ownCreatives.has(user.creative_id) ? replacements.get(user.creative_id) : user.creative_id),
     "updated",
     "Its new creative reusing the post could not be created.",
   );
@@ -332,7 +376,7 @@ export async function editPost(input: PostEditInput, clock: Clock = realClock): 
     const ad = ads.get(user.ad_id)!;
     if (error && ad.outcome === "left_on_temporary") ad.error = error;
   }
-  return wrapUp();
+  return finish();
 }
 
 async function readMessage(postId: string): Promise<string | undefined> {
@@ -343,16 +387,7 @@ async function readMessage(postId: string): Promise<string | undefined> {
   }
 }
 
-async function readStatus(adId: string): Promise<string | undefined> {
-  try {
-    return (await metaApiClient.get<{ status?: string }>(`/${adId}`, { fields: "status" })).status;
-  } catch {
-    return undefined;
-  }
-}
-
-async function waitForPost(creativeId: string, clock: Clock): Promise<string | undefined> {
-  const deadline = clock.now() + POST_WINDOW_MS;
+async function waitForPost(creativeId: string, clock: Clock, until: number): Promise<string | undefined> {
   for (;;) {
     try {
       const creative = await metaApiClient.get<{ effective_object_story_id?: string }>(`/${creativeId}`, { fields: "effective_object_story_id" });
@@ -360,20 +395,19 @@ async function waitForPost(creativeId: string, clock: Clock): Promise<string | u
     } catch {
       // Not readable yet: keep waiting.
     }
-    if (clock.now() + POST_POLL_MS > deadline) return undefined;
+    if (clock.now() + POST_POLL_MS > until) return undefined;
     await clock.sleep(POST_POLL_MS);
   }
 }
 
-async function editMessage(post: PostEdit, clock: Clock): Promise<void> {
-  const deadline = clock.now() + EDIT_WINDOW_MS;
+async function editMessage(post: PostEdit, clock: Clock, until: number): Promise<void> {
   for (;;) {
     try {
       await metaApiClient.postForm(`/${post.post_id}`, { message: post.message });
       return;
     } catch (err) {
       const stillInUse = /Failed to edit object/.test(errorMessage(err));
-      if (!stillInUse || clock.now() + EDIT_RETRY_MS > deadline) throw err;
+      if (!stillInUse || clock.now() + EDIT_RETRY_MS > until) throw err;
       await clock.sleep(EDIT_RETRY_MS);
     }
   }

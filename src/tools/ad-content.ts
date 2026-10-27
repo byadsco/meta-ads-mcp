@@ -14,8 +14,23 @@ import {
   type ReasonCode,
 } from "../meta/ad-content.js";
 import { grantedPermissions } from "../meta/page-token.js";
-import { editPost, findPostUsers, type Clock, type PostEditOutcome, type PostUser } from "../meta/post-edit.js";
+import {
+  editPost,
+  findPostUsers,
+  POST_EDIT_BUDGET_MS,
+  realClock,
+  type Clock,
+  type PostEditOutcome,
+  type PostUser,
+} from "../meta/post-edit.js";
 import { claimPostEditLease, releasePostEditLease } from "../store/post-edit-lease.js";
+
+interface PostEditLeases {
+  claim(postId: string, holder: string): Promise<boolean>;
+  release(postId: string, holder: string): Promise<void>;
+}
+
+const sharedLeases: PostEditLeases = { claim: claimPostEditLease, release: releasePostEditLease };
 import {
   createReplacementCreative,
   deleteCreative,
@@ -254,7 +269,9 @@ async function preparePostEdits(entries: Array<{ report: GroupReport; creative: 
   for (const { report } of edits) report.post_scope = scope;
 }
 
-export function registerAdContentTools(server: McpServer, options: { clock?: Clock } = {}): void {
+export function registerAdContentTools(server: McpServer, options: { clock?: Clock; leases?: PostEditLeases } = {}): void {
+  const clock = options.clock ?? realClock;
+  const leases = options.leases ?? sharedLeases;
   server.registerTool(
     "ads_update_ad_content",
     {
@@ -293,6 +310,9 @@ export function registerAdContentTools(server: McpServer, options: { clock?: Clo
       ad_ids, primary_texts, headlines, descriptions, link_url, call_to_action_type,
       image_hash, image_url, video_id, url_tags, allow_new_post, allow_post_edit, dry_run, plan_token,
     }) => {
+      // A post edit has to be over, ads put back included, before the
+      // request's time limit, counting from here.
+      const startedAt = clock.now();
       const preview = dry_run !== false;
       if (!preview && !plan_token) {
         throw new Error("dry_run: false needs the plan_token of a dry run of the same request: run it with dry_run: true, show the preview to the person, then pass its plan_token.");
@@ -391,15 +411,19 @@ export function registerAdContentTools(server: McpServer, options: { clock?: Clo
       const postScope = reports.find((r) => r.route === "edit_post")?.post_scope;
       // Two edits of one post at once would move each other's ads.
       const leaseHolder = randomUUID();
-      if (!preview && !aborted && postScope && !(await claimPostEditLease(postScope.post.post_id, leaseHolder))) {
+      if (!preview && !aborted && postScope && !(await leases.claim(postScope.post.post_id, leaseHolder))) {
         aborted = true;
         postEditBusy = true;
       }
       if (!preview && !aborted && postScope) {
         try {
-          postEditOutcome = await editPost(postScope, options.clock);
+          postEditOutcome = await editPost(postScope, clock, startedAt + POST_EDIT_BUDGET_MS);
         } finally {
-          await releasePostEditLease(postScope.post.post_id, leaseHolder);
+          // The report of what was done matters more than the lock, which
+          // expires on its own.
+          await leases.release(postScope.post.post_id, leaseHolder).catch(() => {
+            warnings.push(`The lock on post ${postScope.post.post_id} could not be released: another edit of it may have to wait up to ten minutes.`);
+          });
         }
         for (const ad of postEditOutcome.ads) {
           if (ad.outcome === "updated") {

@@ -171,7 +171,7 @@ export async function deleteCreative(creativeId: string): Promise<boolean> {
   }
 }
 
-export async function readCreativeIdAfterFailedRepoint(adId: string): Promise<string | undefined> {
+async function readCreativeIdAfterFailedRepoint(adId: string): Promise<string | undefined> {
   try {
     const ad = await metaApiClient.get<Ad>(`/${adId}`, { fields: "creative{id}" });
     return ad.creative?.id;

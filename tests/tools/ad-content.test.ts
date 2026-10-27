@@ -666,9 +666,10 @@ describe("ads_update_ad_content — editing the post (allow_post_edit)", () => {
 
     const result = await tool().handler({ ...ARGS, dry_run: false, plan_token }) as ToolResult;
 
+    // 3001 is moved back and resumed in the same write.
     expect(fetchCallSummary().filter((c) => !c.startsWith("GET"))).toEqual([
       "POST /act_123/adcreatives", "POST /3001", "POST /3001", "POST /3005", "POST /6001_888",
-      "POST /act_123/adcreatives", "POST /3001", "POST /3005", "POST /3001", "DELETE /4900",
+      "POST /act_123/adcreatives", "POST /3001", "POST /3005", "DELETE /4900",
     ]);
     const report = JSON.parse(result.content[1].text);
     expect(report.updated).toEqual([
@@ -731,14 +732,38 @@ describe("ads_update_ad_content — editing the post (allow_post_edit)", () => {
     expect(result.content[0].text).toMatch(/another edit of post 6001_888 is running/);
   });
 
-  it("says the post may or may not have the new text when the edit cannot be confirmed", async () => {
+  it("still reports what the edit did when its lock cannot be released", async () => {
     const plan_token = await approvedToken(ARGS, OBJECTS);
     stubMeta({
       ...READS,
       "POST /act_123/adcreatives": [{ id: "4900" }, { id: "4950" }],
       "GET /4900": [{ id: "4900", effective_object_story_id: "6001_999" }],
       "GET /6001": [{ id: "6001", access_token: "page-token" }],
-      "POST /6001_888": [{ error: { code: 100, message: "Unexpected error" } }],
+      "POST /6001_888": [{ success: true }],
+    });
+    const server = createMockMcpServer();
+    registerAdContentTools(server as never, {
+      clock: fakeClock(),
+      leases: { claim: async () => true, release: async () => { throw new Error("Firestore unavailable"); } },
+    });
+
+    const result = await server._registeredTools[0].handler({ ...ARGS, dry_run: false, plan_token }) as ToolResult;
+
+    expect(JSON.parse(result.content[1].text).post_edit).toMatchObject({ edited: true });
+    expect(result.content[0].text).toMatch(/lock on post 6001_888 could not be released/);
+  });
+
+  it("says the post may or may not have the new text when the edit cannot be confirmed", async () => {
+    // The client retries such answers after real 1, 2 and 4 s; not under test.
+    vi.spyOn(metaApiClient as unknown as { backoff: () => Promise<void> }, "backoff").mockResolvedValue();
+    const plan_token = await approvedToken(ARGS, OBJECTS);
+    stubMeta({
+      ...READS,
+      "POST /act_123/adcreatives": [{ id: "4900" }, { id: "4950" }],
+      "GET /4900": [{ id: "4900", effective_object_story_id: "6001_999" }],
+      "GET /6001": [{ id: "6001", access_token: "page-token" }],
+      // Not Meta's error format: the edit may have gone through.
+      "POST /6001_888": [{ error: "connection reset by a proxy" }],
       "GET /6001_888": [{ error: { code: 100, message: "Unavailable" } }],
       "GET /3001": [AD, { id: "3001", creative: { id: "4950" } }],
     });
