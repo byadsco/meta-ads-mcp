@@ -42,6 +42,27 @@ describe("exactLine", () => {
     expect(after.length).toBeLessThan(1100);
   });
 
+  it("fingerprints UTF-16 code units, so lone surrogates past the cut still tell values apart", () => {
+    const prefix = "x".repeat(1000);
+    const rendered = [prefix + "\ud800", prefix + "\ud801", prefix + "�"].map((v) => exactLine(v, 1000));
+    expect(new Set(rendered).size).toBe(3);
+  });
+
+  it("escapes the half of a character pair split by the cut", () => {
+    const prefix = "x".repeat(999);
+    const a = exactLine(`${prefix}😀a`, 1000);
+    const b = exactLine(`${prefix}😀b`, 1000);
+    expect(a).not.toBe(b);
+    expect(a.startsWith(`"${prefix}\\ud83d"…`)).toBe(true);
+  });
+
+  it("stays bounded when every character is hidden", () => {
+    const line = exactLine("​".repeat(50_000), 1000);
+    expect(line.length).toBeLessThan(6 * 1000 + 100);
+    const astral = exactLine("\u{e0041}".repeat(50_000), 1000);
+    expect(astral.length).toBeLessThan(6 * 1000 + 100);
+  });
+
   it("keeps a value at the limit whole", () => {
     const value = "y".repeat(1000);
     expect(exactLine(value, 1000)).toBe(JSON.stringify(value));

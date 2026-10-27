@@ -221,8 +221,8 @@ export function registerAdContentTools(server: McpServer): void {
   );
 }
 
-// The preview is what the person approves, so values are shown exactly (two
-// different values never look alike), one line each, inside the untrusted fence.
+// The preview is what the person approves, so values are shown exactly (see
+// exactLine), one line each, inside the untrusted fence.
 const PREVIEW_VALUE_MAX = 1000;
 
 function listCopy(texts: string[]): string {

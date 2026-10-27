@@ -35,11 +35,11 @@ export function singleLine(value: string | null | undefined, max: number): strin
 
 /**
  * One line that shows untrusted text exactly, for previews that compare two
- * values. Unlike singleLine nothing is collapsed, so two different values never
- * render alike: the line is a JSON string literal in which every hidden
- * character, and every fence-length run of hyphens, is written as a \u escape.
- * A value longer than max is cut and ends with its length and a fingerprint of
- * the whole value.
+ * values. Unlike singleLine nothing is collapsed: up to max characters the line
+ * is a JSON string literal that decodes back to the value, with every hidden
+ * character and every fence-length run of hyphens written as a \u escape. A
+ * longer value is cut and ends with its length and a 48-bit fingerprint of the
+ * whole value, so values differing past the cut still look different.
  */
 export function exactLine(value: string, max: number): string {
   const shown = value.length > max ? value.slice(0, max) : value;
@@ -47,7 +47,8 @@ export function exactLine(value: string, max: number): string {
     .replace(HIDDEN_CHARS, unicodeEscape)
     .replace(FENCE_RUN, (run) => `-${"\\u002d".repeat(run.length - 2)}-`);
   if (shown === value) return literal;
-  const fingerprint = createHash("sha256").update(value).digest("hex").slice(0, 12);
+  // UTF-16 code units, not UTF-8: UTF-8 turns every lone surrogate into U+FFFD.
+  const fingerprint = createHash("sha256").update(value, "utf16le").digest("hex").slice(0, 12);
   return `${literal}… (${value.length} characters in all, sha256 ${fingerprint})`;
 }
 
