@@ -10,7 +10,12 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ### Added
 
 - **`ads_update_ad_content` can edit the ad's post itself (`allow_post_edit`).** For an ad with one primary text (an image or link ad, or a promoted post), the post gets the new text and keeps its likes, comments and shares on Facebook. Measured against the live API:
-  - Meta refuses to edit a post while any ad uses it. Every ad on the post moves to a temporary creative: a copy of the ad with the new text, on a post of its own. The post is edited with a Page token about 40-50 seconds later, and each ad moves back. No ad's status is changed. Active ads keep running on the copy for that minute.
+  - Meta refuses to edit a post while any ad uses it. Every ad on the post moves to a temporary creative of its own: a copy of the ad, on a post of its own.
+    - The copy keeps the post's link, media and button, with the new text, or with the ad's text options when it shows them.
+    - It also keeps the ad's destination override, tracking, Advantage+ settings, per-platform media, labels and Instagram identity.
+    - The post is edited with a Page token about 40-50 seconds later, and each ad moves back.
+    - No ad's status is changed: active ads keep running on their copy for that minute.
+    - The response lists the temporary creatives, and the ones Meta refused to delete.
   - An ad whose creative reuses the post goes back to it and keeps its Instagram media too. Meta refuses the creative that created the post once the post is edited, so those ads move to a new creative reusing it, and their Instagram starts over.
   - The new text shows on every ad using the post. The preview lists them all, also the ones not asked for, with what happens to each one's Instagram. The `plan_token` covers every one of them and its status.
   - Headline and description cannot be edited this way: Meta refuses them on the post.

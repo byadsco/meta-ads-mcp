@@ -32,6 +32,20 @@ interface PostEditLeases {
 }
 
 const sharedLeases: PostEditLeases = { claim: claimPostEditLease, release: releasePostEditLease };
+const LEASE_RELEASE_MS = 5_000;
+
+async function releaseWithin(release: Promise<void>, ms: number): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error("The lock release did not answer in time.")), ms);
+  });
+  release.catch(() => {});
+  try {
+    await Promise.race([release, late]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 import {
   createReplacementCreative,
   deleteCreative,
@@ -196,8 +210,8 @@ function postEditJson(outcome: PostEditOutcome) {
     edited: outcome.edited,
     edit_unconfirmed: outcome.edit_unconfirmed,
     stage: outcome.stage,
-    temporary_creative_id: outcome.temporary_creative_id,
-    temporary_deleted: outcome.temporary_deleted,
+    temporary_creatives: outcome.temporary_creatives,
+    temporary_left: outcome.temporary_left,
     new_creatives: outcome.new_creatives,
     ads: outcome.ads.map((a) => ({
       ad_id: a.ad_id, outcome: a.outcome, creative_id: a.creative_id,
@@ -426,8 +440,8 @@ export function registerAdContentTools(server: McpServer, options: { clock?: Clo
           postEditOutcome = await editPost(postScope, clock, startedAt + POST_EDIT_BUDGET_MS);
         } finally {
           // The report of what was done matters more than the lock, which
-          // expires on its own.
-          await leases.release(postScope.post.post_id, leaseHolder).catch(() => {
+          // expires on its own: a release that fails or hangs is only noted.
+          await releaseWithin(leases.release(postScope.post.post_id, leaseHolder), LEASE_RELEASE_MS).catch(() => {
             warnings.push(`The lock on post ${postScope.post.post_id} could not be released: another edit of it may have to wait up to ten minutes.`);
           });
         }
@@ -445,7 +459,7 @@ export function registerAdContentTools(server: McpServer, options: { clock?: Clo
             });
           }
         }
-        if (postEditOutcome.temporary_creative_id && !postEditOutcome.temporary_deleted) leftover.push(postEditOutcome.temporary_creative_id);
+        leftover.push(...postEditOutcome.temporary_left);
       } else if (!preview && !aborted) {
         // Two phases: every replacement creative first (it changes no ad), and
         // only when all of them exist, the repoints.
@@ -606,11 +620,11 @@ function summarize(
         : `Post ${editedPost} was not edited: it stopped while ${outcome.stage === "edit" ? "editing the post" : `at step "${outcome.stage}"`}, and every ad went back to its creative unless listed under Failed.`);
   }
   for (const id of leftover) {
-    if (id !== outcome?.temporary_creative_id) {
+    if (!outcome?.temporary_creatives.includes(id)) {
       lines.push(`Creative ${id} could not be deleted. No ad uses it; delete it in Ads Manager.`);
       continue;
     }
-    const stuck = outcome.ads.filter((a) => a.outcome === "left_on_temporary").map((a) => a.ad_id);
+    const stuck = outcome.ads.filter((a) => a.outcome === "left_on_temporary" && a.creative_id === id).map((a) => a.ad_id);
     lines.push(stuck.length > 0
       ? `Creative ${id}, the temporary one, stays in the account and ad${stuck.length > 1 ? "s" : ""} ${stuck.join(", ")} may still be on it (see Failed).`
       : `Creative ${id}, the temporary one the edit needed, stays in the account: Meta refused to delete it. No ad uses it.`);

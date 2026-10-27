@@ -62,7 +62,14 @@ const failedEdit = { error: { code: 100, message: "(#100) Failed to edit object"
 // Not Meta's error format (a proxy, a dropped connection): the write may have
 // gone through.
 const lostAnswer = { error: "connection reset by a proxy" };
-const READY = { "POST /act_123/adcreatives": [{ id: "4900" }, { id: "4950" }], "GET /4900": [{ id: "4900", effective_object_story_id: "6001_999" }], "GET /6001": [{ id: "6001", access_token: PAGE_TOKEN }] };
+// OWN and REUSE need different copies (OWN carries tracking and labels), so
+// two temporary creatives (4900, 4901), then 4950 replacing OWN.
+const READY = {
+  "POST /act_123/adcreatives": [{ id: "4900" }, { id: "4901" }, { id: "4950" }],
+  "GET /4900": [{ id: "4900", effective_object_story_id: "6001_999" }],
+  "GET /4901": [{ id: "4901", effective_object_story_id: "6001_998" }],
+  "GET /6001": [{ id: "6001", access_token: PAGE_TOKEN }],
+};
 const body = (index: number) => new URLSearchParams(String(vi.mocked(fetch).mock.calls[index][1]?.body ?? ""));
 const tokenOf = (index: number) =>
   new URL(String(vi.mocked(fetch).mock.calls[index][0])).searchParams.get("access_token") ?? body(index).get("access_token");
@@ -92,39 +99,42 @@ describe("editPost", () => {
     const outcome = await editPost(input(), clock);
 
     expect(fetchCallSummary()).toEqual([
-      "POST /act_123/adcreatives",
+      "POST /act_123/adcreatives", "POST /act_123/adcreatives",
       "POST /3001", "POST /3002",
-      "GET /4900",
+      "GET /4900", "GET /4901",
       "GET /6001", "POST /6001_888", "POST /6001_888",
       "POST /act_123/adcreatives",
       "POST /3001", "POST /3002",
-      "DELETE /4900",
+      "DELETE /4900", "DELETE /4901",
     ]);
-    // Active ads keep running: the temporary creative is the ad with the new text.
+    // Active ads keep running: each temporary creative is the ad with the new text.
     expect(json(body(0).get("object_story_spec"))).toMatchObject({ link_data: { link: LINK, image_hash: "h1", message: "Nuevo" } });
-    expect(json(body(1).get("creative"))).toEqual({ creative_id: "4900" });
+    expect(body(0).get("url_tags")).toBe("utm_source=meta");
+    expect(json(body(1).get("object_story_spec"))).toMatchObject({ link_data: { message: "Nuevo" } });
+    expect(body(1).get("url_tags")).toBeNull();
     expect(json(body(2).get("creative"))).toEqual({ creative_id: "4900" });
+    expect(json(body(3).get("creative"))).toEqual({ creative_id: "4901" });
     expect(anyStatusWrite()).toBe(false);
     // The edit goes with the Page token, the rest with the person's.
-    expect(body(6).get("message")).toBe("Nuevo");
-    expect(tokenOf(6)).toBe(PAGE_TOKEN);
-    expect(tokenOf(8)).not.toBe(PAGE_TOKEN);
+    expect(body(8).get("message")).toBe("Nuevo");
+    expect(tokenOf(8)).toBe(PAGE_TOKEN);
+    expect(tokenOf(10)).not.toBe(PAGE_TOKEN);
     // The own creative cannot carry the ad again: a creative reusing the post does.
-    expect(body(7).get("object_story_id")).toBe("6001_888");
-    expect(body(7).get("object_story_spec")).toBeNull();
-    expect(body(7).get("instagram_user_id")).toBe("17841400000000001");
-    expect(body(7).get("url_tags")).toBe("utm_source=meta");
-    expect(json(body(7).get("adlabels"))).toEqual([{ id: "900" }]);
-    expect(json(body(8).get("creative"))).toEqual({ creative_id: "4950" });
-    expect(json(body(9).get("creative"))).toEqual({ creative_id: "4002" });
+    expect(body(9).get("object_story_id")).toBe("6001_888");
+    expect(body(9).get("object_story_spec")).toBeNull();
+    expect(body(9).get("instagram_user_id")).toBe("17841400000000001");
+    expect(body(9).get("url_tags")).toBe("utm_source=meta");
+    expect(json(body(9).get("adlabels"))).toEqual([{ id: "900" }]);
+    expect(json(body(10).get("creative"))).toEqual({ creative_id: "4950" });
+    expect(json(body(11).get("creative"))).toEqual({ creative_id: "4002" });
     // Meta allows one creative change per ad every 30 seconds.
-    expect(times[8] - times[1]).toBeGreaterThanOrEqual(30_000);
-    expect(times[9] - times[2]).toBeGreaterThanOrEqual(30_000);
+    expect(times[10] - times[2]).toBeGreaterThanOrEqual(30_000);
+    expect(times[11] - times[3]).toBeGreaterThanOrEqual(30_000);
 
     expect(outcome).toMatchObject({
       edited: true,
-      temporary_creative_id: "4900",
-      temporary_deleted: false,
+      temporary_creatives: ["4900", "4901"],
+      temporary_left: ["4900"],
       new_creatives: ["4950"],
       ads: [
         { ad_id: "3001", outcome: "updated", creative_id: "4950", previous_creative_id: "4001", instagram: "reset" },
@@ -142,7 +152,8 @@ describe("editPost", () => {
 
     const calls = fetchCallSummary();
     expect(calls.filter((c) => c === "POST /6001_888").length).toBeGreaterThan(3);
-    expect(calls.filter((c) => c === "POST /act_123/adcreatives")).toHaveLength(1);
+    // The two temporary copies, and no replacement.
+    expect(calls.filter((c) => c === "POST /act_123/adcreatives")).toHaveLength(2);
     // Meta turned each attempt down, so nothing was written: no need to read the post.
     expect(calls).not.toContain("GET /6001_888");
     expect(outcome).toMatchObject({
@@ -245,7 +256,7 @@ describe("editPost", () => {
     const clock = fakeClock();
     stubMeta({
       ...READY,
-      "POST /act_123/adcreatives": [{ id: "4900" }, { error: { code: 100, message: "Rejected" } }],
+      "POST /act_123/adcreatives": [{ id: "4900" }, { id: "4901" }, { error: { code: 100, message: "Rejected" } }],
       "POST /6001_888": [{ success: true }],
     }, clock);
 
@@ -328,6 +339,44 @@ describe("editPost", () => {
     const replacement = vi.mocked(fetch).mock.calls.findIndex((call, i) => i > 0 && String(call[0]).includes("/adcreatives"));
     expect(json(body(replacement).get("asset_feed_spec"))).toEqual(feed);
     expect(body(replacement).get("object_story_id")).toBe("6001_888");
+  });
+
+  it("gives each ad a temporary copy of itself: destination, tracking, per-platform media and Instagram identity", async () => {
+    const clock = fakeClock();
+    stubMeta({ ...READY, "POST /6001_888": [{ success: true }] }, clock);
+    const rich = {
+      ...REUSE,
+      instagram_user_id: "17841400000000009",
+      url_tags: "utm_source=reuse",
+      link_url: "https://example.com/override",
+      platform_customizations: { instagram: { image_hash: "ig1" } },
+    } as AdCreative;
+
+    await editPost(input({ creatives: { 4001: OWN, 4002: rich } }), clock);
+
+    const copy = body(1);
+    expect(json(copy.get("object_story_spec"))).toMatchObject({
+      instagram_user_id: "17841400000000009",
+      link_data: { link: LINK, image_hash: "h1", message: "Nuevo" },
+    });
+    expect(copy.get("link_url")).toBe("https://example.com/override");
+    expect(copy.get("url_tags")).toBe("utm_source=reuse");
+    expect(json(copy.get("platform_customizations"))).toEqual({ instagram: { image_hash: "ig1" } });
+    // Each ad waits on its own copy.
+    expect(json(body(3).get("creative"))).toEqual({ creative_id: "4901" });
+  });
+
+  it("keeps the text options of an ad that shows them on its temporary copy", async () => {
+    const clock = fakeClock();
+    stubMeta({ ...READY, "POST /6001_888": [{ success: true }] }, clock);
+    const feed = { bodies: [{ text: "Uno" }, { text: "Dos" }], titles: [{ text: "T1" }], optimization_type: "DEGREES_OF_FREEDOM" };
+    const withOptions = { ...REUSE, asset_feed_spec: feed } as AdCreative;
+
+    await editPost(input({ creatives: { 4001: OWN, 4002: withOptions } }), clock);
+
+    const copy = body(1);
+    expect(json(copy.get("asset_feed_spec"))).toEqual(feed);
+    expect(json(copy.get("object_story_spec")).link_data).not.toHaveProperty("message");
   });
 
   it("makes the temporary creative from a video ad's own spec too", async () => {

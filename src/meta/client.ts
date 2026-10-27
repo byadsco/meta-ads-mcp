@@ -299,7 +299,8 @@ export class MetaApiClient {
           signal: controller.signal,
         });
 
-        clearTimeout(timeoutId);
+        // A bounded call keeps its abort armed until the answer is read.
+        if (endBy === undefined) clearTimeout(timeoutId);
 
         // Update rate-limiter + pacer from response headers — regardless of
         // whether the response was OK. Throttle signals travel on error
@@ -309,10 +310,19 @@ export class MetaApiClient {
         this.maybeLogUsage();
         this.maybeLogVersionWarning(response.headers);
 
-        // A bounded call's limit covers reading the answer too.
-        const body = (endBy === undefined
-          ? await response.json()
-          : await settleBy(response.json() as Promise<unknown>, endBy, () => new Error(`Request timeout after ${scope?.timeoutMs}ms`))) as unknown;
+        // A bounded call's limit covers reading the answer too, and running
+        // out of it cancels the transfer.
+        let body: unknown;
+        try {
+          body = endBy === undefined
+            ? await response.json()
+            : await settleBy(response.json() as Promise<unknown>, endBy, () => {
+              controller.abort();
+              return new Error(`Request timeout after ${scope?.timeoutMs}ms`);
+            });
+        } finally {
+          clearTimeout(timeoutId);
+        }
 
         if (isMetaApiError(body)) {
           const classification = classifyMetaError(body.error);

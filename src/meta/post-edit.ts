@@ -66,8 +66,10 @@ export interface PostEditOutcome {
   stage?: "temporary_creative" | "detach" | "time" | "wait" | "edit";
   error?: string;
   ads: PostEditAd[];
-  temporary_creative_id?: string;
-  temporary_deleted: boolean;
+  // One per distinct copy the ads on the post needed.
+  temporary_creatives: string[];
+  // The ones Meta refused to delete afterwards.
+  temporary_left: string[];
   new_creatives: string[];
 }
 
@@ -100,41 +102,61 @@ export async function findPostUsers(
   return { users, complete: ads.length <= maxAds };
 }
 
-// The spec of the creative that created the post, with the new text: the
-// same link, image or video and button, as a different post.
-function ownSpecWithText(input: Pick<PostEditInput, "users" | "creatives">, message: string): Record<string, unknown> | undefined {
+const COPY_FIELDS: Record<string, string[]> = {
+  link_data: ["message", "name", "description"],
+  video_data: ["message", "title", "link_description"],
+};
+
+// The spec of the creative that created the post: its link, image or video
+// and button. Undefined for a promoted post, which no creative created.
+function postSpec(input: Pick<PostEditInput, "users" | "creatives">): { spec: Record<string, unknown>; key: string } | undefined {
   for (const user of input.users) {
     const spec = asRecord(input.creatives[user.creative_id]?.object_story_spec);
-    for (const key of ["link_data", "video_data"]) {
-      const data = asRecord(spec?.[key]);
-      if (spec && data) return { ...structuredClone(spec), [key]: { ...structuredClone(data), message } };
+    for (const key of Object.keys(COPY_FIELDS)) {
+      if (spec && asRecord(spec[key])) return { spec, key };
     }
   }
   return undefined;
 }
 
-// Active ads keep running on the temporary creative while the post is edited,
-// so it has to be a real copy of the ad. Only when no creative on the post
-// created it (a promoted post) is there nothing to copy.
+// Active ads keep running on their temporary creative while the post is
+// edited, so it has to be a real copy of the ad. Only when no creative on the
+// post created it (a promoted post) is there nothing to copy.
 export function hasServableTemporary(input: Pick<PostEditInput, "users" | "creatives">): boolean {
-  return ownSpecWithText(input, "") !== undefined;
+  return postSpec(input) !== undefined;
 }
 
-// The ads wait on a creative of their own post while the post is edited: the
-// own spec with the new text, or, when only creatives reusing the post use it
-// and every ad is paused, a plain link to the Page.
-function temporarySpec(input: PostEditInput): Record<string, unknown> {
-  const own = ownSpecWithText(input, input.post.message);
-  if (own) return own;
-  const spec: Record<string, unknown> = {
-    page_id: input.post.page_id,
-    link_data: { link: `https://www.facebook.com/${input.post.page_id}`, message: input.post.message },
-  };
-  for (const user of input.users) {
-    const instagramUserId = resolveInstagramUserId(input.creatives[user.creative_id] ?? ({} as AdCreative));
-    if (instagramUserId) return { ...spec, instagram_user_id: instagramUserId };
+// A copy of what an ad shows while its post is edited, on a post of its own:
+// the post's link, media and button with the new text (or the ad's own text
+// options, which it keeps), and every setting of the ad's own creative that
+// the rebuild carries (destination override, tracking, Advantage+ settings,
+// per-platform media, labels, Instagram identity). Without a spec to copy,
+// a plain link to the Page, used only when no ad on the post is active.
+function temporaryBody(creative: AdCreative, input: PostEditInput): Record<string, string> {
+  const base = postSpec(input);
+  let spec: Record<string, unknown>;
+  const body: Record<string, string> = { name: TEMPORARY_NAME };
+  if (base) {
+    spec = structuredClone(base.spec);
+    const data = asRecord(spec[base.key])!;
+    if (hasFeedContent(creative)) {
+      for (const field of COPY_FIELDS[base.key]) delete data[field];
+      body.asset_feed_spec = JSON.stringify(creative.asset_feed_spec);
+    } else {
+      data.message = input.post.message;
+    }
+  } else {
+    spec = {
+      page_id: input.post.page_id,
+      link_data: { link: `https://www.facebook.com/${input.post.page_id}`, message: input.post.message },
+    };
   }
-  return spec;
+  const instagramUserId = resolveInstagramUserId(creative);
+  if (instagramUserId) spec.instagram_user_id = instagramUserId;
+  body.object_story_spec = JSON.stringify(spec);
+  Object.assign(body, carryOverFields(creative).body);
+  if (creative.url_tags) body.url_tags = creative.url_tags;
+  return body;
 }
 
 // Once the post is edited Meta refuses the creative that created it
@@ -185,7 +207,7 @@ export async function editPost(
     previous_creative_id: u.creative_id,
     instagram: "kept",
   }]));
-  const result: PostEditOutcome = { edited: false, ads: [...ads.values()], temporary_deleted: false, new_creatives: [] };
+  const result: PostEditOutcome = { edited: false, ads: [...ads.values()], temporary_creatives: [], temporary_left: [], new_creatives: [] };
 
   // Returns Meta's message when the write failed.
   const pointAt = async (adId: string, creativeId: string): Promise<string | undefined> => {
@@ -206,18 +228,43 @@ export async function editPost(
   };
   const createCreative = async (body: Record<string, string>) =>
     (await metaApiClient.postForm<{ id: string }>(`/${accountId}/adcreatives`, body, bounded)).id;
-  // Moving `count` ads back at worst: the 30-second gap, a write and a read
-  // back for each, then deleting the temporary creative.
-  const putBackCost = (count: number) => CREATIVE_CHANGE_GAP_MS + (2 * count + 1) * CALL_MS;
+  const deleteTemporaries = async () => {
+    for (const id of result.temporary_creatives) {
+      try {
+        await metaApiClient.delete(`/${id}`, undefined, bounded);
+      } catch {
+        result.temporary_left.push(id);
+      }
+    }
+  };
 
-  if (clock.now() + CALL_MS + putBackCost(0) > deadline) return { ...result, stage: "time", error: TOO_SLOW };
-  let temporary: string;
-  try {
-    temporary = await createCreative({ name: TEMPORARY_NAME, object_story_spec: JSON.stringify(temporarySpec(input)) });
-  } catch (err) {
-    return { ...result, stage: "temporary_creative", error: errorMessage(err) };
+  // One temporary copy per distinct ad configuration on the post; creatives
+  // whose copies would be the same share one.
+  const copies = new Map<string, Record<string, string>>();
+  const copyOf = new Map<string, string>();
+  for (const creativeId of new Set(input.users.map((u) => u.creative_id))) {
+    const body = temporaryBody(input.creatives[creativeId] ?? ({ id: creativeId, name: "" } as AdCreative), input);
+    const key = JSON.stringify(body);
+    copies.set(key, body);
+    copyOf.set(creativeId, key);
   }
-  result.temporary_creative_id = temporary;
+  // Moving `count` ads back at worst: the 30-second gap, a write and a read
+  // back for each, then deleting every temporary creative.
+  const putBackCost = (count: number) => CREATIVE_CHANGE_GAP_MS + (2 * count + copies.size) * CALL_MS;
+
+  if (clock.now() + copies.size * CALL_MS + putBackCost(0) > deadline) return { ...result, stage: "time", error: TOO_SLOW };
+  const temporaryOfCopy = new Map<string, string>();
+  for (const [key, body] of copies) {
+    try {
+      const id = await createCreative(body);
+      temporaryOfCopy.set(key, id);
+      result.temporary_creatives.push(id);
+    } catch (err) {
+      await deleteTemporaries();
+      return { ...result, stage: "temporary_creative", error: errorMessage(err) };
+    }
+  }
+  const temporaryOf = (user: PostUser) => temporaryOfCopy.get(copyOf.get(user.creative_id)!)!;
 
   const detachedAt = new Map<string, number>();
   // Own creative -> its new creative reusing the post, once the post is edited.
@@ -230,7 +277,7 @@ export async function editPost(
       const ad = ads.get(user.ad_id)!;
       const target = targetOf(user);
       if (!target) {
-        Object.assign(ad, { outcome: "left_on_temporary", creative_id: temporary, instagram: "reset", error: noTarget });
+        Object.assign(ad, { outcome: "left_on_temporary", creative_id: temporaryOf(user), instagram: "reset", error: noTarget });
         continue;
       }
       const wait = since + CREATIVE_CHANGE_GAP_MS - clock.now();
@@ -244,7 +291,7 @@ export async function editPost(
       }
       Object.assign(ad, {
         outcome: "left_on_temporary",
-        creative_id: now ?? temporary,
+        creative_id: now ?? temporaryOf(user),
         instagram: "reset",
         error: now === undefined ? `${error} Its creative could not be read back.` : error,
       });
@@ -252,12 +299,7 @@ export async function editPost(
   };
 
   const finish = async (): Promise<PostEditOutcome> => {
-    try {
-      await metaApiClient.delete(`/${temporary}`, undefined, bounded);
-      result.temporary_deleted = true;
-    } catch {
-      result.temporary_deleted = false;
-    }
+    await deleteTemporaries();
     return result;
   };
 
@@ -271,6 +313,7 @@ export async function editPost(
   for (const user of input.users) {
     // The move, a read back if it fails, and moving everything back after it.
     if (clock.now() + 2 * CALL_MS + putBackCost(detachedAt.size + 1) > deadline) return stopAndRestore("time", TOO_SLOW);
+    const temporary = temporaryOf(user);
     const error = await pointAt(user.ad_id, temporary);
     const now = error === undefined ? temporary : await creativeOf(user.ad_id);
     if (now === temporary) {
@@ -291,11 +334,13 @@ export async function editPost(
   const ownCreatives = new Set(input.users.map((u) => u.creative_id).filter((id) => input.creatives[id]?.object_story_spec));
   const editUntil = Math.min(clock.now() + EDIT_WINDOW_MS, deadline - ownCreatives.size * CALL_MS - putBackCost(input.users.length) - CALL_MS);
 
-  // The temporary creative has to free the post: a creative Meta matched to
-  // the same post would keep it in use and the edit would never go through.
-  const temporaryPost = await waitForPost(temporary, clock, Math.min(clock.now() + POST_WINDOW_MS, editUntil - 3 * CALL_MS), bounded);
-  if (temporaryPost === post.post_id) {
-    return stopAndRestore("wait", "The temporary creative uses the same post, so the post stays in use and cannot be edited.");
+  // Every temporary creative has to free the post: one Meta matched to the
+  // same post would keep it in use and the edit would never go through.
+  const waitUntil = Math.min(clock.now() + POST_WINDOW_MS, editUntil - 3 * CALL_MS);
+  for (const id of result.temporary_creatives) {
+    if (await waitForPost(id, clock, waitUntil, bounded) === post.post_id) {
+      return stopAndRestore("wait", "A temporary creative uses the same post, so the post stays in use and cannot be edited.");
+    }
   }
   // The Page token, one attempt and a read back.
   if (clock.now() + 3 * CALL_MS > editUntil) return stopAndRestore("time", TOO_SLOW);

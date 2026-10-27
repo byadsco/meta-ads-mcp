@@ -268,13 +268,16 @@ describe("MetaApiClient", () => {
       expect(Date.now() - started).toBeLessThan(1000);
     });
 
-    it("gives up a bounded call whose answer does not arrive in time", async () => {
-      vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
-        ok: true, status: 200, headers: new Headers(),
-        json: () => new Promise(() => {}),
+    it("gives up and aborts a bounded call whose answer does not arrive in time", async () => {
+      let signal: AbortSignal | undefined;
+      vi.stubGlobal("fetch", vi.fn(async (_url: string, init: RequestInit) => {
+        signal = init.signal ?? undefined;
+        return { ok: true, status: 200, headers: new Headers(), json: () => new Promise(() => {}) };
       }));
 
       await expect(client.get("/me", {}, { timeoutMs: 50 })).rejects.toThrow(/timeout/i);
+      // The transfer is cancelled, not left running.
+      expect(signal?.aborted).toBe(true);
     });
 
     it("sends nothing when pacing would hold a bounded write past its limit", async () => {
