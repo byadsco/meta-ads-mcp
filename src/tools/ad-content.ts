@@ -10,8 +10,11 @@ import {
   type ContentPlan,
   type FieldChange,
   type PlanErrorCode,
+  type PostEdit,
   type ReasonCode,
 } from "../meta/ad-content.js";
+import { grantedPermissions } from "../meta/page-token.js";
+import { editPost, findPostUsers, type Clock, type PostEditOutcome, type PostUser } from "../meta/post-edit.js";
 import {
   createReplacementCreative,
   deleteCreative,
@@ -48,7 +51,18 @@ interface PlanningProblem {
   message: string;
 }
 
-type KindedFailure = FailedAd & { kind: "read_failed" | "create_failed" | "repoint_failed" | "changed_meanwhile" };
+type KindedFailure = FailedAd & {
+  kind: "read_failed" | "create_failed" | "repoint_failed" | "changed_meanwhile" | "post_edit_failed" | "left_on_temporary";
+};
+
+// Every ad of the account on the post a route-B plan edits, with each one's
+// creative, read for the preview and bound by the plan_token.
+interface PostScope {
+  account_id: string;
+  post: PostEdit;
+  users: PostUser[];
+  creatives: Record<string, AdCreative>;
+}
 
 interface GroupReport {
   creative_id: string;
@@ -65,6 +79,8 @@ interface GroupReport {
   warnings: string[];
   // The replacement that would be sent; it only feeds the plan_token.
   body?: Record<string, string>;
+  post_edit?: PostEdit;
+  post_scope?: PostScope;
 }
 
 const NUMERIC_ID = /^\d+$/;
@@ -73,8 +89,16 @@ const NUMERIC_ID = /^\d+$/;
 // creatives, routes and replacement bodies, and the same problems. Creatives
 // are immutable, so the same source creative gives the same body.
 function planToken(reports: GroupReport[], planningErrors: PlanningProblem[], failed: KindedFailure[]): string {
+  const postScope = (r: GroupReport) => r.post_scope && [
+    r.post_scope.post.post_id,
+    ["text", r.post_scope.post.message],
+    r.post_scope.users.map((u) => [u.ad_id, u.creative_id, u.status]),
+  ];
   const plan = {
-    plans: reports.map((r) => [r.creative_id, r.ad_ids, r.route ?? null, r.reason_code ?? null, r.body ? canonicalBody(r.body) : null]),
+    plans: reports.map((r) => [
+      r.creative_id, r.ad_ids, r.route ?? null, r.reason_code ?? null,
+      r.body ? canonicalBody(r.body) : null, postScope(r) ?? null,
+    ]),
     planning_errors: planningErrors.map((p) => [p.creative_id, p.ad_ids, p.code]),
     unreadable: failed.map((f) => f.ad_id),
   };
@@ -133,6 +157,11 @@ function planJson(report: GroupReport) {
     changed_fields: report.field_changes.map((change) => change.field),
     text_option_counts: { before: count(report.before), after: count(report.after) },
     engagement,
+    post_edit: report.post_scope && {
+      post_id: report.post_scope.post.post_id,
+      affected_ad_ids: report.post_scope.users.map((u) => u.ad_id),
+      instagram_reset_ad_ids: instagramResetAds(report.post_scope),
+    },
     warning_count: report.warnings.length,
   };
 }
@@ -141,11 +170,86 @@ function failureJson(failure: KindedFailure) {
   return { ad_id: failure.ad_id, kind: failure.kind, code: failure.code, new_creative_id: failure.new_creative_id };
 }
 
-export function registerAdContentTools(server: McpServer): void {
+function postEditJson(outcome: PostEditOutcome) {
+  return {
+    edited: outcome.edited,
+    stage: outcome.stage,
+    temporary_creative_id: outcome.temporary_creative_id,
+    temporary_deleted: outcome.temporary_deleted,
+    new_creatives: outcome.new_creatives,
+    ads: outcome.ads.map((a) => ({
+      ad_id: a.ad_id, outcome: a.outcome, creative_id: a.creative_id,
+      previous_creative_id: a.previous_creative_id, instagram: a.instagram, resumed: a.resumed,
+    })),
+  };
+}
+
+// Ads whose creative created the post: once it is edited they move to a
+// creative reusing it, with a new Instagram media.
+function instagramResetAds(scope: PostScope): string[] {
+  return scope.users.filter((u) => scope.creatives[u.creative_id]?.object_story_spec).map((u) => u.ad_id);
+}
+
+// A route-B plan needs the permission to edit the post and every ad of the
+// account on it, and runs on its own. Each check that fails turns the plan
+// into a refusal with a code.
+async function preparePostEdits(entries: Array<{ report: GroupReport; creative: AdCreative; group: CreativeGroup }>): Promise<void> {
+  const edits = entries.filter((e) => e.report.route === "edit_post" && e.report.post_edit);
+  if (edits.length === 0) return;
+  const refuse = (reason_code: ReasonCode, reason: string) => {
+    for (const { report } of edits) {
+      Object.assign(report, { route: undefined, social_proof: undefined, blocking: true, reason_code, reason });
+    }
+  };
+  const post = edits[0].report.post_edit!;
+  const accountId = edits[0].group.account_id;
+  const alone = edits.every((e) => e.report.post_edit!.post_id === post.post_id && e.report.post_edit!.message === post.message && e.group.account_id === accountId)
+    && entries.every((e) => !e.report.route || e.report.route === "edit_post");
+  if (!alone) {
+    return refuse("post_edit_alone", "a post edit runs on its own: one post and one new text per call, with no other change in the same call");
+  }
+
+  let granted: Set<string>;
+  try {
+    granted = await grantedPermissions();
+  } catch {
+    return refuse("post_edit_permission", "it could not be confirmed that the token has pages_manage_posts, which editing a post needs");
+  }
+  if (!granted.has("pages_manage_posts")) {
+    return refuse("post_edit_permission", "the token lacks pages_manage_posts, which editing a post needs. The person has to re-authorize with it (the server asks for it when META_OAUTH_EXTRA_SCOPES lists it), or use allow_new_post instead");
+  }
+
+  let users: PostUser[];
+  try {
+    const found = await findPostUsers(accountId, post.post_id);
+    if (!found.complete) return refuse("post_edit_scan_incomplete", "the account has too many ads to find every one using this post");
+    users = found.users;
+  } catch {
+    return refuse("post_edit_scan_incomplete", "the account's ads could not be read to find every one using this post");
+  }
+  const requested = edits.flatMap((e) => e.report.ad_ids);
+  if (requested.some((id) => !users.some((u) => u.ad_id === id))) {
+    return refuse("post_edit_scan_incomplete", "an ad of this request is not in the account's ad list, so the ads using the post cannot all be found");
+  }
+
+  const creatives: Record<string, AdCreative> = Object.fromEntries(edits.map((e) => [e.report.creative_id, e.creative]));
+  for (const creativeId of new Set(users.map((u) => u.creative_id))) {
+    if (creatives[creativeId]) continue;
+    try {
+      creatives[creativeId] = await readCreativeForRebuild(creativeId, ["body", "title"]);
+    } catch {
+      return refuse("post_edit_scan_incomplete", `creative ${creativeId}, used by an ad on this post, could not be read`);
+    }
+  }
+  const scope: PostScope = { account_id: accountId, post, users, creatives };
+  for (const { report } of edits) report.post_scope = scope;
+}
+
+export function registerAdContentTools(server: McpServer, options: { clock?: Clock } = {}): void {
   server.registerTool(
     "ads_update_ad_content",
     {
-      description: `${WRITE_WARNING}Change the copy, link, button or media of live ads: add, remove or replace primary texts, headlines and descriptions, including removing one option of several. Meta creatives are immutable, so each ad gets a replacement creative and goes back through review; the ad keeps its ID, history and previous creative (point it back with ads_update_ad to undo, which brings its post back too). Likes, comments and shares live on the ad's post. When only primary texts change and at least two remain, the ad keeps its Facebook post and that engagement (its Instagram side starts over and the Facebook headline stays the post's own). Anything else creates a new post, which resets the visible engagement, and only happens with allow_new_post: true. dry_run defaults to true: the first call shows, per creative, the copy before and after, any link, button, media or url_tags change, the route and the engagement at stake, without changing anything. The preview is read from the replacement that would be sent, so it includes what a change brings along (a video given a new link and no button gets a LEARN_MORE button). Show that to the person and, once they agree, call again with dry_run: false and the plan_token the dry run returned. Only that exact plan is applied: if the ads or the request changed since, nothing is written and the reply is the new preview with a new plan_token. Nothing changes if any ad cannot be read, has an invalid change or would need a route that is not allowed, or if any replacement creative cannot be created: all replacements are created before any ad is repointed. Right before each repoint the ad is read again; an ad someone moved to another creative meanwhile is left untouched. If Meta then refuses to repoint an ad, ads already repointed stay changed, and the response lists each one with its previous creative so it can be undone. Repeating a set, link, button or media change that is already applied does nothing; add and remove are not repeatable, so after a partial failure preview again with only the ads that failed. An ad with per-platform media (platform_customizations) cannot have its image or video changed here. Carousels, dynamic creative and other asset feeds are not supported. Meta lets an ad change creative at most once every 30 seconds (error 613): wait before changing the same ad again.`,
+      description: `${WRITE_WARNING}Change the copy, link, button or media of live ads: add, remove or replace primary texts, headlines and descriptions, including removing one option of several. Meta creatives are immutable, so each ad gets a replacement creative and goes back through review; the ad keeps its ID, history and previous creative (point it back with ads_update_ad to undo, which brings its post back too). Likes, comments and shares live on the ad's post. When only primary texts change and at least two remain, the ad keeps its Facebook post and that engagement (its Instagram side starts over and the Facebook headline stays the post's own). Anything else creates a new post, which resets the visible engagement, and only happens with allow_new_post: true. With allow_post_edit: true, an ad with one primary text (an image or link ad, or a promoted post) can instead have its post itself edited: the Facebook post and its engagement stay, and Instagram too when the ad reuses the post rather than having created it. The new text then shows on every ad using the post, which the preview lists; their active ads pause for two to three minutes and resume; headline and description cannot change this way; one post per call, with no other change; the token needs pages_manage_posts. dry_run defaults to true: the first call shows, per creative, the copy before and after, any link, button, media or url_tags change, the route and the engagement at stake, without changing anything. The preview is read from the replacement that would be sent, so it includes what a change brings along (a video given a new link and no button gets a LEARN_MORE button). Show that to the person and, once they agree, call again with dry_run: false and the plan_token the dry run returned. Only that exact plan is applied: if the ads or the request changed since, nothing is written and the reply is the new preview with a new plan_token. Nothing changes if any ad cannot be read, has an invalid change or would need a route that is not allowed, or if any replacement creative cannot be created: all replacements are created before any ad is repointed. Right before each repoint the ad is read again; an ad someone moved to another creative meanwhile is left untouched. If Meta then refuses to repoint an ad, ads already repointed stay changed, and the response lists each one with its previous creative so it can be undone. Repeating a set, link, button or media change that is already applied does nothing; add and remove are not repeatable, so after a partial failure preview again with only the ads that failed. An ad with per-platform media (platform_customizations) cannot have its image or video changed here. Carousels, dynamic creative and other asset feeds are not supported. Meta lets an ad change creative at most once every 30 seconds (error 613): wait before changing the same ad again.`,
       inputSchema: {
         ad_ids: z.array(z.string()).min(1).max(50).describe("Ad IDs to change (1-50). Ads sharing a creative get one replacement."),
         primary_texts: textChange("primary text"),
@@ -161,6 +265,10 @@ export function registerAdContentTools(server: McpServer): void {
           .boolean()
           .default(false)
           .describe("Allow changes that need a new post. Its likes, comments and shares start from zero."),
+        allow_post_edit: z
+          .boolean()
+          .default(false)
+          .describe("Allow editing the ad's post itself to change its one primary text, which keeps the Facebook post and its engagement (Instagram too when the ad reuses the post). Changes the text for every ad on the post. Needs pages_manage_posts."),
         dry_run: z
           .boolean()
           .default(true)
@@ -174,7 +282,7 @@ export function registerAdContentTools(server: McpServer): void {
     },
     async ({
       ad_ids, primary_texts, headlines, descriptions, link_url, call_to_action_type,
-      image_hash, image_url, video_id, url_tags, allow_new_post, dry_run, plan_token,
+      image_hash, image_url, video_id, url_tags, allow_new_post, allow_post_edit, dry_run, plan_token,
     }) => {
       const preview = dry_run !== false;
       if (!preview && !plan_token) {
@@ -205,7 +313,7 @@ export function registerAdContentTools(server: McpServer): void {
       const { groups } = grouped;
       const failed: KindedFailure[] = grouped.failed.map((f) => ({ ...f, kind: "read_failed" }));
       const reports: GroupReport[] = [];
-      const routed: Array<{ report: GroupReport; creative: AdCreative }> = [];
+      const routed: Array<{ report: GroupReport; creative: AdCreative; group: CreativeGroup }> = [];
       const actionable: Array<{ group: CreativeGroup; body: Record<string, string> }> = [];
       const planningErrors: PlanningProblem[] = [];
 
@@ -219,7 +327,7 @@ export function registerAdContentTools(server: McpServer): void {
         }
         let plan: ContentPlan;
         try {
-          plan = planContentEdit(creative, changes, allow_new_post === true);
+          plan = planContentEdit(creative, changes, allow_new_post === true, allow_post_edit === true);
         } catch (err) {
           planningErrors.push({
             creative_id: group.creative_id,
@@ -242,11 +350,13 @@ export function registerAdContentTools(server: McpServer): void {
           blocking: plan.blocking === true,
           warnings: plan.warnings,
           body: plan.body,
+          post_edit: plan.post_edit,
         };
         reports.push(report);
-        if (plan.route) routed.push({ report, creative });
+        if (plan.route) routed.push({ report, creative, group });
         if (plan.route && plan.body) actionable.push({ group, body: plan.body });
       }
+      await preparePostEdits(routed);
 
       // An apply call writes only the plan the person saw: if the ads or the
       // request changed since that dry run, this call becomes a new preview.
@@ -254,6 +364,7 @@ export function registerAdContentTools(server: McpServer): void {
       const planChanged = !preview && plan_token !== token;
       if (preview || planChanged) {
         for (const { report, creative } of routed) {
+          if (!report.route) continue;
           report.engagement = await readEngagement(creative.effective_object_story_id, creative.effective_instagram_media_id);
         }
       }
@@ -266,7 +377,26 @@ export function registerAdContentTools(server: McpServer): void {
       // any ad left out (unreadable, invalid change, refused route) stops the
       // batch: a batch never half-applies on a plan.
       let aborted = planChanged || (!preview && (planningErrors.length > 0 || failed.length > 0 || reports.some((r) => r.blocking)));
-      if (!preview && !aborted) {
+      let postEditOutcome: PostEditOutcome | undefined;
+      const postScope = reports.find((r) => r.route === "edit_post")?.post_scope;
+      if (!preview && !aborted && postScope) {
+        postEditOutcome = await editPost(postScope, options.clock);
+        for (const ad of postEditOutcome.ads) {
+          if (ad.outcome === "updated") {
+            updated.push({ ad_id: ad.ad_id, old_creative_id: ad.previous_creative_id, new_creative_id: ad.creative_id });
+            if (ad.error) warnings.push(`Ad ${ad.ad_id}: ${ad.error}`);
+          } else {
+            failed.push({
+              ad_id: ad.ad_id,
+              kind: ad.outcome === "left_on_temporary" ? "left_on_temporary" : "post_edit_failed",
+              error: ad.outcome === "left_on_temporary"
+                ? `It stays paused on the temporary creative ${ad.creative_id}: ${ad.error ?? "it could not be moved back"}. Point it at a creative reusing post ${postScope.post.post_id} with ads_update_ad, then resume it.`
+                : `The post was not edited (${ad.outcome === "restored" ? "the ad is back on its creative" : "the ad was not changed"}): ${ad.error ?? postEditOutcome.error ?? "unknown reason"}`,
+            });
+          }
+        }
+        if (postEditOutcome.temporary_creative_id && !postEditOutcome.temporary_deleted) leftover.push(postEditOutcome.temporary_creative_id);
+      } else if (!preview && !aborted) {
         // Two phases: every replacement creative first (it changes no ad), and
         // only when all of them exist, the repoints.
         const ready: Array<{ group: CreativeGroup; newCreativeId: string }> = [];
@@ -298,7 +428,7 @@ export function registerAdContentTools(server: McpServer): void {
 
       return {
         content: [
-          { type: "text", text: summarize(reports, planningErrors, updated, failed, warnings, leftover, { preview, aborted, planChanged, token }) },
+          { type: "text", text: summarize(reports, planningErrors, updated, failed, warnings, leftover, { preview, aborted, planChanged, token, postEditOutcome }) },
           {
             type: "text",
             text: JSON.stringify({
@@ -312,6 +442,7 @@ export function registerAdContentTools(server: McpServer): void {
               failed: failed.map(failureJson),
               repoint_notes: warnings.length,
               leftover_creatives: leftover,
+              post_edit: postEditOutcome && postEditJson(postEditOutcome),
             }, null, 2),
           },
         ],
@@ -347,7 +478,7 @@ function summarize(
   failed: FailedAd[],
   repointNotes: string[],
   leftover: string[],
-  state: { preview: boolean; aborted: boolean; planChanged: boolean; token: string },
+  state: { preview: boolean; aborted: boolean; planChanged: boolean; token: string; postEditOutcome?: PostEditOutcome },
 ): string {
   const lines: string[] = [];
   if (state.planChanged) {
@@ -367,9 +498,11 @@ function summarize(
       lines.push(`• Ads ${ads}: not changed — ${singleLine(report.reason, 400)}`);
       continue;
     }
-    const proof = report.social_proof?.facebook === "kept"
-      ? "keeps its Facebook post and that post's likes, comments and shares; Instagram starts over"
-      : "gets a new post: likes, comments and shares start from zero";
+    const proof = report.route === "edit_post"
+      ? `its post itself gets the new text: it keeps the Facebook post and that post's likes, comments and shares; Instagram ${report.social_proof?.instagram === "kept" ? "keeps its media too" : "starts over"}`
+      : report.social_proof?.facebook === "kept"
+        ? "keeps its Facebook post and that post's likes, comments and shares; Instagram starts over"
+        : "gets a new post: likes, comments and shares start from zero";
     lines.push(`• Ads ${ads} (creative ${report.creative_id}): ${proof}.${describeEngagement(report.engagement)}`);
     for (const warning of report.warnings) lines.push(`  ⚠️ ${warning}`);
     lines.push(ADVERTISER_CONTENT_OPEN);
@@ -384,6 +517,22 @@ function summarize(
     for (const note of report.engagement?.notes ?? []) lines.push(singleLine(note, 400));
     lines.push(ADVERTISER_CONTENT_CLOSE);
   }
+  const scope = reports.find((r) => r.route === "edit_post")?.post_scope;
+  if (scope && (preview || state.planChanged)) {
+    const reset = new Set(instagramResetAds(scope));
+    const active = scope.users.filter((u) => u.status === "ACTIVE").map((u) => u.ad_id);
+    lines.push("", `Editing post ${scope.post.post_id} changes its text for every ad on it, not only the ones asked for:`);
+    for (const user of scope.users) {
+      lines.push(`• Ad ${user.ad_id}: Facebook post kept; Instagram ${reset.has(user.ad_id) ? "starts over (its creative created the post, and Meta does not let it come back to that creative once the post is edited)" : "kept"}`);
+    }
+    lines.push(
+      "Headlines and descriptions stay as they are: Meta does not let them be edited on the post.",
+      active.length > 0
+        ? `The active ads (${active.join(", ")}) pause while the post is edited and resume afterwards; every ad goes back through review.`
+        : "Every ad goes back through review.",
+      "Applying takes two to three minutes. Meta keeps the temporary creative the edit needs in the account afterwards: it cannot be deleted, and no ad uses it.",
+    );
+  }
   // Problems and Meta's errors can quote ad copy, so they stay one bounded
   // line each, inside the fence.
   if (planningErrors.length > 0) {
@@ -395,8 +544,17 @@ function summarize(
   if (failed.length > 0) {
     lines.push("", "Failed:", ADVERTISER_CONTENT_OPEN, ...failed.map((f) => `• Ad ${f.ad_id}: ${singleLine(f.error, 400)}`), ADVERTISER_CONTENT_CLOSE);
   }
+  const outcome = state.postEditOutcome;
+  if (outcome) {
+    const post = reports.find((r) => r.route === "edit_post")?.post_scope?.post.post_id;
+    lines.push("", outcome.edited
+      ? `Post ${post} was edited.`
+      : `Post ${post} was not edited: it stopped while ${outcome.stage === "edit" ? "editing the post" : `at step "${outcome.stage}"`}, and every ad went back to its creative unless listed under Failed.`);
+  }
   for (const id of leftover) {
-    lines.push(`Creative ${id} could not be deleted. No ad uses it; delete it in Ads Manager.`);
+    lines.push(id === outcome?.temporary_creative_id
+      ? `Creative ${id}, the temporary one the edit needed, stays in the account: Meta does not let it be deleted. No ad uses it.`
+      : `Creative ${id} could not be deleted. No ad uses it; delete it in Ads Manager.`);
   }
   if (!preview && updated.length > 0) {
     lines.push("", "Updated ads go back through Meta review. To undo, point an ad at its previous creative with ads_update_ad:");

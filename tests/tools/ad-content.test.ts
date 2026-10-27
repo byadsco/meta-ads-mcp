@@ -22,9 +22,15 @@ const MULTI_TEXT_CREATIVE = {
   },
 };
 
+// Post edits wait on Meta for minutes; a fake clock makes those waits instant.
+function fakeClock() {
+  let t = 0;
+  return { now: () => t, sleep: async (ms: number) => { t += ms; } };
+}
+
 function tool() {
   const server = createMockMcpServer();
-  registerAdContentTools(server as never);
+  registerAdContentTools(server as never, { clock: fakeClock() });
   return server._registeredTools[0];
 }
 
@@ -549,5 +555,159 @@ describe("ads_update_ad_content", () => {
       text_option_counts: { before: { primary: 2, headlines: 1, descriptions: 0 }, after: { primary: 2, headlines: 1, descriptions: 0 } },
       warning_count: 0,
     });
+  });
+});
+
+describe("ads_update_ad_content — editing the post (allow_post_edit)", () => {
+  const SINGLE = {
+    id: "4002",
+    name: "Single",
+    effective_object_story_id: "6001_888",
+    effective_instagram_media_id: "17900000000000002",
+    object_story_spec: {
+      page_id: "6001",
+      instagram_user_id: "17841400000000001",
+      link_data: { link: "https://example.com/", image_hash: "h1", message: "Texto", name: "Titular", call_to_action: { type: "LEARN_MORE", value: { link: "https://example.com/" } } },
+    },
+  };
+  const REUSE = { id: "4005", name: "Reuse", effective_object_story_id: "6001_888", effective_instagram_media_id: "17900000000000005", body: "Texto" };
+  const AD = { id: "3001", account_id: "123", creative: { id: "4002" } };
+  const SCAN = { data: [
+    { id: "3001", status: "ACTIVE", creative: { id: "4002", effective_object_story_id: "6001_888" } },
+    { id: "3005", status: "PAUSED", creative: { id: "4005", effective_object_story_id: "6001_888" } },
+    { id: "3009", status: "ACTIVE", creative: { id: "4009", effective_object_story_id: "6001_111" } },
+  ] };
+  const GRANTED = { data: [{ permission: "pages_manage_posts", status: "granted" }] };
+  const OBJECTS = { 3001: AD, 4002: SINGLE, 4005: REUSE, permissions: GRANTED, ads: SCAN };
+  const ARGS = { ad_ids: ["3001"], primary_texts: { set: ["Texto nuevo"] }, allow_post_edit: true };
+
+  // Answers Meta by method and path, each route's replies in order, the last
+  // one repeating. A reply with an error is a 400.
+  function stubMeta(routes: Record<string, unknown[]>): void {
+    const counts: Record<string, number> = {};
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      const key = `${init?.method ?? "GET"} ${new URL(url).pathname.replace(/^\/v[\d.]+/, "")}`;
+      const replies = routes[key] ?? [{ success: true }];
+      const index = (counts[key] = (counts[key] ?? -1) + 1);
+      const reply = replies[Math.min(index, replies.length - 1)];
+      return mockFetchResponse(reply, { status: (reply as { error?: unknown }).error ? 400 : 200 });
+    }));
+  }
+  const READS = {
+    "GET /3001": [AD], "GET /4002": [SINGLE], "GET /4005": [REUSE],
+    "GET /me/permissions": [GRANTED], "GET /act_123/ads": [SCAN],
+  };
+
+  beforeEach(() => {
+    setupTestToken();
+    metaApiClient.resetForTests();
+  });
+
+  afterEach(() => {
+    cleanupTestToken();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it("previews the edit of the post for every ad on it, with what happens to each one's Instagram", async () => {
+    routeFetch(OBJECTS);
+
+    const result = await tool().handler(ARGS) as ToolResult;
+
+    expect(fetchCallSummary().filter((c) => !c.startsWith("GET"))).toEqual([]);
+    const report = JSON.parse(result.content[1].text);
+    expect(report.plans[0]).toMatchObject({
+      route: "edit_post",
+      social_proof: { facebook: "kept", instagram: "reset" },
+      post_edit: { post_id: "6001_888", affected_ad_ids: ["3001", "3005"], instagram_reset_ad_ids: ["3001"] },
+    });
+    const text = result.content[0].text;
+    expect(text).toContain('Primary texts after: ["Texto nuevo"]');
+    expect(text).toMatch(/Ad 3005: .*Instagram kept/);
+    expect(text).toMatch(/Ad 3001: .*Instagram starts over/);
+    expect(text).toMatch(/pause/);
+    expect(text).toMatch(/temporary creative/);
+  });
+
+  it("refuses the edit when the token lacks pages_manage_posts, before scanning the account", async () => {
+    routeFetch({ ...OBJECTS, permissions: { data: [{ permission: "pages_manage_posts", status: "declined" }] } });
+
+    const result = await tool().handler(ARGS) as ToolResult;
+
+    expect(JSON.parse(result.content[1].text).plans[0]).toMatchObject({ blocking: true, reason_code: "post_edit_permission" });
+    expect(fetchCallSummary()).not.toContain("GET /act_123/ads");
+    expect(result.content[0].text).toMatch(/pages_manage_posts/);
+  });
+
+  it("runs a post edit on its own: one post per call", async () => {
+    const other = { ...SINGLE, id: "4006", effective_object_story_id: "6001_777" };
+    routeFetch({ ...OBJECTS, 3006: { id: "3006", account_id: "123", creative: { id: "4006" } }, 4006: other });
+
+    const result = await tool().handler({ ...ARGS, ad_ids: ["3001", "3006"] }) as ToolResult;
+
+    const plans = JSON.parse(result.content[1].text).plans;
+    expect(plans.map((p: { reason_code?: string }) => p.reason_code)).toEqual(["post_edit_alone", "post_edit_alone"]);
+  });
+
+  it("edits the post and reports where each ad ended up, the temporary creative included", async () => {
+    const plan_token = await approvedToken(ARGS, OBJECTS);
+    stubMeta({
+      ...READS,
+      "POST /act_123/adcreatives": [{ id: "4900" }, { id: "4950" }],
+      "GET /4900": [{ id: "4900", effective_object_story_id: "6001_999" }],
+      "GET /6001": [{ id: "6001", access_token: "page-token" }],
+      "POST /6001_888": [{ success: true }],
+      "DELETE /4900": [{ error: { code: 100, message: "In use" } }],
+    });
+
+    const result = await tool().handler({ ...ARGS, dry_run: false, plan_token }) as ToolResult;
+
+    expect(fetchCallSummary().filter((c) => !c.startsWith("GET"))).toEqual([
+      "POST /act_123/adcreatives", "POST /3001", "POST /3001", "POST /3005", "POST /6001_888",
+      "POST /act_123/adcreatives", "POST /3001", "POST /3005", "POST /3001", "DELETE /4900",
+    ]);
+    const report = JSON.parse(result.content[1].text);
+    expect(report.updated).toEqual([
+      { ad_id: "3001", old_creative_id: "4002", new_creative_id: "4950" },
+      { ad_id: "3005", old_creative_id: "4005", new_creative_id: "4005" },
+    ]);
+    expect(report.post_edit).toMatchObject({ edited: true, temporary_creative_id: "4900", new_creatives: ["4950"] });
+    expect(report.leftover_creatives).toEqual(["4900"]);
+    expect(result.content[1].text).not.toContain("page-token");
+    expect(result.content[0].text).toMatch(/post 6001_888 was edited/i);
+  });
+
+  it("puts every ad back when Meta never accepts the edit", async () => {
+    const plan_token = await approvedToken(ARGS, OBJECTS);
+    stubMeta({
+      ...READS,
+      "POST /act_123/adcreatives": [{ id: "4900" }],
+      "GET /4900": [{ id: "4900", effective_object_story_id: "6001_999" }],
+      "GET /6001": [{ id: "6001", access_token: "page-token" }],
+      "POST /6001_888": [{ error: { code: 100, message: "(#100) Failed to edit object" } }],
+    });
+
+    const result = await tool().handler({ ...ARGS, dry_run: false, plan_token }) as ToolResult;
+
+    const report = JSON.parse(result.content[1].text);
+    expect(report.updated).toEqual([]);
+    expect(report.failed).toEqual([
+      { ad_id: "3001", kind: "post_edit_failed" },
+      { ad_id: "3005", kind: "post_edit_failed" },
+    ]);
+    expect(report.post_edit).toMatchObject({ edited: false, stage: "edit" });
+    expect(result.content[1].text).not.toContain("Failed to edit object");
+    expect(result.content[0].text).toMatch(/not edited/);
+  });
+
+  it("writes nothing when another ad started using the post after the preview", async () => {
+    const plan_token = await approvedToken(ARGS, OBJECTS);
+    const joined = { data: [...SCAN.data, { id: "3007", status: "ACTIVE", creative: { id: "4005", effective_object_story_id: "6001_888" } }] };
+    routeFetch({ ...OBJECTS, ads: joined });
+
+    const result = await tool().handler({ ...ARGS, dry_run: false, plan_token }) as ToolResult;
+
+    expect(JSON.parse(result.content[1].text).plan_changed).toBe(true);
+    expect(fetchCallSummary().filter((c) => !c.startsWith("GET"))).toEqual([]);
   });
 });

@@ -3,6 +3,7 @@ import {
   buildAuthorizeUrl,
   fetchPrimaryBusiness,
   loadMetaOAuthConfig,
+  oauthScopes,
 } from "../../src/auth/meta-oauth.js";
 import { mockFetchResponse } from "../setup.js";
 
@@ -44,6 +45,44 @@ describe("Meta OAuth Graph API version", () => {
     expect(dialogUrl.pathname).toBe("/v25.0/dialog/oauth");
     const graphUrl = new URL(vi.mocked(globalThis.fetch).mock.calls[0][0] as string);
     expect(graphUrl.pathname).toBe("/v25.0/me/businesses");
+  });
+});
+
+describe("Meta OAuth scopes", () => {
+  const serverUrl = new URL("https://mcp.example.com");
+  const scopesOf = () => new URL(buildAuthorizeUrl(loadMetaOAuthConfig(serverUrl)!, "state-1")).searchParams.get("scope")!.split(",");
+
+  beforeEach(() => {
+    vi.stubEnv("META_APP_ID", "1234567890");
+    vi.stubEnv("META_APP_SECRET", "dummy-secret");
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("asks only for the default scopes unless the operator opts in to more", () => {
+    vi.stubEnv("META_OAUTH_EXTRA_SCOPES", undefined);
+    expect(scopesOf()).toEqual([
+      "ads_management", "ads_read", "pages_show_list", "pages_read_engagement",
+      "business_management", "whatsapp_business_management", "email", "public_profile",
+    ]);
+    expect(oauthScopes()).toEqual(scopesOf());
+  });
+
+  it("adds the reviewed scopes listed in META_OAUTH_EXTRA_SCOPES, once each", () => {
+    vi.stubEnv("META_OAUTH_EXTRA_SCOPES", " pages_manage_posts, pages_read_user_content ,pages_manage_posts,ads_read");
+    const scopes = scopesOf();
+    expect(scopes.slice(-2)).toEqual(["pages_manage_posts", "pages_read_user_content"]);
+    expect(scopes.filter((s) => s === "ads_read")).toHaveLength(1);
+  });
+
+  it("never asks for a scope outside its list, whatever the variable says", () => {
+    vi.stubEnv("META_OAUTH_EXTRA_SCOPES", "pages_manage_posts,user_messenger_contact,&redirect_uri=https://evil.example");
+    const scopes = scopesOf();
+    expect(scopes).toContain("pages_manage_posts");
+    expect(scopes).not.toContain("user_messenger_contact");
+    expect(scopes.join(",")).not.toContain("evil");
   });
 });
 

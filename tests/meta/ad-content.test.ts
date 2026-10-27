@@ -112,6 +112,59 @@ describe("planContentEdit — same post (route A)", () => {
   });
 });
 
+describe("planContentEdit — editing the post", () => {
+  const promoted: AdCreative = { id: "4300", name: "p", effective_object_story_id: "6001_9", body: "Post text" };
+
+  it("edits the post of a single-text ad when allowed: Facebook kept, Instagram reset", () => {
+    const plan = planContentEdit(singleImage(), { primary_texts: { set: ["Nuevo texto"] } }, false, true);
+    expect(plan.route).toBe("edit_post");
+    expect(plan.body).toBeUndefined();
+    expect(plan.post_edit).toEqual({ post_id: "6001_888", page_id: "6001", message: "Nuevo texto", reuses_post: false });
+    expect(plan.social_proof).toEqual({ facebook: "kept", instagram: "reset" });
+    expect(plan.after).toEqual({ primary: ["Nuevo texto"], headlines: ["Titular"], descriptions: ["Desc"] });
+    expect(plan.field_changes).toEqual([]);
+    expect(plan.warnings.join(" ")).toMatch(/Instagram starts over/);
+  });
+
+  it("keeps Instagram too when the ad already reuses the post", () => {
+    const plan = planContentEdit(promoted, { primary_texts: { set: ["Texto corregido"] } }, false, true);
+    expect(plan.route).toBe("edit_post");
+    expect(plan.post_edit).toEqual({ post_id: "6001_9", page_id: "6001", message: "Texto corregido", reuses_post: true });
+    expect(plan.social_proof).toEqual({ facebook: "kept", instagram: "kept" });
+  });
+
+  it("is not used without allow_post_edit, nor when two or more texts remain", () => {
+    expect(planContentEdit(singleImage(), { primary_texts: { set: ["Nuevo"] } }, false).reason_code).toBe("needs_new_post");
+    expect(planContentEdit(singleImage(), { primary_texts: { add: ["Otro"] } }, false, true).route).toBe("same_post");
+  });
+
+  it("only changes the primary text: anything else needs a new post", () => {
+    const plan = planContentEdit(singleImage(), { primary_texts: { set: ["Nuevo"] }, headlines: { set: ["Otro"] } }, false, true);
+    expect(plan.route).toBeUndefined();
+    expect(plan.reason_code).toBe("needs_new_post");
+  });
+
+  it("refuses to change url_tags while editing the post", () => {
+    const plan = planContentEdit(singleImage({ url_tags: "utm_source=a" }), { primary_texts: { set: ["Nuevo"] }, url_tags: "utm_source=b" }, false, true);
+    expect(plan.route).toBeUndefined();
+    expect(plan.reason_code).toBe("post_edit_url_tags");
+  });
+
+  it("does not edit posts whose ad shows other text: video ads and text options", () => {
+    const video: AdCreative = {
+      id: "1", name: "v", effective_object_story_id: "6001_5",
+      object_story_spec: { page_id: "6001", video_data: { video_id: "8", image_hash: "t", message: "M" } },
+    };
+    const routeAResult: AdCreative = {
+      id: "4100", name: "Multi", effective_object_story_id: "6001_777",
+      asset_feed_spec: { bodies: [{ text: "Uno" }, { text: "Dos" }], optimization_type: "DEGREES_OF_FREEDOM" },
+    };
+    expect(planContentEdit(video, { primary_texts: { set: ["N"] } }, false, true).reason_code).toBe("post_edit_unsupported");
+    expect(planContentEdit(video, { primary_texts: { set: ["N"] } }, true, true).route).toBe("new_post");
+    expect(planContentEdit(routeAResult, { primary_texts: { remove: ["Dos"] } }, false, true).reason_code).toBe("post_edit_unsupported");
+  });
+});
+
 describe("planContentEdit — new post", () => {
   it("refuses changes that need a new post unless allow_new_post is set", () => {
     const plan = planContentEdit(multiText(), { headlines: { set: ["Nuevo"] } }, false);

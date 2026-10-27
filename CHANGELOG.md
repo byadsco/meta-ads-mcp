@@ -9,6 +9,14 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
+- **`ads_update_ad_content` can edit the ad's post itself (`allow_post_edit`).** For an ad with one primary text (an image or link ad, or a promoted post), the post gets the new text and keeps its likes, comments and shares on Facebook. Measured against the live API:
+  - Meta refuses to edit a post while any ad uses it. Every ad on the post moves to a temporary creative of its own post, active ones paused first. The post is edited with a Page token about 40-50 seconds later, and each ad moves back and resumes.
+  - An ad whose creative reuses the post goes back to it and keeps its Instagram media too. Meta refuses the creative that created the post once the post is edited, so those ads move to a new creative reusing it, and their Instagram starts over.
+  - The new text shows on every ad using the post. The preview lists them all, also the ones not asked for, with what happens to each one's Instagram. The `plan_token` covers every one of them and its status.
+  - Headline and description cannot be edited this way: Meta refuses them on the post.
+  - It needs `pages_manage_posts`, checked in the preview. One post per call, with no other change.
+  - Any failure before the edit puts every ad back. An ad that cannot be moved back stays paused on the temporary creative, and the response says so. Meta does not let the temporary creative be deleted.
+- **`META_OAUTH_EXTRA_SCOPES`** lists permissions that need Meta App Review (such as `pages_manage_posts`) for the login dialog to ask for. Only a fixed list is accepted; anything else is ignored.
 - **`ads_update_ad_content` edits live ads.** It can add, remove or replace primary texts, headlines and descriptions (including dropping one option of several), and change the link, button or media. Every ad gets a replacement creative and keeps its ID and history.
   - **Primary texts only, two or more left:** the ad keeps its Facebook post and that post's likes, comments and shares. The new creative references the same post with the new texts as text options; Instagram starts over and the Facebook headline stays the post's own (measured against the live API).
   - **Anything else:** it creates a new post, which resets the visible engagement, so it needs `allow_new_post: true`.

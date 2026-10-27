@@ -56,7 +56,8 @@ Right after an ad is created, its creative may report no `effective_object_story
 | `POST /{ad_id}/copies` without `creative_parameters` | **new** | **new** |
 | Point the ad at another creative, then back at the original | original again | original again |
 | "Route A": new creative with `object_story_id` + `asset_feed_spec` (new bodies) | same | new |
-| "Route B": edit the post itself, then point the ads back at their original creatives | same | same |
+| "Route B": edit the post itself, then point ads that reuse the post back at their creatives | same | same |
+| "Route B" for an ad whose creative created the post: back on a new creative reusing the post | same | **new** |
 
 Route A:
 
@@ -66,9 +67,18 @@ Route A:
 Route B (editing the post):
 
 - `POST /{post_id}` with `message` needs a Page access token (`pages_manage_posts`). A user token gets `(#200) Viewer does not have permission to edit content`.
-- It fails with `(#100) Failed to edit object` while any ad uses the post. After every ad using it is pointed at another creative, the edit is accepted after a short delay: the first attempt still failed, and it went through about 30 seconds later.
-- Pointing each ad back at **its original creative** restores the same Facebook post and the same Instagram media. The edited text shows on both.
-- Headline and description: `name` and `description` are not accepted parameters, and `link_edit` answered `requires exactly one key` with a single-key object. Not solved.
+- It fails with `(#100) Failed to edit object` while any ad uses the post. After every ad using it is pointed at another creative, the edit is accepted 40 to 50 seconds later, with one ad or with two on the same post.
+- The other creative has to make its own post. In one run the ads waited on an exact copy of the original spec, and the edit never went through in three and a half minutes; the copy most likely got the same post. With a different text, the edit went through every time.
+- Once the post is edited, an ad cannot go back to the creative that **created** the post (`object_story_spec`): `subcode 1815697`, "the post was edited after it was created, choose other content".
+  - A creative that **reuses** the post (`object_story_id`) carries the ad again, with the same Facebook post and the same Instagram media.
+  - An ad whose own creative created the post moves to a new creative reusing it: same Facebook post, new Instagram media.
+- After the edit:
+  - The post's `message` and the Instagram media's `caption` show the new text.
+  - The creative's `body` shows it too.
+  - Its `object_story_spec.message` keeps the old one.
+- Headline and description cannot be edited. `name`, `description` and `call_to_action` are refused as top-level parameters and inside `link_edit[link_data]` ("Invalid keys … were found"); other `link_edit` shapes answer `requires exactly one key`.
+- `/act_{id}/ads` cannot filter by `effective_object_story_id` (nor `creative.effective_object_story_id`, `creative.object_story_id`): finding the ads on a post means reading the account's ads.
+- A creative an ad has used cannot be deleted while that ad exists (`subcode 3858800`), even after the ad moved to another creative.
 - Ad posts report `is_published: false`, `status_type: "shared_story"`.
 
 ## Changing an ad's creative
