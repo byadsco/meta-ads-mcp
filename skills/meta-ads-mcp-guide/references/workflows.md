@@ -53,7 +53,7 @@ Advantage+ AI features that rewrite copy or edit media stay off unless you list 
 2. Show the person what the dry run reports for each creative: the copy before and after, and what happens to the post's likes, comments and shares.
    - Only primary texts change and two or more remain: the ad keeps its Facebook post, while Instagram starts over.
    - Anything else needs `allow_new_post: true`, and the new post starts from zero.
-3. Run it again with `dry_run: false` once they agree.
+3. Once they agree, run it again with `dry_run: false` and the `plan_token` the dry run returned. Only that exact plan is applied: if the ads changed in between, nothing is written and you get a new preview to show.
 
 Every changed ad goes back through review. To undo, point the ad at its previous creative with `ads_update_ad`; that brings its old post and engagement back.
 

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { normalizeUrlTags } from "../utils/validation.js";
@@ -62,9 +63,23 @@ interface GroupReport {
   reason_code?: ReasonCode;
   blocking: boolean;
   warnings: string[];
+  // The replacement that would be sent; it only feeds the plan_token.
+  body?: Record<string, string>;
 }
 
 const NUMERIC_ID = /^\d+$/;
+
+// Binds an apply call to the dry run the person saw: the same ads, source
+// creatives, routes and replacement bodies, and the same problems. Creatives
+// are immutable, so the same source creative gives the same body.
+function planToken(reports: GroupReport[], planningErrors: PlanningProblem[], failed: KindedFailure[]): string {
+  const plan = {
+    plans: reports.map((r) => [r.creative_id, r.ad_ids, r.route ?? null, r.reason_code ?? null, r.body ?? null]),
+    planning_errors: planningErrors.map((p) => [p.creative_id, p.ad_ids, p.code]),
+    unreadable: failed.map((f) => f.ad_id),
+  };
+  return createHash("sha256").update(JSON.stringify(plan)).digest("hex").slice(0, 32);
+}
 
 // The JSON block is built from these projections only: IDs, codes, field
 // names and numbers. Ad copy, URLs, Meta's messages and any other text stay in
@@ -100,7 +115,7 @@ export function registerAdContentTools(server: McpServer): void {
   server.registerTool(
     "ads_update_ad_content",
     {
-      description: `${WRITE_WARNING}Change the copy, link, button or media of live ads: add, remove or replace primary texts, headlines and descriptions, including removing one option of several. Meta creatives are immutable, so each ad gets a replacement creative and goes back through review; the ad keeps its ID, history and previous creative (point it back with ads_update_ad to undo, which brings its post back too). Likes, comments and shares live on the ad's post. When only primary texts change and at least two remain, the ad keeps its Facebook post and that engagement (its Instagram side starts over and the Facebook headline stays the post's own). Anything else creates a new post, which resets the visible engagement, and only happens with allow_new_post: true. dry_run defaults to true: the first call shows, per creative, the copy before and after, any link, button, media or url_tags change, the route and the engagement at stake, without changing anything. The preview is read from the replacement that would be sent, so it includes what a change brings along (a video given a new link and no button gets a LEARN_MORE button). Show that to the person and call again with dry_run: false once they agree. Nothing changes if any ad cannot be read, has an invalid change or would need a route that is not allowed, or if any replacement creative cannot be created: all replacements are created before any ad is repointed. Right before each repoint the ad is read again; an ad someone moved to another creative meanwhile is left untouched. If Meta then refuses to repoint an ad, ads already repointed stay changed, and the response lists each one with its previous creative so it can be undone. Repeating a set, link, button or media change that is already applied does nothing; add and remove are not repeatable, so after a partial failure run again with only the ads that failed. An ad with per-platform media (platform_customizations) cannot have its image or video changed here. Carousels, dynamic creative and other asset feeds are not supported. Meta lets an ad change creative at most once every 30 seconds (error 613): wait before changing the same ad again.`,
+      description: `${WRITE_WARNING}Change the copy, link, button or media of live ads: add, remove or replace primary texts, headlines and descriptions, including removing one option of several. Meta creatives are immutable, so each ad gets a replacement creative and goes back through review; the ad keeps its ID, history and previous creative (point it back with ads_update_ad to undo, which brings its post back too). Likes, comments and shares live on the ad's post. When only primary texts change and at least two remain, the ad keeps its Facebook post and that engagement (its Instagram side starts over and the Facebook headline stays the post's own). Anything else creates a new post, which resets the visible engagement, and only happens with allow_new_post: true. dry_run defaults to true: the first call shows, per creative, the copy before and after, any link, button, media or url_tags change, the route and the engagement at stake, without changing anything. The preview is read from the replacement that would be sent, so it includes what a change brings along (a video given a new link and no button gets a LEARN_MORE button). Show that to the person and, once they agree, call again with dry_run: false and the plan_token the dry run returned. Only that exact plan is applied: if the ads or the request changed since, nothing is written and the reply is the new preview with a new plan_token. Nothing changes if any ad cannot be read, has an invalid change or would need a route that is not allowed, or if any replacement creative cannot be created: all replacements are created before any ad is repointed. Right before each repoint the ad is read again; an ad someone moved to another creative meanwhile is left untouched. If Meta then refuses to repoint an ad, ads already repointed stay changed, and the response lists each one with its previous creative so it can be undone. Repeating a set, link, button or media change that is already applied does nothing; add and remove are not repeatable, so after a partial failure preview again with only the ads that failed. An ad with per-platform media (platform_customizations) cannot have its image or video changed here. Carousels, dynamic creative and other asset feeds are not supported. Meta lets an ad change creative at most once every 30 seconds (error 613): wait before changing the same ad again.`,
       inputSchema: {
         ad_ids: z.array(z.string()).min(1).max(50).describe("Ad IDs to change (1-50). Ads sharing a creative get one replacement."),
         primary_texts: textChange("primary text"),
@@ -120,14 +135,21 @@ export function registerAdContentTools(server: McpServer): void {
           .boolean()
           .default(true)
           .describe("Preview only (default). Set false to apply after the person agrees."),
+        plan_token: z
+          .string()
+          .optional()
+          .describe("Required with dry_run: false: the plan_token of the dry run the person approved, for the same request. The change is applied only if the plan is still exactly that one."),
       },
       annotations: { ...UPDATE },
     },
     async ({
       ad_ids, primary_texts, headlines, descriptions, link_url, call_to_action_type,
-      image_hash, image_url, video_id, url_tags, allow_new_post, dry_run,
+      image_hash, image_url, video_id, url_tags, allow_new_post, dry_run, plan_token,
     }) => {
       const preview = dry_run !== false;
+      if (!preview && !plan_token) {
+        throw new Error("dry_run: false needs the plan_token of a dry run of the same request: run it with dry_run: true, show the preview to the person, then pass its plan_token.");
+      }
       // Malformed input is named by its position and never repeated, so it
       // cannot reach the reply as framing.
       const badAd = ad_ids.findIndex((id) => !NUMERIC_ID.test(id));
@@ -153,7 +175,8 @@ export function registerAdContentTools(server: McpServer): void {
       const { groups } = grouped;
       const failed: KindedFailure[] = grouped.failed.map((f) => ({ ...f, kind: "read_failed" }));
       const reports: GroupReport[] = [];
-      const actionable: Array<{ group: CreativeGroup; creative: AdCreative; body: Record<string, string> }> = [];
+      const routed: Array<{ report: GroupReport; creative: AdCreative }> = [];
+      const actionable: Array<{ group: CreativeGroup; body: Record<string, string> }> = [];
       const planningErrors: PlanningProblem[] = [];
 
       for (const group of groups) {
@@ -188,12 +211,21 @@ export function registerAdContentTools(server: McpServer): void {
           reason_code: plan.reason_code,
           blocking: plan.blocking === true,
           warnings: plan.warnings,
+          body: plan.body,
         };
-        if (preview && plan.route) {
+        reports.push(report);
+        if (plan.route) routed.push({ report, creative });
+        if (plan.route && plan.body) actionable.push({ group, body: plan.body });
+      }
+
+      // An apply call writes only the plan the person saw: if the ads or the
+      // request changed since that dry run, this call becomes a new preview.
+      const token = planToken(reports, planningErrors, failed);
+      const planChanged = !preview && plan_token !== token;
+      if (preview || planChanged) {
+        for (const { report, creative } of routed) {
           report.engagement = await readEngagement(creative.effective_object_story_id, creative.effective_instagram_media_id);
         }
-        reports.push(report);
-        if (plan.route && plan.body) actionable.push({ group, creative, body: plan.body });
       }
 
       const updated: UpdatedAd[] = [];
@@ -203,7 +235,7 @@ export function registerAdContentTools(server: McpServer): void {
       // Every ad has to be read and planned before anything is written, and
       // any ad left out (unreadable, invalid change, refused route) stops the
       // batch: a batch never half-applies on a plan.
-      let aborted = !preview && (planningErrors.length > 0 || failed.length > 0 || reports.some((r) => r.blocking));
+      let aborted = planChanged || (!preview && (planningErrors.length > 0 || failed.length > 0 || reports.some((r) => r.blocking)));
       if (!preview && !aborted) {
         // Two phases: every replacement creative first (it changes no ad), and
         // only when all of them exist, the repoints.
@@ -236,12 +268,14 @@ export function registerAdContentTools(server: McpServer): void {
 
       return {
         content: [
-          { type: "text", text: summarize(reports, planningErrors, updated, failed, warnings, leftover, preview, aborted) },
+          { type: "text", text: summarize(reports, planningErrors, updated, failed, warnings, leftover, { preview, aborted, planChanged, token }) },
           {
             type: "text",
             text: JSON.stringify({
               dry_run: preview,
               aborted,
+              plan_changed: planChanged,
+              plan_token: token,
               plans: reports.map(planJson),
               planning_errors: planningErrors.map((p) => ({ creative_id: p.creative_id, ad_ids: p.ad_ids, code: p.code })),
               updated: updated.map((u) => ({ ad_id: u.ad_id, old_creative_id: u.old_creative_id, new_creative_id: u.new_creative_id })),
@@ -283,13 +317,19 @@ function summarize(
   failed: FailedAd[],
   repointNotes: string[],
   leftover: string[],
-  preview: boolean,
-  aborted: boolean,
+  state: { preview: boolean; aborted: boolean; planChanged: boolean; token: string },
 ): string {
   const lines: string[] = [];
-  if (aborted) lines.push("Nothing was changed: fix the problems below and run again.");
-  else if (preview) lines.push("Dry run — nothing was changed. Show this to the person before applying it with dry_run: false.");
-  else lines.push(`Updated ${updated.length} ad(s), failed ${failed.length}.`);
+  if (state.planChanged) {
+    lines.push(`Nothing was changed: the plan differs from the dry run that plan_token came from (the ads or the request changed). This is the new plan: show it to the person and apply it with dry_run: false and plan_token: ${state.token}`);
+  } else if (state.aborted) {
+    lines.push("Nothing was changed: fix the problems below and run a new dry run.");
+  } else if (state.preview) {
+    lines.push(`Dry run — nothing was changed. Show this to the person; to apply exactly this plan, call again with dry_run: false and plan_token: ${state.token}`);
+  } else {
+    lines.push(`Updated ${updated.length} ad(s), failed ${failed.length}.`);
+  }
+  const preview = state.preview;
 
   for (const report of reports) {
     const ads = report.ad_ids.join(", ");
