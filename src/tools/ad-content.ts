@@ -369,144 +369,109 @@ export function registerAdContentTools(server: McpServer, options: { clock?: Clo
         }
       }
 
-      const grouped = await groupAdsByCreative(ad_ids);
-      const { groups } = grouped;
-      const failed: KindedFailure[] = grouped.failed.map((f) => ({ ...f, kind: "read_failed" }));
-      const reports: GroupReport[] = [];
-      const routed: Array<{ report: GroupReport; creative: AdCreative; group: CreativeGroup }> = [];
-      const actionable: Array<{ group: CreativeGroup; body: Record<string, string> }> = [];
-      const planningErrors: PlanningProblem[] = [];
+      const readPlan = async () => {
+        const grouped = await groupAdsByCreative(ad_ids);
+        const failed: KindedFailure[] = grouped.failed.map((f) => ({ ...f, kind: "read_failed" }));
+        const reports: GroupReport[] = [];
+        const routed: Array<{ report: GroupReport; creative: AdCreative; group: CreativeGroup }> = [];
+        const actionable: Array<{ group: CreativeGroup; body: Record<string, string> }> = [];
+        const planningErrors: PlanningProblem[] = [];
 
-      for (const group of groups) {
-        let creative: AdCreative;
-        try {
-          creative = await readCreativeForRebuild(group.creative_id, ["body", "title"]);
-        } catch (err) {
-          for (const adId of group.ad_ids) failed.push({ ad_id: adId, error: errorMessage(err), kind: "read_failed" });
-          continue;
-        }
-        let plan: ContentPlan;
-        try {
-          plan = planContentEdit(creative, changes, allow_new_post === true, allow_post_edit === true);
-        } catch (err) {
-          planningErrors.push({
+        for (const group of grouped.groups) {
+          let creative: AdCreative;
+          try {
+            creative = await readCreativeForRebuild(group.creative_id, ["body", "title"]);
+          } catch (err) {
+            for (const adId of group.ad_ids) failed.push({ ad_id: adId, error: errorMessage(err), kind: "read_failed" });
+            continue;
+          }
+          let plan: ContentPlan;
+          try {
+            plan = planContentEdit(creative, changes, allow_new_post === true, allow_post_edit === true);
+          } catch (err) {
+            planningErrors.push({
+              creative_id: group.creative_id,
+              ad_ids: group.ad_ids,
+              code: err instanceof PlanError ? err.code : "invalid_change",
+              message: errorMessage(err),
+            });
+            continue;
+          }
+          const report: GroupReport = {
             creative_id: group.creative_id,
             ad_ids: group.ad_ids,
-            code: err instanceof PlanError ? err.code : "invalid_change",
-            message: errorMessage(err),
-          });
-          continue;
+            route: plan.route,
+            before: plan.before,
+            after: plan.after,
+            social_proof: plan.social_proof,
+            field_changes: plan.field_changes ?? [],
+            reason: plan.reason,
+            reason_code: plan.reason_code,
+            blocking: plan.blocking === true,
+            warnings: plan.warnings,
+            body: plan.body,
+            post_edit: plan.post_edit,
+          };
+          reports.push(report);
+          if (plan.route) routed.push({ report, creative, group });
+          if (plan.route && plan.body) actionable.push({ group, body: plan.body });
         }
-        const report: GroupReport = {
-          creative_id: group.creative_id,
-          ad_ids: group.ad_ids,
-          route: plan.route,
-          before: plan.before,
-          after: plan.after,
-          social_proof: plan.social_proof,
-          field_changes: plan.field_changes ?? [],
-          reason: plan.reason,
-          reason_code: plan.reason_code,
-          blocking: plan.blocking === true,
-          warnings: plan.warnings,
-          body: plan.body,
-          post_edit: plan.post_edit,
-        };
-        reports.push(report);
-        if (plan.route) routed.push({ report, creative, group });
-        if (plan.route && plan.body) actionable.push({ group, body: plan.body });
-      }
-      await preparePostEdits(routed);
+        await preparePostEdits(routed);
+        const token = planToken(reports, planningErrors, failed);
+        // Every ad has to be read and planned before anything is written, and
+        // any ad left out (unreadable, invalid change, refused route) stops
+        // the batch: a batch never half-applies on a plan.
+        const blocked = planningErrors.length > 0 || failed.length > 0 || reports.some((r) => r.blocking);
+        const postScope = reports.find((r) => r.route === "edit_post")?.post_scope;
+        return { failed, reports, routed, actionable, planningErrors, token, blocked, postScope };
+      };
 
       // An apply call writes only the plan the person saw: if the ads or the
       // request changed since that dry run, this call becomes a new preview.
-      const token = planToken(reports, planningErrors, failed);
-      const planChanged = !preview && plan_token !== token;
-      if (preview || planChanged) {
-        for (const { report, creative } of routed) {
-          if (!report.route) continue;
-          report.engagement = await readEngagement(creative.effective_object_story_id, creative.effective_instagram_media_id);
-        }
-      }
+      let plan = await readPlan();
+      let planChanged = !preview && plan_token !== plan.token;
 
       const updated: UpdatedAd[] = [];
       const warnings: string[] = [];
       const unused: string[] = [];
       const leftover: string[] = [];
-      // Every ad has to be read and planned before anything is written, and
-      // any ad left out (unreadable, invalid change, refused route) stops the
-      // batch: a batch never half-applies on a plan.
-      let aborted = planChanged || (!preview && (planningErrors.length > 0 || failed.length > 0 || reports.some((r) => r.blocking)));
       let postEditOutcome: PostEditOutcome | undefined;
       let postEditBusy = false;
-      const postScope = reports.find((r) => r.route === "edit_post")?.post_scope;
-      // Two edits of one post at once would move each other's ads.
+      // Two edits of one post at once would move each other's ads, and one
+      // that ended between the reads above and the lock changed what was
+      // approved: under the lock everything is read and checked again.
       const leaseHolder = randomUUID();
-      if (!preview && !aborted && postScope && !(await leases.claim(postScope.post.post_id, leaseHolder))) {
-        aborted = true;
-        postEditBusy = true;
+      let lockedPost: string | undefined;
+      if (!preview && !planChanged && !plan.blocked && plan.postScope) {
+        if (await leases.claim(plan.postScope.post.post_id, leaseHolder)) lockedPost = plan.postScope.post.post_id;
+        else postEditBusy = true;
       }
-      if (!preview && !aborted && postScope) {
-        try {
-          postEditOutcome = await editPost(postScope, clock, startedAt + POST_EDIT_BUDGET_MS);
-        } finally {
-          // The report of what was done matters more than the lock, which
-          // expires on its own: a release that fails or hangs is only noted.
-          await releaseWithin(leases.release(postScope.post.post_id, leaseHolder), LEASE_RELEASE_MS).catch(() => {
-            warnings.push(`The lock on post ${postScope.post.post_id} could not be released: another edit of it may have to wait up to ten minutes.`);
+      let aborted = postEditBusy || planChanged || (!preview && plan.blocked);
+      try {
+        if (lockedPost) {
+          plan = await readPlan();
+          planChanged = plan_token !== plan.token;
+          aborted = planChanged || plan.blocked;
+        }
+        if (preview || planChanged) {
+          for (const { report, creative } of plan.routed) {
+            if (!report.route) continue;
+            report.engagement = await readEngagement(creative.effective_object_story_id, creative.effective_instagram_media_id);
+          }
+        }
+        await apply();
+      } finally {
+        // The report of what was done matters more than the lock, which
+        // expires on its own: a release that fails or hangs is only noted.
+        if (lockedPost) {
+          const post = lockedPost;
+          await releaseWithin(leases.release(post, leaseHolder), LEASE_RELEASE_MS).catch(() => {
+            warnings.push(`The lock on post ${post} could not be released: another edit of it may have to wait up to ten minutes.`);
           });
-        }
-        for (const ad of postEditOutcome.ads) {
-          if (ad.outcome === "updated") {
-            updated.push({ ad_id: ad.ad_id, old_creative_id: ad.previous_creative_id, new_creative_id: ad.creative_id });
-            if (ad.error) warnings.push(`Ad ${ad.ad_id}: ${ad.error}`);
-          } else if (ad.outcome === "unconfirmed") {
-            failed.push({
-              ad_id: ad.ad_id,
-              kind: "move_back_unconfirmed",
-              error: `Unconfirmed: read the ad again in a minute; if it still shows creative ${ad.creative_id}, point it with ads_update_ad at the creative named here. ${ad.error ?? ""}`,
-            });
-          } else {
-            failed.push({
-              ad_id: ad.ad_id,
-              kind: ad.outcome === "left_on_temporary" ? "left_on_temporary" : "post_edit_failed",
-              error: ad.outcome === "left_on_temporary"
-                ? `It stays on creative ${ad.creative_id} (the temporary one, unless read back otherwise), and keeps running if it is active: ${ad.error ?? "it could not be moved back"}. Point it at a creative reusing post ${postScope.post.post_id} with ads_update_ad.`
-                : `The post was not edited (${ad.outcome === "restored" ? "the ad is back on its creative" : "the ad was not changed"}): ${ad.error ?? postEditOutcome.error ?? "unknown reason"}`,
-            });
-          }
-        }
-        leftover.push(...postEditOutcome.temporary_left);
-      } else if (!preview && !aborted) {
-        // Two phases: every replacement creative first (it changes no ad), and
-        // only when all of them exist, the repoints.
-        const ready: Array<{ group: CreativeGroup; newCreativeId: string }> = [];
-        for (const { group, body } of actionable) {
-          try {
-            ready.push({ group, newCreativeId: await createReplacementCreative(group.account_id, body) });
-          } catch (err) {
-            for (const adId of group.ad_ids) {
-              failed.push({ ad_id: adId, error: `Failed to create the replacement creative: ${errorMessage(err)}`, kind: "create_failed" });
-            }
-            aborted = true;
-            break;
-          }
-        }
-        if (aborted) {
-          unused.push(...ready.map((r) => r.newCreativeId));
-          for (const id of unused) {
-            if (!(await deleteCreative(id))) leftover.push(id);
-          }
-        } else {
-          for (const { group, newCreativeId } of ready) {
-            const outcome = await repointGroup(group, newCreativeId, { verifyUnchanged: true });
-            updated.push(...outcome.updated);
-            failed.push(...outcome.failed.map((f) => ({ ...f, kind: f.code === "changed_meanwhile" ? "changed_meanwhile" as const : "repoint_failed" as const })));
-            warnings.push(...outcome.warnings);
-          }
         }
       }
 
+      const { reports, planningErrors, failed, token } = plan;
       return {
         content: [
           { type: "text", text: summarize(reports, planningErrors, updated, failed, warnings, leftover, { preview, aborted, planChanged, token, postEditOutcome, postEditBusy }) },
@@ -528,6 +493,67 @@ export function registerAdContentTools(server: McpServer, options: { clock?: Clo
           },
         ],
       };
+
+      async function apply(): Promise<void> {
+        const { failed, actionable, postScope } = plan;
+        if (preview || aborted) return;
+        if (postScope) {
+          postEditOutcome = await editPost(postScope, clock, startedAt + POST_EDIT_BUDGET_MS);
+          mapPostEdit(postScope, postEditOutcome, failed);
+          return;
+        }
+        // Two phases: every replacement creative first (it changes no ad), and
+        // only when all of them exist, the repoints.
+        const ready: Array<{ group: CreativeGroup; newCreativeId: string }> = [];
+        for (const { group, body } of actionable) {
+          try {
+            ready.push({ group, newCreativeId: await createReplacementCreative(group.account_id, body) });
+          } catch (err) {
+            for (const adId of group.ad_ids) {
+              failed.push({ ad_id: adId, error: `Failed to create the replacement creative: ${errorMessage(err)}`, kind: "create_failed" });
+            }
+            aborted = true;
+            break;
+          }
+        }
+        if (aborted) {
+          unused.push(...ready.map((r) => r.newCreativeId));
+          for (const id of unused) {
+            if (!(await deleteCreative(id))) leftover.push(id);
+          }
+          return;
+        }
+        for (const { group, newCreativeId } of ready) {
+          const outcome = await repointGroup(group, newCreativeId, { verifyUnchanged: true });
+          updated.push(...outcome.updated);
+          failed.push(...outcome.failed.map((f) => ({ ...f, kind: f.code === "changed_meanwhile" ? "changed_meanwhile" as const : "repoint_failed" as const })));
+          warnings.push(...outcome.warnings);
+        }
+      }
+
+      function mapPostEdit(postScope: PostScope, outcome: PostEditOutcome, failed: KindedFailure[]): void {
+        for (const ad of outcome.ads) {
+          if (ad.outcome === "updated") {
+            updated.push({ ad_id: ad.ad_id, old_creative_id: ad.previous_creative_id, new_creative_id: ad.creative_id });
+            if (ad.error) warnings.push(`Ad ${ad.ad_id}: ${ad.error}`);
+          } else if (ad.outcome === "unconfirmed") {
+            failed.push({
+              ad_id: ad.ad_id,
+              kind: "move_back_unconfirmed",
+              error: `Unconfirmed: read the ad again in a minute; if it still shows creative ${ad.creative_id}, point it with ads_update_ad at the creative named here. ${ad.error ?? ""}`,
+            });
+          } else {
+            failed.push({
+              ad_id: ad.ad_id,
+              kind: ad.outcome === "left_on_temporary" ? "left_on_temporary" : "post_edit_failed",
+              error: ad.outcome === "left_on_temporary"
+                ? `It stays on creative ${ad.creative_id} (the temporary one, unless read back otherwise), and keeps running if it is active: ${ad.error ?? "it could not be moved back"}. Point it at a creative reusing post ${postScope.post.post_id} with ads_update_ad.`
+                : `The post was not edited (${ad.outcome === "restored" ? "the ad is back on its creative" : "the ad was not changed"}): ${ad.error ?? outcome.error ?? "unknown reason"}`,
+            });
+          }
+        }
+        leftover.push(...outcome.temporary_left);
+      }
     },
   );
 }

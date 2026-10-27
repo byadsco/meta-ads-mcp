@@ -285,6 +285,39 @@ describe("editPost", () => {
     expect(outcome.ads[1]).toMatchObject({ ad_id: "3002", outcome: "updated" });
   });
 
+  it("does not take a read showing the ad's earlier creative as proof that a failed move back landed", async () => {
+    const clock = fakeClock();
+    stubMeta({
+      ...READY,
+      "POST /6001_888": [{ success: true }],
+      // Moved off, then the move back's answer is lost; the read shows the
+      // creative it had before the edit, which a lagging read also shows.
+      "POST /3002": [{ success: true }, lostAnswer],
+      "GET /3002": [{ id: "3002", creative: { id: "4002" } }],
+    }, clock);
+
+    const outcome = await editPost(input(), clock);
+
+    expect(outcome.ads[1]).toMatchObject({ ad_id: "3002", outcome: "unconfirmed", creative_id: "4901" });
+    expect(outcome.ads[1].error).toContain("4002");
+  });
+
+  it("does not call an ad restored when moving it back was refused and the read shows its own creative", async () => {
+    const clock = fakeClock();
+    stubMeta({
+      ...READY,
+      "POST /6001_888": [failedEdit],
+      "POST /3001": [{ success: true }, { error: { code: 100, message: "Refused" } }],
+      "GET /3001": [{ id: "3001", creative: { id: "4001" } }],
+    }, clock);
+
+    const outcome = await editPost(input(), clock);
+
+    expect(outcome).toMatchObject({ edited: false, stage: "edit" });
+    expect(outcome.ads[0]).toMatchObject({ ad_id: "3001", outcome: "unconfirmed", creative_id: "4900" });
+    expect(outcome.ads[1]).toMatchObject({ ad_id: "3002", outcome: "restored" });
+  });
+
   it("leaves the ads of an own creative on the temporary one when their new creative cannot be made", async () => {
     const clock = fakeClock();
     stubMeta({
@@ -397,6 +430,17 @@ describe("editPost", () => {
     expect(json(copy.get("platform_customizations"))).toEqual({ instagram: { image_hash: "ig1" } });
     // Each ad waits on its own copy.
     expect(json(body(3).get("creative"))).toEqual({ creative_id: "4901" });
+  });
+
+  it("never gives an ad's temporary copy the Instagram identity of the creative that made the post", async () => {
+    const clock = fakeClock();
+    stubMeta({ ...READY, "POST /6001_888": [{ success: true }] }, clock);
+
+    await editPost(input(), clock);
+
+    // OWN's spec names an Instagram account; REUSE names none.
+    expect(json(body(0).get("object_story_spec")).instagram_user_id).toBe("17841400000000001");
+    expect(json(body(1).get("object_story_spec"))).not.toHaveProperty("instagram_user_id");
   });
 
   it("keeps the text options of an ad that shows them on its temporary copy", async () => {

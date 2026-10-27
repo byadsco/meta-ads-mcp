@@ -571,7 +571,10 @@ describe("ads_update_ad_content — editing the post (allow_post_edit)", () => {
       link_data: { link: "https://example.com/", image_hash: "h1", message: "Texto", name: "Titular", call_to_action: { type: "LEARN_MORE", value: { link: "https://example.com/" } } },
     },
   };
-  const REUSE = { id: "4005", name: "Reuse", effective_object_story_id: "6001_888", effective_instagram_media_id: "17900000000000005", body: "Texto" };
+  const REUSE = {
+    id: "4005", name: "Reuse", effective_object_story_id: "6001_888", effective_instagram_media_id: "17900000000000005",
+    instagram_user_id: "17841400000000001", body: "Texto",
+  };
   const AD = { id: "3001", account_id: "123", creative: { id: "4002" } };
   const SCAN = { data: [
     { id: "3001", status: "ACTIVE", creative: { id: "4002", effective_object_story_id: "6001_888" } },
@@ -670,8 +673,8 @@ describe("ads_update_ad_content — editing the post (allow_post_edit)", () => {
       "GET /4900": [{ id: "4900", effective_object_story_id: "6001_999" }],
       "GET /6001": [{ id: "6001", access_token: "page-token" }],
       "POST /6001_888": [{ success: true }],
-      // Read for the plan, then on its new creative before it is resumed.
-      "GET /3001": [AD, { id: "3001", creative: { id: "4950" } }],
+      // Read for the plan, again under the post's lock, then on its new creative.
+      "GET /3001": [AD, AD, { id: "3001", creative: { id: "4950" } }],
       "DELETE /4900": [{ error: { code: 100, message: "In use" } }],
     });
 
@@ -709,7 +712,7 @@ describe("ads_update_ad_content — editing the post (allow_post_edit)", () => {
       "POST /6001_888": [{ success: true }],
       // moved off, then moving it back is refused
       "POST /3001": [{ success: true }, { error: { code: 100, message: "Refused" } }],
-      "GET /3001": [AD, { id: "3001", creative: { id: "4900" } }],
+      "GET /3001": [AD, AD, { id: "3001", creative: { id: "4900" } }],
       "DELETE /4900": [{ error: { code: 100, message: "In use" } }],
     });
 
@@ -804,7 +807,7 @@ describe("ads_update_ad_content — editing the post (allow_post_edit)", () => {
       // Not Meta's error format: the edit may have gone through.
       "POST /6001_888": [{ error: "connection reset by a proxy" }],
       "GET /6001_888": [{ error: { code: 100, message: "Unavailable" } }],
-      "GET /3001": [AD, { id: "3001", creative: { id: "4950" } }],
+      "GET /3001": [AD, AD, { id: "3001", creative: { id: "4950" } }],
     });
 
     const result = await tool().handler({ ...ARGS, dry_run: false, plan_token }) as ToolResult;
@@ -847,6 +850,21 @@ describe("ads_update_ad_content — editing the post (allow_post_edit)", () => {
     expect(fetchCallSummary().filter((c) => !c.startsWith("GET"))).toEqual([]);
   });
 
+  it("checks the approval again once it holds the post's lock, so an edit that ended meanwhile is not overwritten", async () => {
+    const plan_token = await approvedToken(ARGS, OBJECTS);
+    stubMeta({
+      ...READS,
+      // The text approved before the lock, then the one another edit left by the time it is held.
+      "GET /4005": [REUSE, { ...REUSE, body: "Texto que otra edicion dejo" }],
+    });
+
+    const result = await tool().handler({ ...ARGS, dry_run: false, plan_token }) as ToolResult;
+
+    expect(JSON.parse(result.content[1].text).plan_changed).toBe(true);
+    expect(fetchCallSummary().filter((c) => !c.startsWith("GET"))).toEqual([]);
+    expect(await claimPostEditLease("6001_888", "next-edit")).toBe(true);
+  });
+
   it("refuses while an active ad on the post shows text options its copy could not reproduce", async () => {
     const withOptions = { ...REUSE, asset_feed_spec: { bodies: [{ text: "A" }, { text: "B" }], titles: [{ text: "T1" }, { text: "T2" }], optimization_type: "DEGREES_OF_FREEDOM" } };
     const scan = { data: [
@@ -870,7 +888,7 @@ describe("ads_update_ad_content — editing the post (allow_post_edit)", () => {
       "POST /6001_888": [{ success: true }],
       // moved off, then the answer to moving it back is lost
       "POST /3001": [{ success: true }, { error: "connection reset by a proxy" }],
-      "GET /3001": [AD, { id: "3001", creative: { id: "4900" } }],
+      "GET /3001": [AD, AD, { id: "3001", creative: { id: "4900" } }],
       "DELETE /4900": [{ error: { code: 100, message: "In use" } }],
     });
 

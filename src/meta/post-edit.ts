@@ -49,8 +49,9 @@ export interface PostEditInput {
 
 export interface PostEditAd {
   ad_id: string;
-  // "unconfirmed": moving it back got no clear answer and Meta's read still
-  // showed the copy; its reads can lag behind its writes, so it may be back.
+  // "unconfirmed": moving it back failed and Meta's read cannot settle where
+  // it is (it showed the copy after no clear answer, or the creative the ad
+  // had before the edit); its reads can lag behind its writes.
   outcome: "updated" | "restored" | "unchanged" | "left_on_temporary" | "unconfirmed";
   creative_id: string;
   previous_creative_id: string;
@@ -140,6 +141,9 @@ function temporaryBody(creative: AdCreative, input: PostEditInput): Record<strin
   const body: Record<string, string> = { name: TEMPORARY_NAME };
   if (base) {
     spec = structuredClone(base.spec);
+    // The Instagram identity is the copied ad's own, set below, never the
+    // one of the creative that made the post.
+    delete spec.instagram_user_id;
     const data = asRecord(spec[base.key])!;
     if (hasFeedContent(creative)) {
       for (const field of COPY_FIELDS[base.key]) delete data[field];
@@ -286,10 +290,26 @@ export async function editPost(
       const wait = since + CREATIVE_CHANGE_GAP_MS - clock.now();
       if (wait > 0) await clock.sleep(wait);
       const { error, refused } = await pointAt(user.ad_id, target);
-      // The answer may be lost with the write applied.
-      const now = error === undefined ? target : await creativeOf(user.ad_id);
-      if (now === target) {
+      if (error === undefined) {
         Object.assign(ad, { creative_id: target, outcome });
+        continue;
+      }
+      // The answer may be lost with the write applied. Meta's reads lag
+      // behind its writes, so a read showing the creative the ad had before
+      // the edit may predate the move off: only a creative it never had
+      // proves the move back.
+      const now = await creativeOf(user.ad_id);
+      if (now === target && target !== user.creative_id) {
+        Object.assign(ad, { creative_id: target, outcome });
+        continue;
+      }
+      if (now === target) {
+        Object.assign(ad, {
+          outcome: "unconfirmed",
+          creative_id: temporaryOf(user),
+          instagram: "reset",
+          error: `Moving it back to creative ${target} failed (${error}). It reads as on ${target}, which it was on before the edit, but Meta's reads can lag behind its writes, so it may still be on creative ${temporaryOf(user)}.`,
+        });
         continue;
       }
       if (refused) {
