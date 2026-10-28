@@ -26,10 +26,10 @@ describe("withPageToken", () => {
       .mockResolvedValueOnce(mockFetchResponse({ id: "6001", access_token: PAGE_TOKEN }))
       .mockResolvedValueOnce(mockFetchResponse({ success: true })));
 
-    const seen = await withPageToken("6001", async () => {
-      const inside = getAccessToken();
+    let seen: string | undefined;
+    await withPageToken("6001", async () => {
+      seen = getAccessToken();
       await metaApiClient.postForm("/6001_777", { message: "Nuevo" });
-      return inside;
     });
 
     expect(seen).toBe(PAGE_TOKEN);
@@ -37,6 +37,32 @@ describe("withPageToken", () => {
     expect(new URL(String(vi.mocked(fetch).mock.calls[0][0])).searchParams.get("fields")).toBe("access_token");
     expect(tokenOf(0)).toBe("user-token");
     expect(tokenOf(1)).toBe(PAGE_TOKEN);
+  });
+
+  it("never hands the Page token back in what the work returns, however deep", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(mockFetchResponse({ id: "6001", access_token: PAGE_TOKEN })));
+
+    const result = await withPageToken("6001", async () => ({
+      forms: [{ id: "5001", note: `token ${PAGE_TOKEN} here`, link: `https://example.com/?access_token=${PAGE_TOKEN}` }],
+      page: { access_token: PAGE_TOKEN },
+      kept: 7,
+    }));
+
+    expect(JSON.stringify(result)).not.toContain(PAGE_TOKEN);
+    expect(result.forms[0].id).toBe("5001");
+    expect(result.kept).toBe(7);
+  });
+
+  it("never hands the Page token back in an error the work throws", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(mockFetchResponse({ id: "6001", access_token: PAGE_TOKEN })));
+
+    const error = await withPageToken("6001", async () => {
+      throw Object.assign(new Error(`failed with ${PAGE_TOKEN}`), { code: "X", cause: new Error(`because ${PAGE_TOKEN}`) });
+    }).catch((e: Error) => e) as Error & { code?: string; cause?: Error };
+
+    expect(error.message).not.toContain(PAGE_TOKEN);
+    expect(String(error.cause?.message ?? "")).not.toContain(PAGE_TOKEN);
+    expect(error.code).toBe("X");
   });
 
   it("refuses without calling the work when Meta returns no Page token", async () => {

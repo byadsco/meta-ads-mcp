@@ -101,6 +101,52 @@ Route B (editing the post):
 - Meta sets its tracking specs itself; on a copy into an ad set of the same campaign they matched the source's, the post's own entries included.
 - `POST /{ad_id}/copies` with `adset_id`, `status_option` and `rename_options: {"rename_strategy": "NO_RENAME"}` makes a new creative and a new post, and keeps the source's name. Its tracking specs follow the new post.
 
+## Carousels (measured 2026-10-27)
+
+- **The shape.** `link_data` with `link`, `message`, `caption` (the display link), `multi_share_optimized`, `multi_share_end_card` and `child_attachments`. Each card has `link`, `image_hash` (or `picture`), `name`, `description` and `call_to_action`.
+- **Accepted:**
+  - the creative, its preview and an ad in a traffic ad set;
+  - a card with `video_id` plus an `image_hash` thumbnail;
+  - cards without their own `link`.
+- **One card is rejected:** `(#194) param child_attachments has too few elements`.
+- **Several primary texts:** a carousel creative with `asset_feed_spec.bodies` (several) and `optimization_type: "DEGREES_OF_FREEDOM"`, the message left out of `link_data`, was accepted as a creative.
+
+## Destinations other than a website (measured 2026-10-27)
+
+| Destination | `link_data.link` | `call_to_action` | Ad set |
+| --- | --- | --- | --- |
+| Lead form | `http://fb.me/` | `SIGN_UP`, `value: { lead_gen_form_id }` | `OUTCOME_LEADS`, `destination_type: ON_AD`, `optimization_goal: LEAD_GENERATION`, `promoted_object.page_id` |
+| Messenger | `https://fb.com/messenger_doc/` | `MESSAGE_PAGE`, `value: { app_destination: "MESSENGER" }` | `OUTCOME_ENGAGEMENT`, `destination_type: MESSENGER`, `optimization_goal: CONVERSATIONS` |
+| WhatsApp | `https://api.whatsapp.com/send` | `WHATSAPP_MESSAGE`, `value: { app_destination: "WHATSAPP" }` | `OUTCOME_ENGAGEMENT`, `destination_type: WHATSAPP`, `optimization_goal: CONVERSATIONS` |
+| Instagram Direct | `https://www.instagram.com` | `INSTAGRAM_MESSAGE`, `value: { app_destination: "INSTAGRAM_DIRECT" }` | `OUTCOME_ENGAGEMENT`, `destination_type: INSTAGRAM_DIRECT`, Instagram placements |
+| Phone call | the advertiser's site | `CALL_NOW`, `value: { link: "tel:+<number>" }` | `OUTCOME_TRAFFIC`, `destination_type: PHONE_CALL`, `optimization_goal: QUALITY_CALL` |
+
+- Every row was accepted as a creative and as a paused ad in the ad set shown.
+- **Messenger welcome message.** `link_data.page_welcome_message` is a JSON string (`type: "VISUAL_EDITOR"`, `text_format.message` with `text` and `ice_breakers: [{ title, response }]`). It was accepted.
+- **WhatsApp.** Meta accepted the WhatsApp ad on a Page with no WhatsApp number connected; such an ad cannot deliver.
+- **Phone numbers.** Meta checks the number itself. `tel:+573001234567` was accepted; `tel:+5716015555555` and `tel:+5716012345678` were rejected (`subcode 2061044`, "invalid phone number").
+- **Not measured:** app installs. The test account's apps are instant games and a canvas app, with no store URL.
+
+## Ad-level fields
+
+- `conversion_domain` and `adlabels: [{ "name": … }]` on `POST /act_{id}/ads` are accepted and read back.
+
+## Lead forms
+
+- `GET` and `POST /{page_id}/leadgen_forms` answer only to a Page token: a user token gets `(#190) This method must be called with a Page Access Token`.
+- With a Page token (from a person with `pages_manage_ads`), a form was created with:
+  - prefilled questions;
+  - a `CUSTOM` multiple-choice question (`options: [{ value, key }]`) and a free-text `CUSTOM` one;
+  - `privacy_policy: { url, link_text }`;
+  - `context_card: { title, content: [...], style: "PARAGRAPH_STYLE" }`;
+  - `thank_you_page: { title, body, button_type: "VIEW_WEBSITE", button_text, website_url }`;
+  - `locale: "es_LA"`.
+- Forms cannot be deleted; `POST /{form_id}` with `status: ARCHIVED` (Page token) archives one.
+- **Question types.** The phone question is `PHONE`, not `PHONE_NUMBER`: Meta lists the valid types in its error.
+- **Answer keys.** A multiple-choice answer without a `key` makes Meta fail with "An unknown error has occurred", and no form is made.
+- **After the form.** A form needs `thank_you_page` or `follow_up_action_url` (`subcode 1892085`, "missing FollowUpActionURL").
+- **Lead ads.** Lead creatives with an image and with a video (`video_data.call_to_action.value.lead_gen_form_id`) both ran as paused ads in an `ON_AD` ad set.
+
 ## Dynamic creative
 
 - An ad in an `is_dynamic_creative` ad set (feed `optimization_type: "REGULAR"`) can be pointed at another creative.

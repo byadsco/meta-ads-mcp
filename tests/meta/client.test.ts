@@ -247,6 +247,75 @@ describe("MetaApiClient", () => {
         /No Meta access token available/,
       );
     });
+
+    describe("never passes on the token an answer quotes", () => {
+      const TOKEN = "test-access-token";
+      const logged = () => [logger.info, logger.warn, logger.error, logger.debug]
+        .flatMap((fn) => vi.mocked(fn).mock.calls)
+        .map((args) => JSON.stringify(args))
+        .join("\n");
+
+      beforeEach(() => {
+        for (const level of ["info", "warn", "error", "debug"] as const) vi.spyOn(logger, level).mockImplementation(() => undefined as never);
+      });
+
+      it("in a Meta error, to the caller or the logs", async () => {
+        vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockFetchResponse({
+          error: {
+            message: `Failed request https://graph.facebook.com/v26.0/6001/leadgen_forms?access_token=${TOKEN}&fields=id`,
+            error_user_msg: `Token ${TOKEN} cannot do this`,
+            type: "GraphMethodException",
+            code: 100,
+          },
+        })));
+
+        const error = await client.get("/6001/leadgen_forms").catch((e: Error) => e);
+
+        expect(String((error as Error).message)).not.toContain(TOKEN);
+        expect(JSON.stringify(error)).not.toContain(TOKEN);
+        expect(logged()).not.toContain(TOKEN);
+      });
+
+      it("in an HTTP error body", async () => {
+        vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockFetchResponse({ detail: `bad token ${TOKEN}` }, { status: 502 })));
+
+        const error = await client.get("/me").catch((e: Error) => e);
+
+        expect((error as Error).message).not.toContain(TOKEN);
+      });
+
+      it("in a transport error", async () => {
+        vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError(`connect failed for https://graph.facebook.com/me?access_token=${TOKEN}`)));
+
+        const error = await client.get("/me").catch((e: Error) => e);
+
+        expect((error as Error).message).not.toContain(TOKEN);
+        expect(logged()).not.toContain(TOKEN);
+      });
+
+      it("in a transport error that carries a code, or a cause", async () => {
+        const coded = Object.assign(new Error(`Connection failed: ${TOKEN}`), { code: "ECONNRESET" });
+        const wrapped = new TypeError("fetch failed", { cause: new Error(`socket closed for ${TOKEN}`) });
+        for (const failure of [coded, wrapped]) {
+          vi.stubGlobal("fetch", vi.fn().mockRejectedValue(failure));
+
+          const error = await client.get("/me").catch((e: Error) => e) as Error & { code?: string; cause?: Error };
+
+          expect(error.message).not.toContain(TOKEN);
+          expect(String(error.cause?.message ?? "")).not.toContain(TOKEN);
+          if (failure === coded) expect(error.code).toBe("ECONNRESET");
+        }
+      });
+
+      it("in Meta's version warning header", async () => {
+        vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockFetchResponse({ id: "1" }, { headers: { "x-ad-api-version-warning": `upgraded call /me?access_token=${TOKEN}` } })));
+
+        await client.get("/me");
+
+        expect(logged()).toContain("upgraded call");
+        expect(logged()).not.toContain(TOKEN);
+      });
+    });
   });
 
   describe("bounded calls (timeoutMs)", () => {
@@ -470,6 +539,17 @@ describe("MetaApiClient", () => {
       // after a server-side success would mint a duplicate flow/QR/template or a
       // second real SMS, so they must not be transport-retried.
       await expect(retryClient.post(path, { name: "x" })).rejects.toThrow();
+      expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
+    });
+
+    it("does NOT retry POST to a Page's lead forms on a transient error (duplicate-mint safety)", async () => {
+      const retryClient = new MetaApiClient({ maxRetries: 3, timeout: 5000 });
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockFetchResponse({
+        error: { message: "An unknown error has occurred.", type: "OAuthException", code: 1 },
+      })));
+
+      // POST /<page_id>/leadgen_forms creates a form on a plain-numeric path.
+      await expect(retryClient.postForm("/6001/leadgen_forms", { name: "x" })).rejects.toThrow();
       expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
     });
 

@@ -1,3 +1,5 @@
+import { McpError } from "@modelcontextprotocol/sdk/types.js";
+
 /**
  * Best-effort removal of credential-shaped values from text this server is
  * about to return. It is defence in depth, not a security boundary: the text
@@ -140,6 +142,115 @@ export function carriesCredentialPair(text: string): boolean {
 /** True when the text carries a credential-shaped parameter with a value. */
 export function hasCredential(text: string): boolean {
   return scrubCredentials(text) !== text;
+}
+
+/**
+ * The same cleaning for a parsed JSON value, at any depth: a credential-named
+ * field keeps its name and loses its value, every string is scrubbed, and a
+ * known secret (the token a call used) is removed wherever it appears, even
+ * outside a name=value pair. Values other than plain objects, arrays and
+ * strings are returned as they are. It walks with its own stack and keeps
+ * each copy, so a cycle stays a cycle and no depth overflows the call stack.
+ */
+export function scrubCredentialsDeep<T>(value: T, secret?: string): T {
+  const cleanString = (text: string) =>
+    scrubCredentials(secret && secret.length >= 8 ? text.split(secret).join(REDACTED) : text);
+  const isPlain = (item: unknown): item is Record<string, unknown> | unknown[] => {
+    if (Array.isArray(item)) return true;
+    if (item === null || typeof item !== "object") return false;
+    const proto = Object.getPrototypeOf(item);
+    return proto === Object.prototype || proto === null;
+  };
+  if (typeof value === "string") return cleanString(value) as T;
+  if (!isPlain(value)) return value;
+
+  const copies = new Map<object, Record<string, unknown> | unknown[]>();
+  const pending: Array<[Record<string, unknown> | unknown[], Record<string, unknown> | unknown[]]> = [];
+  const copyOf = (source: Record<string, unknown> | unknown[]) => {
+    const copy = Array.isArray(source) ? [] : {};
+    copies.set(source, copy);
+    pending.push([source, copy]);
+    return copy;
+  };
+  const root = copyOf(value);
+  while (pending.length > 0) {
+    const [source, target] = pending.pop()!;
+    for (const [key, item] of Object.entries(source)) {
+      let cleaned: unknown;
+      if (!Array.isArray(source) && isCredentialName(key) && item !== undefined && item !== null && item !== "") cleaned = REDACTED;
+      else if (typeof item === "string") cleaned = cleanString(item);
+      else if (isPlain(item)) cleaned = copies.get(item) ?? copyOf(item);
+      else cleaned = item;
+      // Defined, not assigned: an own "__proto__" field stays a field.
+      Object.defineProperty(target, key, { value: cleaned, enumerable: true, writable: true, configurable: true });
+    }
+  }
+  return root as T;
+}
+
+const WITHHELD = "The error's details were withheld: they could not be cleaned of credentials.";
+const MAX_CAUSES = 8;
+
+// The JSON a value would serialize to; an Error inside it serializes to {}.
+// A value that cannot be serialized (a cycle) counts as unknown.
+function jsonOf(value: unknown): unknown {
+  return value === undefined ? undefined : JSON.parse(JSON.stringify(value) ?? "null");
+}
+
+/**
+ * Every error is replaced by a new one that holds nothing of the original but
+ * an allowlist, each part cleaned: its message with its causes' messages
+ * after it, its name and its code; an McpError keeps its code and its data,
+ * cleaned as JSON, so callers that classify errors (wasRefused) see the same
+ * thing. There is no check for whether the original carries a credential:
+ * whatever is not on the list (a stack, another field, a nested error, a
+ * reference back to the original) is never passed on, so nothing can be
+ * missed. It never throws: if the error cannot be read, a fixed one that
+ * withholds its details takes its place. A thrown string is cleaned, and
+ * any other thrown value becomes an Error with its cleaned text.
+ */
+export function scrubErrorCredentials<E>(error: E, secret?: string): E {
+  try {
+    if (typeof error === "string") return scrubCredentialsDeep(error, secret);
+    if (!(error instanceof Error)) return new Error(scrubCredentialsDeep(String(error), secret)) as E;
+    return rebuilt(error, secret) as E;
+  } catch {
+    return new Error(WITHHELD) as E;
+  }
+}
+
+function causesOf(error: Error): Error[] {
+  const causes: Error[] = [];
+  const seen = new Set<unknown>([error]);
+  let cause = error.cause;
+  while (causes.length < MAX_CAUSES && cause instanceof Error && !seen.has(cause)) {
+    seen.add(cause);
+    causes.push(cause);
+    cause = cause.cause;
+  }
+  return causes;
+}
+
+function rebuilt(error: Error, secret: string | undefined): Error {
+  const clean = (text: unknown) => scrubCredentialsDeep(String(text), secret);
+  const message = [clean(error.message), ...causesOf(error).map((cause) => `(cause: ${clean(cause.message)})`)].join(" ");
+  if (error instanceof McpError) {
+    const prefix = `MCP error ${error.code}: `;
+    let data: unknown;
+    try {
+      data = scrubCredentialsDeep(jsonOf(error.data), secret);
+    } catch {
+      data = undefined;
+    }
+    return new McpError(error.code, message.startsWith(prefix) ? message.slice(prefix.length) : message, data);
+  }
+  const replacement = new Error(message);
+  replacement.name = clean(error.name);
+  const code = (error as { code?: unknown }).code;
+  if (typeof code === "string" || typeof code === "number") {
+    Object.assign(replacement, { code: typeof code === "string" ? clean(code) : code });
+  }
+  return replacement;
 }
 
 /**
