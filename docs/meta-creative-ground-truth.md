@@ -131,6 +131,38 @@ Route B (editing the post):
 
 - `conversion_domain` and `adlabels: [{ "name": … }]` on `POST /act_{id}/ads` are accepted and read back.
 
+## Dynamic creative, versions, music, site links and flexible format (measured 2026-10-27)
+
+Each of these was accepted as a creative and as a paused ad.
+
+- **Dynamic creative.**
+  - The shape: `object_story_spec` holds only `page_id` and `instagram_user_id`. `asset_feed_spec` has `images: [{ hash }]`, `videos: [{ video_id, thumbnail_hash }]`, `bodies`, `titles`, `descriptions`, `call_to_action_types`, `link_urls: [{ website_url, display_url }]`, `ad_formats` and `optimization_type: "REGULAR"`.
+  - Formats: `SINGLE_IMAGE`, and `AUTOMATIC_FORMAT` mixing images and a video.
+  - The ad set needs `is_dynamic_creative: true`.
+  - A second ad in that ad set is rejected (`subcode 1885553`), and so is the creative in a regular ad set (`subcode 1885998`).
+  - Meta adds `additional_data`, `reasons_to_shop` and `shops_bundle` to the feed it reads back.
+- **Placement versions.**
+  - `optimization_type: "PLACEMENT"`.
+  - Labeled images (`adlabels: [{ name }]`), with one `asset_customization_rules` entry per label: `customization_spec` with `publisher_platforms` and positions, plus `image_label`.
+  - Accepted with Facebook `feed`/`story` and Instagram `stream`/`story`.
+- **Language versions.**
+  - `optimization_type: "LANGUAGE"`.
+  - Labeled bodies, titles, descriptions and link URLs, and one rule per language: `customization_spec.locales`, the four labels, and `is_default: true` on exactly one.
+  - Without a description per language, the creative is accepted but the ad is rejected (`subcode 1885817`, "too few link descriptions").
+  - Locale keys come from `GET /search?type=adlocale&q=`, named in the token user's language: "Español" is 23, "Español (España)" 7, "Español (todos)" 1002, "English (US)" 6. A search for "Spanish" from a Spanish-language user found nothing.
+- **Music.**
+  - `asset_feed_spec: { audios: [{ type: "random" }] }` was accepted:
+    - next to a single-image `object_story_spec`;
+    - inside a text-options feed;
+    - on a carousel.
+  - The creative does not return `audios` when read back.
+- **Site links.**
+  - `creative_sourcing_spec.site_links_spec: [{ site_link_title, site_link_url, site_link_image_hash }]`, with `degrees_of_freedom_spec.creative_features_spec.site_extensions: OPT_IN`.
+  - 3 links were accepted and read back.
+- **Flexible format.**
+  - `creative_asset_groups_spec.groups` on `POST /act_{id}/ads`, next to an existing `creative_id`. Each group has `images`, `videos`, `texts: [{ text, text_type }]` (`primary_text`, `headline`, `description`) and `call_to_action`.
+  - Accepted on an `OUTCOME_SALES` campaign with a pixel; one group is read back. It was rejected on traffic (`subcode 3858343`, see above).
+
 ## Lead forms
 
 - `GET` and `POST /{page_id}/leadgen_forms` answer only to a Page token: a user token gets `(#190) This method must be called with a Page Access Token`.

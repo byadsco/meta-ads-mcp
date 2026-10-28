@@ -45,6 +45,24 @@ Frequency above roughly 3 in a short window, a falling CTR with a stable CPM, an
 
 Advantage+ AI features that rewrite copy or edit media stay off unless you list them in `advantage_creative`. The ad's post appears a few minutes after the ad exists.
 
+## Letting Meta mix assets, or showing different ones per placement or language
+
+"Test these five images and three texts and let Meta find the best mix." "Use the vertical video in Stories." "Show the Spanish copy to Spanish speakers."
+
+- **Dynamic creative.**
+  1. `ads_create_ad_set` with `is_dynamic_creative: true`.
+  2. `ads_create_ad_creative` with `dynamic_creative`: up to 10 images or videos, and up to 5 primary texts, headlines, descriptions, buttons and links.
+  3. `ads_create_ad` with that creative.
+
+  Such an ad set takes only that one ad, and the ad can be removed only with its ad set.
+- **Per placement.** `ads_create_ad_creative` with `placement_variants`: one image or video for each set of placements, all images or all videos. The copy, link and button are shared.
+- **Per language.**
+  1. `ads_search_locales` to find the locale keys. Search in the language of the person's Facebook.
+  2. `ads_create_ad_creative` with `language_variants`: each variant has its own primary text, headline, description and optional link, and exactly one is the default.
+- **Music.** `music: true` lets Meta add a track to an image or carousel ad.
+- **Site links.** `site_links` adds extra links under the ad in Facebook Feed.
+- **Flexible format.** On Sales or App campaigns, `ads_create_ad` with `flexible_format` hands Meta groups of media and texts to build the best format per placement.
+
 ## A carousel, or an ad that does not lead to a website
 
 "Run these four products as a carousel." "Send people to WhatsApp." "Collect leads in a form."

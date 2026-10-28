@@ -342,4 +342,35 @@ export function registerTargetingTools(server: McpServer): void {
       };
     },
   );
+
+  // ─── Search Locales ──────────────────────────────────────────
+  server.registerTool(
+    "ads_search_locales",
+    {
+      description:
+        "Find Meta's locale keys by language name, for language versions of an ad (ads_create_ad_creative language_variants) and for targeting by language (targeting.locales). Meta names locales in the language of the token's user, so search in that language (e.g. 'Espa' for Spanish when the user's Facebook is in Spanish).",
+      inputSchema: {
+        query: z.string().min(1).describe("Part of the language's name"),
+        limit: z.number().min(1).max(100).default(25),
+      },
+      annotations: { ...READ },
+    },
+    async ({ query, limit }) => {
+      const response = await metaApiClient.get<MetaApiResponse<{ key: number; name: string }>>(
+        "/search",
+        { type: "adlocale", q: query, limit },
+      );
+      const locales = (response.data ?? []).map((l) => ({ key: l.key, name: l.name }));
+      const text = locales.length === 0
+        ? "No locale matches. Meta names locales in the language of the token's user: try the name in that language, or a shorter part of it."
+        : locales.map((l) => `• ${l.name} (key ${l.key})`).join("\n");
+
+      return {
+        content: [
+          { type: "text", text: `${locales.length} locale(s):\n\n${text}` },
+          { type: "text", text: JSON.stringify(locales, null, 2) },
+        ],
+      };
+    },
+  );
 }

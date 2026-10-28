@@ -26,6 +26,7 @@ import {
   type CardInput,
   type Destination,
 } from "../meta/creative-spec.js";
+import { buildDynamicFeed, buildLanguageFeed, buildPlacementFeed, buildSiteLinks } from "../meta/asset-feed.js";
 import { normalizeUrlTags } from "../utils/validation.js";
 import { effectiveLinkUrl } from "../meta/effective-link.js";
 
@@ -68,6 +69,135 @@ function toDestination(input: z.infer<typeof destinationSchema>): Destination {
     case "call": return { type: "call", phoneNumber: input.phone_number };
     default: return { type: input.type };
   }
+}
+
+const positions = z.array(z.string().regex(/^[a-z_]+$/)).min(1);
+const placementsSchema = z.object({
+  publisher_platforms: z.array(z.enum(["facebook", "instagram", "messenger", "audience_network", "threads"])).min(1),
+  facebook_positions: positions.optional().describe("e.g. feed, story, marketplace, search, right_hand_column, instream_video"),
+  instagram_positions: positions.optional().describe("e.g. stream, story, reels, profile_feed, explore_home, ig_search"),
+  messenger_positions: positions.optional(),
+  audience_network_positions: positions.optional(),
+  threads_positions: positions.optional(),
+});
+
+const dynamicCreativeSchema = z.object({
+  image_hashes: z.array(z.string().min(1)).max(10).default([]).describe("Up to 10 image hashes from ads_upload_ad_image"),
+  videos: z.array(z.object({ video_id: z.string(), thumbnail_hash: z.string().min(1) })).max(10).default([]).describe("Up to 10 videos, each with a thumbnail image hash"),
+  primary_texts: z.array(z.string()).max(5).default([]),
+  headlines: z.array(z.string().max(MAX_HEADLINE_LENGTH)).max(5).default([]),
+  descriptions: z.array(z.string().max(MAX_HEADLINE_LENGTH)).max(5).default([]),
+  call_to_action_types: z.array(ctaEnum).min(1).max(5),
+  links: z.array(z.object({ url: z.string(), display_url: z.string().optional() })).min(1).max(5),
+  format: z.enum(["SINGLE_IMAGE", "SINGLE_VIDEO", "CAROUSEL", "AUTOMATIC_FORMAT"]).describe("AUTOMATIC_FORMAT lets Meta mix images and videos; CAROUSEL needs at least 2 images"),
+});
+
+const placementVariantSchema = z.object({
+  placements: placementsSchema,
+  image_hash: z.string().optional(),
+  video_id: z.string().optional(),
+  thumbnail_hash: z.string().optional().describe("Thumbnail of a video variant"),
+});
+
+const languageVariantSchema = z.object({
+  locales: z.array(z.number().int().positive()).min(1).describe("Locale keys from ads_search_locales"),
+  default: z.boolean().optional().describe("Exactly one variant is the default, shown outside the other variants' locales"),
+  primary_text: z.string().min(1),
+  headline: z.string().min(1).max(MAX_HEADLINE_LENGTH),
+  description: z.string().min(1).describe("Meta refuses a language without one"),
+  link_url: z.string().optional().describe("Defaults to the ad's link_url"),
+});
+
+const siteLinkSchema = z.object({
+  title: z.string().min(1),
+  url: z.string().min(1),
+  image_hash: z.string().optional(),
+});
+
+type VariantArgs = Record<string, unknown> & {
+  dynamic_creative?: z.infer<typeof dynamicCreativeSchema>;
+  placement_variants?: Array<z.infer<typeof placementVariantSchema>>;
+  language_variants?: Array<z.infer<typeof languageVariantSchema>>;
+};
+
+const MEDIA_FIELDS = ["image_hash", "image_url", "video_id"];
+const COPY_LISTS = ["primary_texts", "headlines", "descriptions"];
+// They shape a carousel built from cards; a feed layout has no place for them.
+const CAROUSEL_SETTINGS = ["multi_share_optimized", "multi_share_end_card"];
+
+function refuseFields(mode: string, args: Record<string, unknown>, fields: string[], what: string): void {
+  const given = fields.filter((field) => args[field] !== undefined);
+  if (given.length > 0) throw new Error(`${mode} carries its own ${what}: leave out ${given.join(", ")}.`);
+}
+
+function numericVideo(value: string, where: string): string {
+  if (!/^\d+$/.test(value)) throw new Error(`${where} is not a video ID: video IDs are numeric.`);
+  return value;
+}
+
+// The asset feed of a dynamic creative or of per-placement / per-language
+// versions, after refusing every ad-level field the layout replaces.
+function variantFeed(args: VariantArgs): { feed: Record<string, unknown>; summary: string } {
+  const destination = args.destination as { type?: string } | undefined;
+  const websiteOnly = (mode: string) => {
+    if (destination && destination.type !== "website") throw new Error(`${mode} takes a website destination.`);
+  };
+  if (args.dynamic_creative) {
+    refuseFields("dynamic_creative", args, [...MEDIA_FIELDS, "link_url", "message", "headline", "description", ...COPY_LISTS, "call_to_action_type", "destination", "display_link", "music", "site_links", ...CAROUSEL_SETTINGS], "media, texts, links and buttons");
+    const d = args.dynamic_creative;
+    const feed = buildDynamicFeed({
+      images: d.image_hashes ?? [],
+      videos: (d.videos ?? []).map((v, i) => ({ videoId: numericVideo(v.video_id, `dynamic_creative.videos[${i}].video_id`), thumbnailHash: v.thumbnail_hash })),
+      primaryTexts: d.primary_texts ?? [],
+      headlines: d.headlines ?? [],
+      descriptions: d.descriptions ?? [],
+      callToActionTypes: d.call_to_action_types,
+      links: d.links.map((link) => ({ url: link.url, displayUrl: link.display_url })),
+      format: d.format,
+    });
+    return {
+      feed,
+      summary: `Dynamic creative (${d.format}): ${(d.image_hashes ?? []).length} images, ${(d.videos ?? []).length} videos, ${(d.primary_texts ?? []).length} primary texts, ${(d.headlines ?? []).length} headlines, ${(d.descriptions ?? []).length} descriptions, ${d.call_to_action_types.length} buttons, ${d.links.length} links. Put it in an ad set created with is_dynamic_creative: true, which takes this one ad.`,
+    };
+  }
+  if (args.placement_variants) {
+    refuseFields("placement_variants", args, [...MEDIA_FIELDS, ...COPY_LISTS, "display_link", "music", "site_links", ...CAROUSEL_SETTINGS], "media per placement and one text of each kind");
+    websiteOnly("placement_variants");
+    const feed = buildPlacementFeed({
+      variants: args.placement_variants.map((v, i) => ({
+        placements: {
+          publisherPlatforms: v.placements.publisher_platforms,
+          facebookPositions: v.placements.facebook_positions,
+          instagramPositions: v.placements.instagram_positions,
+          messengerPositions: v.placements.messenger_positions,
+          audienceNetworkPositions: v.placements.audience_network_positions,
+          threadsPositions: v.placements.threads_positions,
+        },
+        imageHash: v.image_hash,
+        videoId: v.video_id === undefined ? undefined : numericVideo(v.video_id, `placement_variants[${i}].video_id`),
+        thumbnailHash: v.thumbnail_hash,
+      })),
+      primaryText: args.message as string | undefined,
+      headline: args.headline as string | undefined,
+      description: args.description as string | undefined,
+      linkUrl: (args.link_url as string | undefined) ?? "",
+      callToActionType: (args.call_to_action_type as string | undefined) ?? "LEARN_MORE",
+    });
+    return { feed, summary: `Placement versions: ${args.placement_variants.length}, each variant's media on its placements.` };
+  }
+  const variants = args.language_variants!;
+  refuseFields("language_variants", args, ["image_url", "message", "headline", "description", ...COPY_LISTS, "display_link", "music", "site_links", ...CAROUSEL_SETTINGS], "texts per language");
+  websiteOnly("language_variants");
+  const videoId = args.video_id === undefined ? undefined : numericVideo(args.video_id as string, "video_id");
+  const feed = buildLanguageFeed({
+    variants: variants.map((v) => ({ locales: v.locales, isDefault: v.default, primaryText: v.primary_text, headline: v.headline, description: v.description, linkUrl: v.link_url })),
+    imageHash: videoId ? undefined : (args.image_hash as string | undefined),
+    videoId,
+    thumbnailHash: videoId ? (args.image_hash as string | undefined) : undefined,
+    linkUrl: (args.link_url as string | undefined) ?? "",
+    callToActionType: (args.call_to_action_type as string | undefined) ?? "LEARN_MORE",
+  });
+  return { feed, summary: `Language versions: ${variants.length}; the default one shows outside the other variants' locales.` };
 }
 
 const DESTINATION_LABELS: Record<Destination["type"], string> = {
@@ -329,6 +459,11 @@ export function registerCreativeTools(server: McpServer): void {
         display_link: z.string().optional().describe("Link text shown under the media (e.g. 'example.com'). Image and carousel ads"),
         multi_share_optimized: z.boolean().optional().describe("Carousel: let Meta order the cards by performance"),
         multi_share_end_card: z.boolean().optional().describe("Carousel: add an end card with the Page's profile picture"),
+        dynamic_creative: dynamicCreativeSchema.optional().describe("Dynamic creative: up to 10 images or videos and up to 5 primary texts, headlines, descriptions, buttons and links, which Meta mixes per person. It has its own media, texts, links and buttons, and goes in an ad set created with is_dynamic_creative: true (one ad per such ad set)"),
+        placement_variants: z.array(placementVariantSchema).min(2).max(10).optional().describe("A different image or video per placement (e.g. square for Feed, vertical for Stories), all images or all videos. The ad's message, headline, description, link_url and call_to_action_type apply to all"),
+        language_variants: z.array(languageVariantSchema).min(2).max(49).optional().describe("The copy and link per language, with exactly one default. The ad's image_hash (or video_id with image_hash as thumbnail), link_url and call_to_action_type apply to all. Locale keys from ads_search_locales"),
+        music: z.boolean().optional().describe("Let Meta add a music track it picks, on an image or carousel ad"),
+        site_links: z.array(siteLinkSchema).min(1).max(10).optional().describe("Extra links shown under the ad in Facebook Feed, each with a title, URL and optional image hash. Single image or video ads that lead to a website, with one text of each kind"),
         url_tags: z.string().optional().describe("Query string params appended to URLs clicked from the ad (e.g. 'utm_source=meta&utm_medium=paid'). A leading '?' is stripped."),
         advantage_creative: z
           .record(z.string().regex(FEATURE_NAME_PATTERN), z.enum(["OPT_IN", "OPT_OUT"]))
@@ -347,8 +482,12 @@ export function registerCreativeTools(server: McpServer): void {
       primary_texts, headlines, descriptions, call_to_action_type, url_tags,
       advantage_creative, multi_advertiser_ads,
       destination, cards, display_link, multi_share_optimized, multi_share_end_card,
+      dynamic_creative, placement_variants, language_variants, music, site_links,
     }) => {
-      const featureSpec = buildFeatureSpec(advantage_creative, multi_advertiser_ads === true);
+      if (site_links && advantage_creative?.site_extensions === "OPT_OUT") {
+        throw new Error("site_links need the site_extensions feature on: drop site_extensions: OPT_OUT from advantage_creative.");
+      }
+      const featureSpec = buildFeatureSpec(site_links ? { ...advantage_creative, site_extensions: "OPT_IN" } : advantage_creative, multi_advertiser_ads === true);
       const primaryTexts = resolveTextOptions(message, primary_texts, "message", "primary_texts");
       const headlineOptions = resolveTextOptions(headline, headlines, "headline", "headlines");
       const descriptionOptions = resolveTextOptions(description, descriptions, "description", "descriptions");
@@ -370,11 +509,20 @@ export function registerCreativeTools(server: McpServer): void {
 
       const body: Record<string, string | number | boolean> = { name };
       const usesExistingPost = Boolean(sourceInstagramMediaIdValidated || objectStoryIdValidated);
-      const scratchOnly = { destination, cards, display_link, multi_share_optimized, multi_share_end_card };
+      const scratchOnly = { destination, cards, display_link, multi_share_optimized, multi_share_end_card, dynamic_creative, placement_variants, language_variants, music, site_links };
       const misplaced = Object.entries(scratchOnly).filter(([, value]) => value !== undefined).map(([key]) => key);
       if (usesExistingPost && misplaced.length > 0) {
         throw new Error(`${misplaced.join(", ")} apply to a creative built from scratch, not to one promoting an existing post.`);
       }
+      const layouts = Object.entries({ cards, dynamic_creative, placement_variants, language_variants })
+        .filter(([, value]) => value !== undefined).map(([key]) => key);
+      if (layouts.length > 1) throw new Error(`Use one of ${layouts.join(", ")} at a time: each is a different layout of the ad.`);
+      const variantArgs: VariantArgs = {
+        image_hash, image_url, video_id, link_url, message, headline, description, primary_texts, headlines, descriptions,
+        call_to_action_type, destination, display_link, music, site_links, dynamic_creative, placement_variants, language_variants,
+        multi_share_optimized, multi_share_end_card,
+      };
+      const variants = dynamic_creative || placement_variants || language_variants ? variantFeed(variantArgs) : undefined;
       const destinationValidated = destination ? toDestination(destination) : undefined;
       const cardInputs: CardInput[] | undefined = cards?.map((card, i) => {
         if (card.video_id !== undefined && !/^\d+$/.test(card.video_id)) throw new Error(`cards[${i}].video_id is not a video ID: video IDs are numeric.`);
@@ -428,34 +576,56 @@ export function registerCreativeTools(server: McpServer): void {
             throw err;
           }
         }
-        const story = buildStorySpec({
-          pageId: pageIdValidated,
-          instagramUserId: instagramActorIdValidated,
-          imageHash: image_hash,
-          imageUrl: image_url,
-          videoId: videoIdValidated,
-          linkUrl: link_url,
-          primaryTexts,
-          headlines: headlineOptions,
-          descriptions: descriptionOptions,
-          callToActionType: call_to_action_type,
-          destination: destinationValidated,
-          displayLink: display_link,
-          cards: cardInputs,
-          multiShareOptimized: multi_share_optimized,
-          multiShareEndCard: multi_share_end_card,
-        });
-        warnings.push(...story.warnings);
-        const built = asRecord(story.objectStorySpec.link_data) ?? asRecord(story.objectStorySpec.video_data);
-        effectiveCta = asRecord(built?.["call_to_action"])?.["type"] as string | undefined;
-        body.object_story_spec = JSON.stringify(story.objectStorySpec);
-        if (story.assetFeedSpec) {
-          body.asset_feed_spec = JSON.stringify(story.assetFeedSpec);
-          textOptionCounts = {
-            primary: (story.assetFeedSpec.bodies as unknown[] | undefined)?.length ?? 0,
-            headlines: (story.assetFeedSpec.titles as unknown[] | undefined)?.length ?? 0,
-            descriptions: (story.assetFeedSpec.descriptions as unknown[] | undefined)?.length ?? 0,
-          };
+        if (variants) {
+          // The feed carries the media and copy; the spec only says who posts it.
+          body.object_story_spec = JSON.stringify(instagramActorIdValidated
+            ? { page_id: pageIdValidated, instagram_user_id: instagramActorIdValidated }
+            : { page_id: pageIdValidated });
+          body.asset_feed_spec = JSON.stringify(variants.feed);
+          effectiveCta = (variants.feed.call_to_action_types as string[]).join(", ");
+        } else {
+          const story = buildStorySpec({
+            pageId: pageIdValidated,
+            instagramUserId: instagramActorIdValidated,
+            imageHash: image_hash,
+            imageUrl: image_url,
+            videoId: videoIdValidated,
+            linkUrl: link_url,
+            primaryTexts,
+            headlines: headlineOptions,
+            descriptions: descriptionOptions,
+            callToActionType: call_to_action_type,
+            destination: destinationValidated,
+            displayLink: display_link,
+            cards: cardInputs,
+            multiShareOptimized: multi_share_optimized,
+            multiShareEndCard: multi_share_end_card,
+          });
+          warnings.push(...story.warnings);
+          const built = asRecord(story.objectStorySpec.link_data) ?? asRecord(story.objectStorySpec.video_data);
+          effectiveCta = asRecord(built?.["call_to_action"])?.["type"] as string | undefined;
+          body.object_story_spec = JSON.stringify(story.objectStorySpec);
+          let feed = story.assetFeedSpec;
+          if (feed) {
+            textOptionCounts = {
+              primary: (feed.bodies as unknown[] | undefined)?.length ?? 0,
+              headlines: (feed.titles as unknown[] | undefined)?.length ?? 0,
+              descriptions: (feed.descriptions as unknown[] | undefined)?.length ?? 0,
+            };
+          }
+          if (music) {
+            if (videoIdValidated) throw new Error("music applies to image and carousel ads; a video keeps its own sound.");
+            // Music is the one Advantage+ feature that lives in the asset feed.
+            feed = { ...(feed ?? {}), audios: [{ type: "random" }] };
+          }
+          if (site_links) {
+            if (cardInputs || story.assetFeedSpec) {
+              throw new Error("site_links apply to a single image or video ad with one text of each kind, not to a carousel or text options.");
+            }
+            if (destinationValidated && destinationValidated.type !== "website") throw new Error("site_links apply to ads that lead to a website.");
+            body.creative_sourcing_spec = JSON.stringify(buildSiteLinks(site_links.map((link) => ({ title: link.title, url: link.url, imageHash: link.image_hash }))));
+          }
+          if (feed) body.asset_feed_spec = JSON.stringify(feed);
         }
       }
 
@@ -491,6 +661,9 @@ export function registerCreativeTools(server: McpServer): void {
         `Creative created successfully!\nID: ${result.id}\nName: ${name}${pageIdValidated ? `\nPage: ${pageIdValidated}` : ""}${objectStoryIdValidated ? `\nBoosted Post: ${objectStoryIdValidated}` : ""}${sourceInstagramMediaIdValidated ? `\nIG Post: ${sourceInstagramMediaIdValidated}` : ""}${effectiveStoryId ? `\nPost ID: ${effectiveStoryId}` : ""}\nCTA: ${effectiveCta ?? "N/A"}`,
       ];
       if (cardInputs) lines.push(`Carousel: ${cardInputs.length} cards.`);
+      if (variants) lines.push(variants.summary);
+      if (music) lines.push("Music: Meta adds a track it picks.");
+      if (site_links) lines.push(`Site links: ${site_links.length}, shown under the ad in Facebook Feed.`);
       if (destinationValidated && destinationValidated.type !== "website") {
         lines.push(`Destination: ${DESTINATION_LABELS[destinationValidated.type]}. The ad set's destination has to match it.`);
       }

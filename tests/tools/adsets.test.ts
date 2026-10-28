@@ -1013,6 +1013,24 @@ describe("registerAdSetTools", () => {
       expect(params.has("daily_budget")).toBe(false);
       expect(params.has("lifetime_budget")).toBe(false);
     });
+
+    it("creates a dynamic-creative ad set only when asked", async () => {
+      const server = createMockMcpServer();
+      registerAdSetTools(server as never);
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockFetchResponse({ id: "2001" })));
+      const tool = server._registeredTools.find((t) => t.name === "ads_create_ad_set")!;
+      const args = {
+        account_id: "act_123", campaign_id: "1001", name: "Dyn", destination_type: "WEBSITE", status: "PAUSED",
+        optimization_goal: "LINK_CLICKS", billing_event: "IMPRESSIONS", targeting: { geo_locations: { countries: ["MX"] } },
+      };
+
+      await tool.handler({ ...args, is_dynamic_creative: true });
+      await tool.handler(args);
+
+      const sent = (i: number) => new URLSearchParams(vi.mocked(fetch).mock.calls[i][1]?.body as string);
+      expect(sent(0).get("is_dynamic_creative")).toBe("true");
+      expect(sent(1).has("is_dynamic_creative")).toBe(false);
+    });
   });
 
   describe("ads_update_ad_set handler", () => {

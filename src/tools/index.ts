@@ -62,7 +62,7 @@ export function registerAllTools(server: McpServer): void {
   registerEntityTools(server);       // 3 tools — generic helpers (get_ad_entities, update_entity, activate_entity)
   registerInsightsTools(server);     // 1 tool  — power-tool ads_get_insights
   registerInsightsViewTools(server); // 5 tools — semantic insight views
-  registerTargetingTools(server);    // 7 tools
+  registerTargetingTools(server);    // 8 tools (+ ads_search_locales)
   registerBudgetTools(server);       // 1 tool
 
   // ─── Extended Features ──────────────────────────────────
