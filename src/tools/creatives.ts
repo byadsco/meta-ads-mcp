@@ -14,6 +14,7 @@ import type { AdCreative, AdImage, AdVideo, MetaApiResponse } from "../meta/type
 import { logger } from "../utils/logger.js";
 import { assertSafePublicUrl, UnsafeUrlError } from "../utils/url-guard.js";
 import { downloadSafePublicImage } from "../utils/safe-download.js";
+import { localVideoForm } from "../utils/local-video.js";
 import { READ, CREATE, UPDATE, UPLOAD, WRITE_WARNING } from "./_register.js";
 import {
   ADVANTAGE_CREATIVE_FEATURES,
@@ -955,10 +956,11 @@ export function registerCreativeTools(server: McpServer): void {
   server.registerTool(
     "ads_upload_ad_video",
     {
-      description: `${WRITE_WARNING}Upload a video to Meta for use in ad creatives. Provide either a public video URL (file_url) or an Instagram media ID (source_instagram_media_id) to upload directly from IG. Returns a video_id for use in ads_create_ad_creative. Useful for promoting Instagram Reels.`,
+      description: `${WRITE_WARNING}Upload a video to the ad library. Supply exactly one source: local_video_path for a Telegram attachment already downloaded into the server media directory, file_url for a public URL, or source_instagram_media_id for an existing Instagram post. Local MOV/MP4/M4V/WEBM files up to 100 MiB are supported when enabled by the operator. Returns a video_id; uploading does not activate an ad.`,
       inputSchema: {
         account_id: z.string().describe("Ad account ID"),
         file_url: z.string().optional().describe("Public URL of the video file (MP4). Required unless source_instagram_media_id is provided. Can be an Instagram Reel media_url."),
+        local_video_path: z.string().optional().describe("Absolute path to an existing Telegram/media video file on this server. Use the attachment path from the inbound message; do not require an Instagram URL."),
         source_instagram_media_id: z.string().optional().describe("Instagram media ID (V2) to upload an IG video directly to the ad library. Alternative to file_url — simplifies the Reel promotion flow."),
         name: z.string().optional().describe("Name of the video in the ad library (for organization). Different from title."),
         title: z.string().optional().describe("Title for the video"),
@@ -966,8 +968,17 @@ export function registerCreativeTools(server: McpServer): void {
       },
       annotations: { ...UPLOAD },
     },
-    async ({ account_id, file_url, source_instagram_media_id, name, title, description }) => {
+    async ({ account_id, file_url, local_video_path, source_instagram_media_id, name, title, description }) => {
       const id = normalizeAccountId(account_id);
+      if ([file_url, local_video_path, source_instagram_media_id].filter(Boolean).length !== 1) {
+        throw new Error("Provide exactly one of local_video_path, file_url or source_instagram_media_id.");
+      }
+
+      if (local_video_path) {
+        const form = await localVideoForm(local_video_path, { name, title, description });
+        const result = await metaApiClient.postMultipart<{ id: string }>(`/${id}/advideos`, form);
+        return { content: [{ type: "text", text: JSON.stringify({ video_id: result.id, source: "local_file", ad_activated: false }) }] };
+      }
 
       const body: Record<string, string | number | boolean> = {};
 

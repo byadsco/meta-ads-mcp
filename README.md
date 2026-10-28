@@ -456,6 +456,38 @@ Any client that speaks the [Model Context Protocol](https://modelcontextprotocol
 
 ## Common workflows
 
+### Uploading a local video attachment (self-hosted stdio)
+
+`ads_upload_ad_video` accepts `local_video_path` in addition to `file_url` and
+`source_instagram_media_id`. This lets a self-hosted agent upload a Telegram or
+other attachment that has already been downloaded to its server, without first
+publishing the file at a public URL or on Instagram.
+
+Opt in by setting `META_LOCAL_MEDIA_ROOT` to the directory containing uploaded
+attachments, for example `/srv/ad-media`. Leave it unset to disable local file
+uploads. Configure this only on a trusted, single-operator stdio installation;
+do not enable it for untrusted clients on a shared HTTP server.
+
+```json
+{
+  "account_id": "act_123456789",
+  "local_video_path": "/srv/ad-media/attachment.mov",
+  "title": "Product video"
+}
+```
+
+Supply exactly one source. The resolved file path must stay inside the configured
+root, including when symlinks are used. MP4, MOV, M4V and WebM containers up to
+100 MiB are supported; the file must be regular and have a matching container
+header. The file is sent directly to Meta as multipart `source` through the
+existing authenticated API client. Tokens do not belong in tool arguments.
+
+The local-upload response contains `video_id` and `ad_activated: false`.
+Uploading a library asset does not create or activate an ad. Check processing
+with `ads_get_video_details`, then use the video ID and an available thumbnail
+when creating an approved video creative. Reuse a successful video ID rather
+than uploading the same attachment again after an unrelated downstream failure.
+
 ### Updating an ad set's budget
 
 Adjusting the budget of a live ad set is a high-frequency operation for agencies — daily caps need to scale up and down based on pacing, while keeping the rest of the targeting and creative untouched. Use `ads_update_ad_set` and only pass the fields you want to change; everything else stays as-is on Meta's side. Budget values are sent in the account currency's **minor unit as Meta defines it**: hundredths for most currencies (`5000` = `$50.00` in a USD account) and whole units for COP, CLP, PYG, CRC, JPY and the others Meta lists with [offset 1](https://developers.facebook.com/docs/marketing-api/currencies) (`50000` = 50,000 pesos in a COP account). The result states the amount in the account's currency so a wrong unit is visible at once. Authentication is transparent: whichever mode the deployment uses (Sign in with Meta OAuth, registered System User token, or `MCP_API_KEY` + `X-Meta-Token` headers), the active token is resolved per request and applied automatically.
