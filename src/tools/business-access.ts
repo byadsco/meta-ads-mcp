@@ -42,6 +42,9 @@ const MAX_BUSINESSES = 25;
 const MAX_USERS = 1000;
 // Meta can send empty pages that still go on, so pages are bounded apart from items.
 const MAX_PAGES = 20;
+// A bounded call is sent once: a refusal on a retry would hide an earlier
+// attempt that went through, so any failure but a refusal gets a read-back.
+const WRITE_SCOPE = { timeoutMs: 30_000 };
 
 const assetTypeInput = z.enum(ASSET_TYPES).describe("ad_account, page or pixel (a pixel is a dataset in Events Manager).");
 const assetIdInput = z.string().describe("Ad account id (with or without act_), Page id or pixel id.");
@@ -341,10 +344,11 @@ export function registerBusinessAccessTools(server: McpServer): void {
 
       let response: { success?: boolean } | undefined;
       try {
-        response = await metaApiClient.postForm<{ success?: boolean }>(`${path}/assigned_users`, {
-          user,
-          tasks: JSON.stringify(tasks),
-        });
+        response = await metaApiClient.postForm<{ success?: boolean }>(
+          `${path}/assigned_users`,
+          { user, tasks: JSON.stringify(tasks) },
+          WRITE_SCOPE,
+        );
       } catch (err) {
         if (wasRefused(err)) throw err;
         throw await lostAnswer(err, what, asset_type, path, business, user);
@@ -388,7 +392,7 @@ export function registerBusinessAccessTools(server: McpServer): void {
 
       let response: { success?: boolean } | undefined;
       try {
-        response = await metaApiClient.delete<{ success?: boolean }>(`${path}/assigned_users`, { user });
+        response = await metaApiClient.delete<{ success?: boolean }>(`${path}/assigned_users`, { user }, WRITE_SCOPE);
       } catch (err) {
         if (wasRefused(err)) throw err;
         throw await lostAnswer(err, what, asset_type, path, business, user);

@@ -510,6 +510,25 @@ describe("registerBusinessAccessTools", () => {
         .rejects.toThrow(/may or may not have been applied.*no access for user/s);
     });
 
+    it.each([
+      ["POST", "ads_assign_user_to_asset", { role: "analyst" }],
+      ["DELETE", "ads_remove_user_from_asset", {}],
+    ])("sends a %s once, so a refusal on a retry never hides a write that went through", async (method, tool, extra) => {
+      let attempts = 0;
+      stubMeta({
+        ...NODES,
+        [`${method} /${PAGE}/assigned_users`]: () => {
+          attempts += 1;
+          if (attempts === 1) throw new TypeError("fetch failed");
+          return { error: { code: 190, message: "Error validating access token" } };
+        },
+        [`GET /${PAGE}/assigned_users`]: { data: [] },
+      });
+      await expect(call(tool, { asset_type: "page", asset_id: PAGE, user_id: USER, business_id: BIZ, ...extra }))
+        .rejects.toThrow(/may or may not have been applied/);
+      expect(attempts).toBe(1);
+    });
+
     it("does not read back when Meta refused the change", async () => {
       stubMeta({ "POST /act_1/assigned_users": { error: { code: 100, message: "Invalid parameter" } } });
       await expect(call("ads_assign_user_to_asset", { asset_type: "ad_account", asset_id: "1", user_id: USER, role: "analyst", business_id: BIZ }))
