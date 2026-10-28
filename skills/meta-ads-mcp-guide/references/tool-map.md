@@ -1,6 +1,6 @@
 # Tool map
 
-Every tool this server registers, grouped by what you are trying to do. 145 in total; 80 are read-only.
+Every tool this server registers, grouped by what you are trying to do. 149 in total; 82 are read-only.
 
 A ⚠️ marks a tool that changes live data, spends money or touches stored credentials. Read the tool's own description before calling one: it carries the argument rules this map deliberately leaves out.
 
@@ -9,6 +9,13 @@ A ⚠️ marks a tool that changes live data, spends money or touches stored cre
 - `ads_get_ad_accounts` — List the ad accounts this token can reach. Start here when no account id is known.
 - `ads_get_account_info` — Account currency, timezone, spend cap and status. Read before interpreting any money figure.
 - `ads_get_pages_for_business` — The Facebook Pages available for ad creation.
+
+## Business Manager access
+
+- `ads_get_business_users` — The people and system users of a Business Manager, with the user_id to give them access.
+- `ads_get_asset_users` — Who has access to an ad account, Page or pixel, with their role and exact tasks.
+- `ads_assign_user_to_asset` ⚠️ — Give a Business Manager member a role on an ad account, Page or pixel, or change it.
+- `ads_remove_user_from_asset` ⚠️ — Take a Business Manager member's access to an ad account, Page or pixel away.
 
 ## Campaigns
 

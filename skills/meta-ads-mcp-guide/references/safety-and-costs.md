@@ -28,6 +28,7 @@ Every tool marked `⚠️` in the tool map. In practice:
 - **Delete**: campaigns, ad sets, ads, audiences, rules, comments, templates, flows. Not recoverable.
 - **Toggle**: activate, pause, archive. The only easily reversible family.
 - **Credentials**: registering or deleting a Meta token, an Apify token or a Gemini key.
+- **Access**: giving, changing or taking away a person's or system user's role on an ad account, Page or pixel. An `admin` role lets them add and remove other people.
 
 Confirm before any of them, and name the object and the effect in the advertiser's own terms: "pause the ad set ES — 25-45 — broad, which is spending 50 EUR a day" rather than "call ads_update_ad_set".
 
@@ -54,6 +55,7 @@ Media is expensive in context, not in money. An image block or a video frame cos
 - Ad Library `ad_archive_id`: 5 to 25 digits, and only meaningful together with the `dataset_id` it was scraped into.
 - WhatsApp tools need `whatsapp_business_management` and the WhatsApp product on the Meta app. A token issued before that scope existed must be re-authorized.
 - Sharing an audience needs both accounts in the same Business Manager.
+- Giving or taking away access needs the caller to be an admin of the Business Manager, and the person or system user to be in it already. Their `user_id` is the business-scoped id the Business Manager tools return, not a personal Facebook id.
 
 ## Signed URLs
 
