@@ -5,7 +5,7 @@ import { MINOR_UNIT_NOTE } from "../../src/meta/currency.js";
 import { createMockMcpServer } from "../setup.js";
 
 describe("registerAllTools", () => {
-  it("registers exactly 157 tools total", () => {
+  it("registers exactly 159 tools total", () => {
     // 79 v2 tools renamed (with account_insights removed → 79) + 14 new in v3 +
     //   3 audience-sharing tools (share / unshare / get-shared-accounts) +
     //   1 invoices tool (ads_get_invoices) +
@@ -25,10 +25,11 @@ describe("registerAllTools", () => {
     //   1 locale search tool (ads_search_locales) +
     //   7 official-parity tools (ads_get_ad_account_pages / ads_get_user_pages /
     //     ads_get_creative_ads / ads_boost_ig_post / ads_get_field_context /
-    //     ads_account_get_activity_logs / ads_library_search).
+    //     ads_account_get_activity_logs / ads_library_search) +
+    //   2 experiment tools (ads_experiment_check_eligibility / ads_experiment_abtest_update_test).
     const server = createMockMcpServer();
     registerAllTools(server as never);
-    expect(server.registerTool).toHaveBeenCalledTimes(157);
+    expect(server.registerTool).toHaveBeenCalledTimes(159);
   });
 
   it("registers all tools with unique names", () => {

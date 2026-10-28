@@ -553,6 +553,17 @@ describe("MetaApiClient", () => {
       expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
     });
 
+    it("does NOT retry POST to a Business Manager's ad studies on a transient error (duplicate-mint safety)", async () => {
+      const retryClient = new MetaApiClient({ maxRetries: 3, timeout: 5000 });
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockFetchResponse({
+        error: { message: "An unknown error has occurred.", type: "OAuthException", code: 1 },
+      })));
+
+      // POST /<business_id>/ad_studies creates an A/B test or a lift study.
+      await expect(retryClient.postForm("/7001/ad_studies", { name: "x" })).rejects.toThrow();
+      expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
+    });
+
     it("uses caller-provided account scope for /copies write pacing", async () => {
       const scopedClient = new MetaApiClient({
         maxRetries: 0,

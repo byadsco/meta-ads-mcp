@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { readList, scrubbed } from "../meta/read-list.js";
 import { normalizeAccountId, validateNumericId } from "../utils/format.js";
+import { unixSeconds } from "../utils/time.js";
 import { ADVERTISER_CONTENT_CLOSE, ADVERTISER_CONTENT_OPEN, singleLine } from "../utils/single-line.js";
 import { mentionsCredential } from "../utils/scrub-credentials.js";
 import { READ } from "./_register.js";
@@ -34,24 +35,6 @@ interface Activity {
   actor_name?: string;
   application_name?: string;
   extra_data?: string;
-}
-
-const DAY = /^\d{4}-\d{2}-\d{2}$/;
-const INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,3})?)?(Z|[+-]\d{2}:\d{2})$/;
-
-// A day alone reads as the start of that day in UTC, or as its end for
-// until, so a window from one day to another includes both. A day that does
-// not exist (2026-02-30) is refused, not rolled into the next month.
-function unixTime(value: string, name: string, endOfDay = false): number {
-  const day = DAY.test(value) ? Date.parse(`${value}T00:00:00Z`) : NaN;
-  const realDay = Number.isFinite(day) && new Date(day).toISOString().slice(0, 10) === value;
-  const ms = DAY.test(value)
-    ? (realDay ? day + (endOfDay ? 86_399_000 : 0) : NaN)
-    : INSTANT.test(value) ? Date.parse(value) : NaN;
-  if (!Number.isFinite(ms)) {
-    throw new Error(`${name} must be a date (2026-10-01, read as UTC) or a time with its offset (2026-10-01T12:00:00Z). Got: ${JSON.stringify(value).slice(0, 60)}`);
-  }
-  return Math.floor(ms / 1000);
 }
 
 // extra_data is free-form: any shape could carry a credential, so only what
@@ -127,8 +110,8 @@ export function registerActivityLogTools(server: McpServer): void {
     async ({ account_id, since, until, category, object_id, user_id, limit }) => {
       const id = normalizeAccountId(account_id);
       const params: Record<string, string | number> = { fields: FIELDS, limit: Math.min(limit, 100) };
-      const from = since === undefined ? undefined : unixTime(since, "since");
-      const to = until === undefined ? undefined : unixTime(until, "until", true);
+      const from = since === undefined ? undefined : unixSeconds(since, "since");
+      const to = until === undefined ? undefined : unixSeconds(until, "until", true);
       if (from !== undefined && to !== undefined && from > to) throw new Error("since must not be after until.");
       if (from !== undefined) params.since = from;
       if (to !== undefined) params.until = to;
