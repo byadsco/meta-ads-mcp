@@ -33,7 +33,7 @@ const attributionWindowEnum = z.enum(["1d_click", "7d_click", "1d_view", "28d_cl
 
 const levelEnum = z.enum(["ad", "adset", "campaign", "account"]);
 
-const filteringEntrySchema = z.object({
+export const filteringEntrySchema = z.object({
   field: z.string(),
   operator: z.enum([
     "EQUAL", "NOT_EQUAL", "GREATER_THAN", "GREATER_THAN_OR_EQUAL",

@@ -9,6 +9,35 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
+- **Seven tools of Meta's official Ads MCP server, under their official names** (150 → 157 tools). Each was measured against the live API first.
+  - `ads_get_ad_account_pages`: the Pages used for ads on an account (`promote_pages`).
+  - `ads_get_user_pages`: the Pages the person can advertise with (ADVERTISE task), with their Instagram account. It names its fields itself, because `/me/accounts` returns every Page's access token otherwise.
+  - `ads_get_creative_ads`: the ads that use a creative. Meta has no filter for it (`creative.id`, `creative_id` and an `ads` edge on the creative are all refused), so the tool walks the account's ads, up to 5,000, and says whether it read them all.
+  - `ads_boost_ig_post` ⚠️: an organic Instagram post into a paused ad.
+    - It checks the ad set's account before writing, and writes only when Meta confirms the post can be boosted (`boost_eligibility_info.eligible_to_boost`).
+    - One write makes the ad and its creative: the creative spec goes inline in `POST /act/ads`, measured on v26.0. When Meta refuses it, no ad is created.
+    - The ad's name ends with a tag drawn from the arguments, so the same boost always carries the same tag.
+      - Before writing, the tool reads every page of the ads in the ad set named with that tag. It returns an ad it finds instead of making another, and writes nothing when Meta's list cannot be read to its end.
+      - When Meta's answer is lost, it looks again a few times. If the ad still does not show, it says the ad may or may not exist and gives the filter that finds it.
+      - Its answer warns against boosting the same post again before Meta lists the new ad.
+    - A `link_url` without `call_to_action_type` is refused, since Meta would drop it.
+    - Measured: Meta gives the ad its own Instagram media, not the post itself.
+  - `ads_get_field_context`: per field, its type, the levels that have it, whether Meta filters on it and with which operator, its values and its unit. Answers from a table measured on v26.0, without calling Meta: filters were checked by asking for an impossible value and getting nothing back. Meta no longer answers `?metadata=1`.
+  - `ads_account_get_activity_logs`: the account's change history with old and new values, by time window, category, object or person.
+    - The activity log still calls campaigns `CAMPAIGN_GROUP` and ad sets `CAMPAIGN`; the tool names them plainly.
+    - A day in `since` counts from its start and a day in `until` up to its end, both in UTC. A day that does not exist is refused.
+    - Of `extra_data`, which is free-form and could carry a credential in any shape, only what is plainly safe is shown:
+      - only `old_value` and `new_value` are read;
+      - numbers and booleans are shown;
+      - text is shown flattened to one line, and only when short and free of `= % & ? # @ " ' { } [ ] < >`, credential names and token-shaped strings;
+      - structured values and everything else are not shown.
+  - `ads_library_search`: Meta's own Ad Library API, free, by keyword or Page in the countries the ads reached. It never asks for `ad_snapshot_url`, which Meta builds with the caller's token, and links each ad's public Ad Library page instead. When more ads match, it gives the cursor for the next page, or says so when the cursor cannot be passed on.
+- **`ads_get_pages_for_business` takes `business_id`** and lists that Business Manager's own Pages, as the official tool does. `account_id` and no argument work as before.
+- **`ads_get_ad_entities` takes `filtering`**, Meta's filters on top of `status_filter`.
+- **Parity check with the official server.** `docs/official-parity.md` maps each of the official server's 86 tools to the one here, or to the phase that adds it. A test fails when an official tool has no row or a row names a tool that is not registered.
+- Page names, ad names, activity entries and Ad Library text come inside the untrusted-content fence. What these tools read from Meta is cleaned of credentials first: credential-named fields, `name=value` pairs and the caller's own token.
+- `ads_get_field_context`'s table is tested against the recorded probe in `tests/fixtures/meta-field-probe-2026-10-28.json`.
+
 - **Campaign and ad set fields Ads Manager has and the tools lacked.** Each was measured live on v26.0.
   - `ads_create_campaign` takes:
     - `spend_cap`, in the same minor unit as the budgets. Meta refuses a cap under about USD 100 (subcode 2446307). It is not the standard unit of the account cap in `ads_update_spend_cap`, and the result states the amount in the account currency.

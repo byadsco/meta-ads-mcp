@@ -15,6 +15,7 @@ import type {
   MetaApiResponse,
 } from "../meta/types/index.js";
 import { READ, UPDATE, TOGGLE, WRITE_WARNING } from "./_register.js";
+import { filteringEntrySchema } from "./insights.js";
 
 const entityTypeEnum = z.enum(["campaign", "ad_set", "ad"]);
 const statusEnum = z.enum(["ACTIVE", "PAUSED", "DELETED", "ARCHIVED"]);
@@ -64,11 +65,16 @@ export function registerEntityTools(server: McpServer): void {
         ),
         limit: z.number().min(1).max(100).default(25),
         status_filter: z.array(statusEnum).optional(),
+        filtering: z
+          .array(filteringEntrySchema)
+          .max(10)
+          .optional()
+          .describe("Meta filters, e.g. [{field:\"name\",operator:\"CONTAIN\",value:\"Summer\"}]. ads_get_field_context says which fields Meta filters on at each level and with which operator."),
         fields: z.array(z.string()).optional(),
       },
       annotations: { ...READ },
     },
-    async ({ entity_type, parent_id, limit, status_filter, fields }) => {
+    async ({ entity_type, parent_id, limit, status_filter, filtering, fields }) => {
       const endpoint = ENDPOINT_BY_ENTITY[entity_type];
       const parentPath = resolveParentPath(entity_type, parent_id);
 
@@ -78,11 +84,11 @@ export function registerEntityTools(server: McpServer): void {
         limit,
       };
 
-      if (status_filter && status_filter.length > 0) {
-        params.filtering = JSON.stringify([
-          { field: "effective_status", operator: "IN", value: status_filter },
-        ]);
-      }
+      const filters = [
+        ...(status_filter && status_filter.length > 0 ? [{ field: "effective_status", operator: "IN", value: status_filter }] : []),
+        ...(filtering ?? []),
+      ];
+      if (filters.length > 0) params.filtering = JSON.stringify(filters);
 
       const response = await metaApiClient.get<MetaApiResponse<AnyEntity>>(
         `/${parentPath}/${endpoint}`,

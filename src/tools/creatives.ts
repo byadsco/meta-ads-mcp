@@ -1,7 +1,9 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { metaApiClient } from "../meta/client.js";
-import { normalizeAccountId, validateMetaId } from "../utils/format.js";
+import { normalizeAccountId, validateMetaId, validateNumericId } from "../utils/format.js";
+import { readList } from "../meta/read-list.js";
+import { ADVERTISER_CONTENT_CLOSE, ADVERTISER_CONTENT_OPEN, singleLine } from "../utils/single-line.js";
 import { buildFieldsParam } from "../utils/validation.js";
 import {
   CREATIVE_DEFAULT_FIELDS,
@@ -1006,4 +1008,63 @@ export function registerCreativeTools(server: McpServer): void {
       };
     },
   );
+
+  // ─── Ads that use a creative (official name) ─────────────────
+  server.registerTool(
+    "ads_get_creative_ads",
+    {
+      description:
+        "List the ads that use a specific creative: name, ad_id, status, ad set and campaign. " +
+        `Meta has no filter for this, so the tool walks the ads of the creative's account (up to ${CREATIVE_ADS_SCAN} of them, deleted ones left out as Meta does) ` +
+        "and says whether it read them all. Ad names come inside an untrusted-content fence.",
+      inputSchema: {
+        creative_id: z.string().describe("The creative whose ads to list"),
+        limit: z.number().int().min(1).max(CREATIVE_ADS_MAX_LIMIT).default(25).describe("Most ads to list"),
+      },
+      annotations: { ...READ },
+    },
+    async ({ creative_id, limit }) => {
+      const creative = validateNumericId(creative_id, "creative_id");
+      const owner = await metaApiClient.get<{ account_id?: string }>(`/${creative}`, { fields: "account_id" });
+      if (!owner.account_id) throw new Error(`Meta did not say which ad account creative ${creative} belongs to.`);
+      const account = normalizeAccountId(owner.account_id);
+
+      const { items, complete } = await readList<{
+        id?: string; name?: string; effective_status?: string; adset_id?: string; campaign_id?: string; creative?: { id?: string };
+      }>(`/${account}/ads`, { fields: "id,name,effective_status,adset_id,campaign_id,creative{id}", limit: 500 }, CREATIVE_ADS_SCAN, CREATIVE_ADS_PAGES);
+
+      const using = items.filter((a) => a.creative?.id === creative);
+      const shown = using.slice(0, limit);
+      const scanned = `${items.length} ad${items.length === 1 ? "" : "s"}`;
+      const header = shown.length === 0
+        ? (complete
+          ? `No ad of ${account} uses creative ${creative} (every ad Meta lists was read, ${scanned}).`
+          : `No ad among the first ${scanned} of ${account} uses creative ${creative}.`)
+        : `${shown.length} ad${shown.length === 1 ? " uses" : "s use"} creative ${creative}` +
+          (complete ? ` (every ad of ${account} Meta lists was read (${items.length})).` : ` (among the first ${scanned} of ${account}).`);
+      const lines = [
+        header,
+        ...(using.length > limit
+          ? [`${using.length - limit} more ad${using.length - limit === 1 ? " uses" : "s use"} it` +
+            (limit < CREATIVE_ADS_MAX_LIMIT ? "; raise limit to see them." : `; this tool lists at most ${CREATIVE_ADS_MAX_LIMIT}.`)]
+          : []),
+        ...(complete ? [] : [`The account's ads could not be read to the end, so more ads may use it.`]),
+        ...(shown.length
+          ? [
+            ADVERTISER_CONTENT_OPEN,
+            ...shown.map((a) =>
+              `• ${singleLine(a.name, 100) || "(unnamed)"} — ad_id ${singleLine(a.id, 30)} — ${singleLine(a.effective_status, 30) || "status unknown"}` +
+              ` — ad_set_id ${singleLine(a.adset_id, 30)} — campaign_id ${singleLine(a.campaign_id, 30)}`),
+            ADVERTISER_CONTENT_CLOSE,
+          ]
+          : []),
+      ];
+      return { content: [{ type: "text", text: lines.join("\n") }] };
+    },
+  );
 }
+
+// Ads read per call to ads_get_creative_ads: 10 pages of Meta's maximum 500.
+const CREATIVE_ADS_MAX_LIMIT = 100;
+const CREATIVE_ADS_PAGES = 10;
+const CREATIVE_ADS_SCAN = 5000;

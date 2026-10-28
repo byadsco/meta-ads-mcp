@@ -6,6 +6,7 @@ import {
   cleanupTestToken,
   createMockMcpServer,
   fetchCallSummary,
+  mockFetchResponse,
   setupTestToken,
   stubWriteAndCurrencyLookup,
 } from "../setup.js";
@@ -87,5 +88,46 @@ describe("ads_update_entity: budget stated in the account currency", () => {
 
     expect(text).not.toMatch(/^Spend cap/m);
     expect(text).not.toContain("USD 100.00");
+  });
+});
+
+describe("ads_get_ad_entities: filtering", () => {
+  beforeEach(() => {
+    setupTestToken();
+    metaApiClient.resetForTests();
+  });
+
+  afterEach(() => {
+    cleanupTestToken();
+    vi.restoreAllMocks();
+  });
+
+  const list = async (args: Record<string, unknown>) => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockFetchResponse({ data: [] })));
+    const server = createMockMcpServer();
+    registerEntityTools(server as never);
+    const tool = server._registeredTools.find((t) => t.name === "ads_get_ad_entities")!;
+    await tool.handler({ entity_type: "campaign", parent_id: "123", limit: 25, ...args });
+    const filtering = new URL(vi.mocked(fetch).mock.calls[0][0] as string).searchParams.get("filtering");
+    return filtering === null ? null : JSON.parse(filtering);
+  };
+
+  it("sends the caller's filters to Meta", async () => {
+    const filters = [
+      { field: "name", operator: "CONTAIN", value: "Summer" },
+      { field: "created_time", operator: "GREATER_THAN", value: 1793600000 },
+    ];
+    expect(await list({ filtering: filters })).toEqual(filters);
+  });
+
+  it("keeps status_filter, alongside the caller's filters", async () => {
+    expect(await list({ status_filter: ["ACTIVE"], filtering: [{ field: "objective", operator: "IN", value: ["OUTCOME_SALES"] }] })).toEqual([
+      { field: "effective_status", operator: "IN", value: ["ACTIVE"] },
+      { field: "objective", operator: "IN", value: ["OUTCOME_SALES"] },
+    ]);
+  });
+
+  it("sends no filtering when none is asked for", async () => {
+    expect(await list({})).toBeNull();
   });
 });

@@ -27,10 +27,10 @@ describe("registerCreativeTools", () => {
     }
   });
 
-  it("registers exactly 9 tools", () => {
+  it("registers exactly 10 tools", () => {
     const server = createMockMcpServer();
     registerCreativeTools(server as never);
-    expect(server.registerTool).toHaveBeenCalledTimes(9);
+    expect(server.registerTool).toHaveBeenCalledTimes(10);
   });
 
   it("registers tools with expected names", () => {
@@ -48,6 +48,7 @@ describe("registerCreativeTools", () => {
       "ads_get_ad_videos",
       "ads_get_video_details",
       "ads_upload_ad_video",
+      "ads_get_creative_ads",
     ]);
   });
 

@@ -1,0 +1,29 @@
+{
+  "source": "Live probes against a test ad account, Marketing API v26.0, 2026-10-28. Field existence: one GET of the node of a real campaign, ad set and ad with all the fields named. Filters: a filter on an impossible value returned no rows where the unfiltered list had some ('filters'), or Meta answered 'Filtering field … is not supported' ('refused').",
+  "exists": {
+    "campaign": ["id", "name", "account_id", "status", "configured_status", "effective_status", "objective", "buying_type", "bid_strategy", "special_ad_categories", "special_ad_category_country", "daily_budget", "lifetime_budget", "budget_remaining", "spend_cap", "start_time", "stop_time", "created_time", "updated_time", "is_adset_budget_sharing_enabled", "issues_info"],
+    "ad_set": ["id", "name", "account_id", "campaign_id", "status", "configured_status", "effective_status", "daily_budget", "lifetime_budget", "budget_remaining", "optimization_goal", "billing_event", "bid_amount", "bid_strategy", "destination_type", "targeting", "promoted_object", "start_time", "end_time", "created_time", "updated_time", "is_dynamic_creative", "attribution_spec", "frequency_control_specs", "dsa_beneficiary", "dsa_payor", "issues_info"],
+    "ad": ["id", "name", "account_id", "campaign_id", "adset_id", "status", "configured_status", "effective_status", "creative", "created_time", "updated_time", "conversion_domain", "tracking_specs", "issues_info", "ad_review_feedback", "bid_amount"]
+  },
+  "filters": {
+    "campaign": {
+      "id": "filters", "name": "filters", "status": "filters", "effective_status": "filters", "objective": "filters", "buying_type": "filters",
+      "bid_strategy": "filters", "daily_budget": "filters", "lifetime_budget": "filters", "spend_cap": "filters", "created_time": "filters",
+      "updated_time": "filters", "start_time": "filters", "stop_time": "filters", "adset.id": "filters",
+      "configured_status": "refused", "budget_remaining": "refused", "special_ad_categories": "refused"
+    },
+    "ad_set": {
+      "id": "filters", "name": "filters", "effective_status": "filters", "campaign.id": "filters", "campaign.objective": "filters",
+      "optimization_goal": "filters", "daily_budget": "filters", "created_time": "filters", "updated_time": "filters"
+    },
+    "ad": {
+      "id": "filters", "name": "filters", "effective_status": "filters", "campaign.id": "filters", "adset.id": "filters",
+      "created_time": "filters", "updated_time": "filters"
+    }
+  },
+  "effective_status_values": {
+    "campaign": ["ACTIVE", "PAUSED", "DELETED", "PENDING_REVIEW", "DISAPPROVED", "PREAPPROVED", "PENDING_BILLING_INFO", "CAMPAIGN_PAUSED", "ARCHIVED", "ADSET_PAUSED", "IN_PROCESS", "WITH_ISSUES"],
+    "ad_set": ["ACTIVE", "PAUSED", "DELETED", "PENDING_REVIEW", "DISAPPROVED", "PREAPPROVED", "PENDING_BILLING_INFO", "CAMPAIGN_PAUSED", "ARCHIVED", "ADSET_PAUSED", "IN_PROCESS", "WITH_ISSUES"],
+    "ad": null
+  }
+}
