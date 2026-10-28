@@ -3,7 +3,8 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { McpError, ErrorCode } from "@modelcontextprotocol/sdk/types.js";
 import { metaApiClient } from "../meta/client.js";
 import { wasRefused } from "../meta/errors.js";
-import type { AssignedUser, Business, BusinessUser, MetaApiResponse, SystemUser } from "../meta/types/index.js";
+import { readList } from "../meta/read-list.js";
+import type { AssignedUser, Business, BusinessUser, SystemUser } from "../meta/types/index.js";
 import { normalizeAccountId } from "../utils/format.js";
 import { ADVERTISER_CONTENT_CLOSE, ADVERTISER_CONTENT_OPEN, singleLine } from "../utils/single-line.js";
 import { READ, UPDATE, DELETE, WRITE_WARNING } from "./_register.js";
@@ -40,8 +41,6 @@ const ROLE_TASKS: Record<AssetType, Partial<Record<Role, readonly string[]>>> = 
 const ASSET_LABEL: Record<AssetType, string> = { ad_account: "ad account", page: "Page", pixel: "pixel" };
 const MAX_BUSINESSES = 25;
 const MAX_USERS = 1000;
-// Meta can send empty pages that still go on, so pages are bounded apart from items.
-const MAX_PAGES = 20;
 // A bounded call is sent once: a refusal on a retry would hide an earlier
 // attempt that went through, so any failure but a refusal gets a read-back.
 const WRITE_SCOPE = { timeoutMs: 30_000 };
@@ -98,39 +97,6 @@ async function checkAssetKind(type: AssetType, path: string): Promise<void> {
       `Meta answered for another object than ${ASSET_LABEL[type]} ${path.slice(1)}. Check asset_type and asset_id.`,
     );
   }
-}
-
-interface ListRead<T> {
-  items: T[];
-  /** True only when Meta ended the list itself: anything else proves nobody's absence. */
-  complete: boolean;
-  total?: number;
-}
-
-/**
- * Every page of a Graph list, up to `max` items. Meta ends a list only by
- * leaving `next` out (a page can be empty and still have one), so a list is
- * complete only then. A next page without a cursor, a cursor seen before, or
- * running into a limit all leave it incomplete.
- */
-async function readList<T>(path: string, params: Record<string, string | number>, max: number): Promise<ListRead<T>> {
-  const items: T[] = [];
-  const cursors = new Set<string>();
-  let total: number | undefined;
-  let after: string | undefined;
-  for (let page = 0; page < MAX_PAGES && items.length < max; page++) {
-    const res = await metaApiClient.get<MetaApiResponse<T> & { summary?: { total_count?: number } }>(
-      path,
-      after === undefined ? params : { ...params, after },
-    );
-    total ??= res.summary?.total_count;
-    items.push(...(res.data ?? []));
-    if (!res.paging?.next) return { items, complete: true, total };
-    after = res.paging.cursors?.after;
-    if (!after || cursors.has(after)) break;
-    cursors.add(after);
-  }
-  return { items, complete: false, total };
 }
 
 /** The Business Manager to act through: the one given, or the token's only one. */

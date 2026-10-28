@@ -49,6 +49,14 @@ export function validateMetaId(id: string, kind = "id"): string {
   return id;
 }
 
+/** A Meta id that can only be numeric: a business, creative, Page or media id. */
+export function validateNumericId(id: string, kind: string): string {
+  if (typeof id !== "string" || !/^\d{1,30}$/.test(id)) {
+    throw new Error(`Invalid Meta ${kind}: must be numeric. Got: ${JSON.stringify(id).slice(0, 80)}`);
+  }
+  return id;
+}
+
 /**
  * Format a budget value from cents to a human-readable string.
  */

@@ -1,6 +1,6 @@
 # Tool map
 
-Every tool this server registers, grouped by what you are trying to do. 150 in total; 83 are read-only.
+Every tool this server registers, grouped by what you are trying to do. 157 in total; 89 are read-only.
 
 A ⚠️ marks a tool that changes live data, spends money or touches stored credentials. Read the tool's own description before calling one: it carries the argument rules this map deliberately leaves out.
 
@@ -8,7 +8,10 @@ A ⚠️ marks a tool that changes live data, spends money or touches stored cre
 
 - `ads_get_ad_accounts` — List the ad accounts this token can reach. Start here when no account id is known.
 - `ads_get_account_info` — Account currency, timezone, spend cap and status. Read before interpreting any money figure.
-- `ads_get_pages_for_business` — The Facebook Pages available for ad creation.
+- `ads_get_pages_for_business` — The Facebook Pages a Business Manager owns (`business_id`); with an account or nothing, the Pages available for ad creation, as before.
+- `ads_get_ad_account_pages` — The Pages that have been used for ads on an ad account.
+- `ads_get_user_pages` — Every Page the person can advertise with, across their businesses, with its linked Instagram account.
+- `ads_account_get_activity_logs` — The account's change history: who changed what and when, with old and new values, by time window, category, object or person.
 
 ## Business Manager access
 
@@ -57,6 +60,7 @@ A ⚠️ marks a tool that changes live data, spends money or touches stored cre
 - `ads_get_ad_videos` — List the videos uploaded to an account.
 - `ads_get_video_details` — One video's metadata, including its signed source URL and permalink.
 - `ads_upload_ad_video` ⚠️ — Upload a video from a URL or Instagram post. Returns at once; Meta keeps processing it.
+- `ads_get_creative_ads` — The ads that use a creative, found by walking the creative's account.
 
 ## Looking at the creative
 
@@ -69,7 +73,8 @@ A ⚠️ marks a tool that changes live data, spends money or touches stored cre
 
 ## Generic entity helpers
 
-- `ads_get_ad_entities` — Fetch several entities of any level by id in one call.
+- `ads_get_ad_entities` — List campaigns, ad sets or ads under a parent, with Meta filters (`filtering`) on top of the status filter.
+- `ads_get_field_context` — Which fields each level has, which Meta filters on and with which operator, their values and units. Answers without calling Meta.
 - `ads_update_entity` ⚠️ — Update any entity by id, when the specific tool does not fit.
 - `ads_activate_entity` ⚠️ — Activate, pause or archive any entity by id.
 
@@ -173,9 +178,11 @@ A ⚠️ marks a tool that changes live data, spends money or touches stored cre
 
 - `ads_get_instagram_account` — The Instagram account linked to a page or ad account.
 - `ads_get_instagram_media` — Recent Instagram media, for boosting or reference.
+- `ads_boost_ig_post` ⚠️ — Turn an organic Instagram post into a paused ad: checks the post can be boosted, then makes the creative and the ad.
 
-## Competitor research (Ad Library, via Apify)
+## Competitor research (Ad Library)
 
+- `ads_library_search` — Search the public Ad Library through Meta's own API, by keyword or Page, in the countries the ads reached. Free.
 - `ads_library_scrape` ⚠️ — Start an Ad Library scrape by keyword or page. Costs money; a hard spend cap is sent with it.
 - `ads_library_get_run_status` — Whether a scrape has finished, and what it charged.
 - `ads_library_get_results` — Page through scraped ads: compact projection with a media summary and each ad's offset.

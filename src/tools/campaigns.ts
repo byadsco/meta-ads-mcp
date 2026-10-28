@@ -9,7 +9,7 @@ import { CAMPAIGN_DEFAULT_FIELDS } from "../meta/types/campaign.js";
 import type { Campaign, MetaApiResponse } from "../meta/types/index.js";
 import { READ, CREATE, UPDATE, DELETE, WRITE_WARNING } from "./_register.js";
 
-const objectiveEnum = z.enum([
+export const objectiveEnum = z.enum([
   "OUTCOME_AWARENESS",
   "OUTCOME_ENGAGEMENT",
   "OUTCOME_LEADS",
@@ -20,14 +20,14 @@ const objectiveEnum = z.enum([
 
 const statusEnum = z.enum(["ACTIVE", "PAUSED", "DELETED", "ARCHIVED"]);
 
-const bidStrategyEnum = z.enum([
+export const bidStrategyEnum = z.enum([
   "LOWEST_COST_WITHOUT_CAP",
   "LOWEST_COST_WITH_BID_CAP",
   "COST_CAP",
   "LOWEST_COST_WITH_MIN_ROAS",
 ]);
 
-const specialAdCategoryEnum = z.enum([
+export const specialAdCategoryEnum = z.enum([
   "NONE",
   "EMPLOYMENT",
   "HOUSING",

@@ -187,6 +187,46 @@ Each of these was accepted as a creative and as a paused ad.
   - Catalog ads fail with "application has not been approved" until the app has `catalog_management`.
   - Instant Experiences (`/{page_id}/canvases`) answer only to a Page token, and the test Page had none.
 
+## Pages, field filters, activity log and Ad Library (measured 2026-10-28)
+
+- **Rate limit.** The app runs on `development_access`. About 60 calls to one ad account within a few minutes end in code 17, subcode 2446079 ("too many calls from this ad account"), for several minutes. Probes have to be paced.
+- **Pages.**
+  - `GET /act_{id}/promote_pages` lists the Pages used for ads on the account.
+  - `GET /me/accounts` lists the Pages the person has a role on, with `tasks` (`ADVERTISE` among them) and `instagram_business_account{id,username}`. Without `fields` it answers with each Page's access token, so the fields are always named.
+- **Ads of a creative.**
+  - `/act_{id}/ads` refuses `filtering` on `creative.id`, `creative_id`, `creative`, `ad.creative.id` and `adcreative.id`, all with "Filtering field … is not supported".
+  - The creative has no `ads` or `adgroups` edge ("nonexisting field").
+  - The creative's `account_id` is readable, so the ads are found by walking that account's ads with `creative{id}`.
+- **Field metadata.** `GET /{id}?metadata=1` returns only `id` in v26.0.
+- **Fields per level.** One GET of a real node per level, naming every candidate field, was answered in full. [tests/fixtures/meta-field-probe-2026-10-28.json](../tests/fixtures/meta-field-probe-2026-10-28.json) records each field found and each filter result. The table behind `ads_get_field_context` is tested against that file.
+- **Filters.**
+  - Meta accepts an unknown value inside a filter without complaint. A filter counts as applied only if an impossible value (`IN ["1"]`, `CONTAIN "zz-no-such-name"`, `GREATER_THAN` a future time or 10^12) returns no rows where the unfiltered list has some.
+  - **Applied on campaigns:** `id`, `name`, `status`, `effective_status`, `objective`, `buying_type`, `bid_strategy`, `daily_budget`, `lifetime_budget`, `spend_cap`, `created_time`, `updated_time`, `start_time`, `stop_time`, `adset.id`.
+  - **Applied on ad sets:** `id`, `name`, `effective_status`, `campaign.id`, `campaign.objective`, `optimization_goal`, `daily_budget`, `created_time`, `updated_time`.
+  - **Applied on ads:** `id`, `name`, `effective_status`, `campaign.id`, `adset.id`, `created_time`, `updated_time`.
+  - **Refused on campaigns:** `configured_status`, `budget_remaining`, `special_ad_categories`.
+  - Times filter as Unix seconds.
+- **`effective_status` values.** Given an unknown value in the edge parameter, Meta lists `ACTIVE, PAUSED, DELETED, PENDING_REVIEW, DISAPPROVED, PREAPPROVED, PENDING_BILLING_INFO, CAMPAIGN_PAUSED, ARCHIVED, ADSET_PAUSED, IN_PROCESS, WITH_ISSUES` for campaigns and ad sets. For ads it answers subcode 1487176 without a list.
+- **Activity log** (`GET /act_{id}/activities`).
+  - **Fields:** `event_type`, `event_time`, `translated_event_type` (in the token user's language), `object_id`, `object_type`, `object_name`, `actor_id`, `actor_name`, `application_id`, `application_name`, `date_time_in_timezone` (localized text), and `extra_data`. `extra_data` is a JSON string with `type` and usually `old_value` and `new_value`.
+  - **Object types** use the old names: `CAMPAIGN_GROUP` is a campaign, `CAMPAIGN` an ad set, `ADGROUP` an ad.
+  - **Filters:**
+    - `oid` and `uid` filter by object and by person; `uid=1` is refused ("The global id 1 is not allowed").
+    - `since` and `until` take Unix seconds.
+    - `category` must be one of `ACCOUNT, AD, AD_KEYWORDS, AD_SET, AUDIENCE, BID, BUDGET, CAMPAIGN, DATE, STATUS, TARGETING`.
+- **Ad Library API** (`GET /ads_archive`).
+  - It answers this app's user token. `ad_reached_countries` is required, and searches reaching `CO` and `ES` both returned ads.
+  - `ad_snapshot_url` is `https://www.facebook.com/ads/archive/render_ad/?id=…&access_token=…`, so it carries the caller's token.
+- **Instagram boosting.**
+  - `GET /{ig_media_id}?fields=boost_eligibility_info` answers `{ eligible_to_boost: true }` for the test account's image and video feed posts.
+  - A creative with `source_instagram_media_id`, `instagram_user_id` and `object_id` (the Page) was accepted, and so was a paused ad with it in a `POST_ENGAGEMENT` ad set placed on Instagram stream.
+  - The creative's `effective_instagram_media_id` is another media than the post, so the ad does not run as the organic post itself.
+  - `POST /act_{id}/ads` also takes that creative spec inline (`creative: { source_instagram_media_id, instagram_user_id, object_id, degrees_of_freedom_spec, contextual_multi_ads }`) and makes the ad and its creative in one call.
+    - The creative read back with the post as its source, all 83 features `OPT_OUT` and `contextual_multi_ads` `OPT_OUT`.
+    - Meta names that creative itself.
+    - A `name CONTAIN` filter on the ad set's ads found the ad by a tag in its name.
+- **Business Manager Pages.** `GET /{business_id}/owned_pages` and `/client_pages` both work. The test Business Manager neither owns the test Page nor has it as a client.
+
 ## Lead forms
 
 - `GET` and `POST /{page_id}/leadgen_forms` answer only to a Page token: a user token gets `(#190) This method must be called with a Page Access Token`.

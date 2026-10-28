@@ -17,7 +17,7 @@ import { carryOverFields, withInstagramIdentity } from "../meta/creative-rebuild
 
 const statusEnum = z.enum(["ACTIVE", "PAUSED", "DELETED", "ARCHIVED"]);
 
-const destinationTypeEnum = z.enum([
+export const destinationTypeEnum = z.enum([
   "WEBSITE", "APP", "MESSENGER", "WHATSAPP", "INSTAGRAM_DIRECT",
   "ON_AD", "ON_PAGE", "ON_EVENT", "ON_VIDEO",
   "SHOP_AUTOMATIC", "FACEBOOK", "FACEBOOK_PAGE", "INSTAGRAM_PROFILE",
@@ -29,7 +29,7 @@ const destinationTypeEnum = z.enum([
   "APPLINKS_AUTOMATIC",
 ]);
 
-const optimizationGoalEnum = z.enum([
+export const optimizationGoalEnum = z.enum([
   "NONE", "APP_INSTALLS", "AD_RECALL_LIFT", "ENGAGED_USERS",
   "EVENT_RESPONSES", "IMPRESSIONS", "LEAD_GENERATION", "QUALITY_LEAD",
   "LINK_CLICKS", "OFFSITE_CONVERSIONS", "PAGE_LIKES", "POST_ENGAGEMENT",
@@ -39,7 +39,7 @@ const optimizationGoalEnum = z.enum([
   "MESSAGING_APPOINTMENT_CONVERSION", "SUBSCRIBERS", "REMINDERS_SET",
 ]);
 
-const billingEventEnum = z.enum(["IMPRESSIONS", "LINK_CLICKS", "POST_ENGAGEMENT", "THRUPLAY"]);
+export const billingEventEnum = z.enum(["IMPRESSIONS", "LINK_CLICKS", "POST_ENGAGEMENT", "THRUPLAY"]);
 
 const bidStrategyEnum = z.enum([
   "LOWEST_COST_WITHOUT_CAP",

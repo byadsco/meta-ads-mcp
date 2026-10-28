@@ -25,8 +25,11 @@ import { registerBillingTools } from "./billing.js";
 import { registerTokenTools } from "./tokens.js";
 import { registerInstagramTools } from "./instagram.js";
 import { registerAdsLibraryTools } from "./ads-library.js";
+import { registerAdLibrarySearchTools } from "./ad-library-search.js";
+import { registerActivityLogTools } from "./activity-logs.js";
 import { registerRateStatusTools } from "./rate-status.js";
 import { registerEntityTools } from "./entities.js";
+import { registerFieldContextTools } from "./field-context.js";
 import { registerDiagnosticTools } from "./diagnostics.js";
 import { registerHelpTools } from "./help.js";
 import { registerMacroTools } from "./macros.js";
@@ -50,16 +53,17 @@ import { registerWhatsAppConfigTools } from "./whatsapp-config.js";
  */
 export function registerAllTools(server: McpServer): void {
   // ─── Core Ad Management ─────────────────────────────────
-  registerAccountTools(server);      // 3 tools
+  registerAccountTools(server);      // 5 tools (+ ads_get_ad_account_pages, ads_get_user_pages)
   registerCampaignTools(server);     // 5 tools
   registerAdSetTools(server);        // 6 tools
   registerAdTools(server);           // 6 tools
-  registerCreativeTools(server);     // 9 tools
+  registerCreativeTools(server);     // 10 tools (+ ads_get_creative_ads)
   registerCreativeMediaTools(server); // 1 tool — creative media as inline image blocks
   registerVideoMediaTools(server);   // 1 tool — ads_get_video_media (keyframes / inline MP4 / urls)
   registerVideoAnalysisTools(server); // 1 tool — ads_analyze_video (Gemini video understanding)
   registerAdDossierTools(server);    // 1 tool — ads_get_ad_dossier (everything about one ad in one call)
   registerEntityTools(server);       // 3 tools — generic helpers (get_ad_entities, update_entity, activate_entity)
+  registerFieldContextTools(server); // 1 tool — ads_get_field_context (types, levels, filters, values; no Meta call)
   registerInsightsTools(server);     // 1 tool  — power-tool ads_get_insights
   registerInsightsViewTools(server); // 5 tools — semantic insight views
   registerTargetingTools(server);    // 8 tools (+ ads_search_locales)
@@ -89,7 +93,7 @@ export function registerAllTools(server: McpServer): void {
   registerSocialProofTools(server);  // 2 tools — ads_duplicate_ad (keeps the post) + ads_get_ad_social_proof
 
   // ─── Instagram ──────────────────────────────────────────
-  registerInstagramTools(server);    // 2 tools — IG account & media lookup
+  registerInstagramTools(server);    // 3 tools — IG account & media lookup + ads_boost_ig_post
 
   // ─── WhatsApp Business ──────────────────────────────────
   registerWhatsAppTools(server);         // 8 tools — WABAs, phone numbers, business profile
@@ -99,6 +103,10 @@ export function registerAllTools(server: McpServer): void {
 
   // ─── Ad Library scraping (Apify) ─────────────────────────
   registerAdsLibraryTools(server);   // 9 tools — competitor ad research via Apify + token mgmt + ad details with media
+  registerAdLibrarySearchTools(server); // 1 tool — ads_library_search (Meta's own Ad Library API, free)
+
+  // ─── Account history ────────────────────────────────────
+  registerActivityLogTools(server);  // 1 tool — ads_account_get_activity_logs
 
   // ─── Gemini video analysis ───────────────────────────────
   registerGeminiKeyTools(server);    // 3 tools — per-tenant Gemini key registration / status / delete
@@ -106,5 +114,5 @@ export function registerAllTools(server: McpServer): void {
   // ─── Token Management ────────────────────────────────────
   registerTokenTools(server);        // 4 tools — list / set-active / register / delete
 
-  // Total: 149 tools (79 renamed + 14 new in v3 + 3 audience-sharing + 1 invoices + 27 WhatsApp + 1 url-tags + 1 bulk video ads + 1 creative media + 9 Ad Library/Apify + 1 video media + 1 video analysis + 3 Gemini key mgmt + 1 ad dossier + 1 ad content editor + 2 social proof + 4 Business Manager access)
+  // Total: 157 tools (79 renamed + 14 new in v3 + 3 audience-sharing + 1 invoices + 27 WhatsApp + 1 url-tags + 1 bulk video ads + 1 creative media + 9 Ad Library/Apify + 1 video media + 1 video analysis + 3 Gemini key mgmt + 1 ad dossier + 1 ad content editor + 2 social proof + 4 Business Manager access + 1 locale search + 7 official-parity tools)
 }

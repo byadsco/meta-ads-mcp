@@ -1,0 +1,42 @@
+{
+  "source": "https://developers.facebook.com/documentation/ads-commerce/ads-ai-connectors/ads-mcp-server/ads-mcp-server-overview",
+  "captured": "2026-10-28",
+  "note": "Tool names of Meta's official Ads MCP server (mcp.facebook.com/ads), from its per-category documentation pages. Meta does not publish their parameters.",
+  "categories": {
+    "ad_creation_and_management": [
+      "ads_get_ad_accounts", "ads_get_ad_account_pages", "ads_get_pages_for_business", "ads_get_user_pages", "ads_get_field_context",
+      "ads_create_campaign", "ads_create_ad_set", "ads_create_ad", "ads_update_entity", "ads_activate_entity",
+      "ads_create_creative", "ads_get_creatives", "ads_get_creative_ads", "ads_get_ad_images", "ads_get_ad_videos", "ads_get_ad_preview",
+      "ads_get_ad_entities", "ads_library_search", "ads_get_ig_accounts", "ads_get_ig_media", "ads_boost_ig_post",
+      "ads_get_ad_account_custom_audiences", "ads_get_custom_audience", "ads_get_custom_audience_adsets", "ads_create_custom_audience",
+      "ads_update_custom_audience", "ads_update_custom_audience_users", "ads_delete_custom_audience"
+    ],
+    "comprehensive_reporting": [
+      "ads_get_opportunity_score", "ads_insights_advertiser_context", "ads_insights_anomaly_signal",
+      "ads_insights_auction_ranking_benchmarks", "ads_insights_industry_benchmark", "ads_insights_performance_trend"
+    ],
+    "catalog_creation_and_management": [
+      "ads_catalog_create", "ads_catalog_update_catalog", "ads_catalog_list_catalogs", "ads_catalog_get_diagnostics",
+      "ads_catalog_get_dynamic_ads_health", "ads_catalog_get_data_sources",
+      "ads_catalog_list_products", "ads_catalog_product_create", "ads_catalog_update_product", "ads_catalog_delete_product",
+      "ads_catalog_create_product_set", "ads_catalog_update_product_set", "ads_catalog_list_product_sets", "ads_catalog_product_set_delete",
+      "ads_catalog_create_product_feed", "ads_catalog_update_product_feed", "ads_catalog_list_product_feeds",
+      "ads_catalog_create_product_feed_upload_session", "ads_catalog_get_product_feed_upload_sessions", "ads_catalog_product_feed_delete",
+      "ads_catalog_create_feed_rule", "ads_catalog_get_feed_rules", "ads_catalog_product_feed_delete_rule",
+      "ads_catalog_event_source_get", "ads_catalog_event_source_get_catalogs", "ads_catalog_event_source_get_health",
+      "ads_catalog_event_source_get_recommendations", "ads_catalog_event_source_connect", "ads_catalog_event_source_disconnect"
+    ],
+    "signals_and_datasets": [
+      "ads_get_datasets", "ads_get_dataset_details", "ads_get_dataset_stats", "ads_get_dataset_quality",
+      "ads_pixel_event_read", "ads_pixel_event_create", "ads_pixel_event_update", "ads_pixel_event_delete",
+      "ads_pixel_parameter_read", "ads_pixel_parameter_create", "ads_pixel_parameter_update", "ads_pixel_parameter_delete",
+      "ads_get_customconversions"
+    ],
+    "help_and_troubleshooting": ["ads_get_errors", "ads_get_help_article"],
+    "abtests_and_conversion_lift_studies": [
+      "ads_experiment_list_tests", "ads_experiment_check_eligibility", "ads_experiment_abtest_create_test",
+      "ads_experiment_abtest_get_test", "ads_experiment_abtest_update_test", "ads_experiment_lift_create_test", "ads_experiment_lift_get_test"
+    ],
+    "activity_logs": ["ads_account_get_activity_logs"]
+  }
+}
