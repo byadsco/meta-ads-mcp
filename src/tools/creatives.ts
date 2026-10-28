@@ -20,8 +20,11 @@ import {
   CTA_TYPES,
   FEATURE_NAME_PATTERN,
   MAX_HEADLINE_LENGTH,
+  PHONE_NUMBER_PATTERN,
   buildFeatureSpec,
   buildStorySpec,
+  type CardInput,
+  type Destination,
 } from "../meta/creative-spec.js";
 import { normalizeUrlTags } from "../utils/validation.js";
 import { effectiveLinkUrl } from "../meta/effective-link.js";
@@ -30,6 +33,51 @@ export const ctaEnum = z.enum(CTA_TYPES);
 
 export const MAX_TEXT_OPTIONS = 5;
 export { MAX_HEADLINE_LENGTH };
+
+const cardSchema = z.object({
+  image_hash: z.string().optional().describe("Image hash from ads_upload_ad_image"),
+  image_url: z.string().optional().describe("Image URL (alternative to image_hash)"),
+  video_id: z.string().optional().describe("Video ID; needs image_hash or image_url as its thumbnail"),
+  link_url: z.string().optional().describe("Where this card leads. Defaults to the ad's link_url"),
+  headline: z.string().max(MAX_HEADLINE_LENGTH).optional().describe("Card headline"),
+  description: z.string().optional().describe("Card description"),
+  call_to_action_type: ctaEnum.optional().describe("Card button. Defaults to the ad's call_to_action_type"),
+});
+
+const destinationSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("website") }),
+  z.object({ type: z.literal("lead_form"), lead_form_id: z.string().describe("Lead form ID, from ads_get_lead_forms or ads_create_lead_form") }),
+  z.object({
+    type: z.literal("messenger"),
+    welcome_message: z.string().min(1).optional().describe("First message people see in the chat"),
+    ice_breakers: z.array(z.object({ question: z.string().min(1), response: z.string().min(1) })).max(4).optional()
+      .describe("Questions people can tap, each with the answer they get. Needs welcome_message"),
+  }),
+  z.object({ type: z.literal("whatsapp") }),
+  z.object({ type: z.literal("instagram_direct") }),
+  z.object({
+    type: z.literal("call"),
+    phone_number: z.string().regex(PHONE_NUMBER_PATTERN).describe("International format: + and the country code, digits only, e.g. +573001234567"),
+  }),
+]);
+
+function toDestination(input: z.infer<typeof destinationSchema>): Destination {
+  switch (input.type) {
+    case "lead_form": return { type: "lead_form", leadFormId: validateMetaId(input.lead_form_id, "lead_form") };
+    case "messenger": return { type: "messenger", welcomeMessage: input.welcome_message, iceBreakers: input.ice_breakers };
+    case "call": return { type: "call", phoneNumber: input.phone_number };
+    default: return { type: input.type };
+  }
+}
+
+const DESTINATION_LABELS: Record<Destination["type"], string> = {
+  website: "website",
+  lead_form: "lead form",
+  messenger: "Messenger",
+  whatsapp: "WhatsApp",
+  instagram_direct: "Instagram Direct",
+  call: "phone call",
+};
 
 const notBlank = (text: string) => text.trim() !== "";
 export const textOptions = () =>
@@ -276,6 +324,11 @@ export function registerCreativeTools(server: McpServer): void {
         headlines: headlineOptions().describe(`Up to ${MAX_TEXT_OPTIONS} headlines (max ${MAX_HEADLINE_LENGTH} characters each). Use instead of headline.`),
         descriptions: textOptions().describe(`Up to ${MAX_TEXT_OPTIONS} descriptions. Use instead of description.`),
         call_to_action_type: ctaEnum.optional().describe("Call-to-action button type"),
+        destination: destinationSchema.optional().describe("Where the button takes people: website (default), lead_form, messenger, whatsapp, instagram_direct or call. Each sets the link and button value Meta expects; lead forms and messaging use Meta's own link, so link_url does not apply to them. The ad set's destination must match"),
+        cards: z.array(cardSchema).min(2).max(10).optional().describe("Carousel: 2 to 10 cards, each with its own image or video, headline, description, link and button. The ad's link_url is the link of cards without their own. Media, headlines and descriptions then go on the cards; primary texts stay on the ad"),
+        display_link: z.string().optional().describe("Link text shown under the media (e.g. 'example.com'). Image and carousel ads"),
+        multi_share_optimized: z.boolean().optional().describe("Carousel: let Meta order the cards by performance"),
+        multi_share_end_card: z.boolean().optional().describe("Carousel: add an end card with the Page's profile picture"),
         url_tags: z.string().optional().describe("Query string params appended to URLs clicked from the ad (e.g. 'utm_source=meta&utm_medium=paid'). A leading '?' is stripped."),
         advantage_creative: z
           .record(z.string().regex(FEATURE_NAME_PATTERN), z.enum(["OPT_IN", "OPT_OUT"]))
@@ -293,6 +346,7 @@ export function registerCreativeTools(server: McpServer): void {
       image_hash, image_url, video_id, link_url, message, headline, description,
       primary_texts, headlines, descriptions, call_to_action_type, url_tags,
       advantage_creative, multi_advertiser_ads,
+      destination, cards, display_link, multi_share_optimized, multi_share_end_card,
     }) => {
       const featureSpec = buildFeatureSpec(advantage_creative, multi_advertiser_ads === true);
       const primaryTexts = resolveTextOptions(message, primary_texts, "message", "primary_texts");
@@ -316,11 +370,30 @@ export function registerCreativeTools(server: McpServer): void {
 
       const body: Record<string, string | number | boolean> = { name };
       const usesExistingPost = Boolean(sourceInstagramMediaIdValidated || objectStoryIdValidated);
+      const scratchOnly = { destination, cards, display_link, multi_share_optimized, multi_share_end_card };
+      const misplaced = Object.entries(scratchOnly).filter(([, value]) => value !== undefined).map(([key]) => key);
+      if (usesExistingPost && misplaced.length > 0) {
+        throw new Error(`${misplaced.join(", ")} apply to a creative built from scratch, not to one promoting an existing post.`);
+      }
+      const destinationValidated = destination ? toDestination(destination) : undefined;
+      const cardInputs: CardInput[] | undefined = cards?.map((card, i) => {
+        if (card.video_id !== undefined && !/^\d+$/.test(card.video_id)) throw new Error(`cards[${i}].video_id is not a video ID: video IDs are numeric.`);
+        return {
+          imageHash: card.image_hash,
+          imageUrl: card.image_url,
+          videoId: card.video_id,
+          linkUrl: card.link_url,
+          headline: card.headline,
+          description: card.description,
+          callToActionType: card.call_to_action_type,
+        };
+      });
       const copyGiven = primaryTexts.length + headlineOptions.length + descriptionOptions.length > 0;
       if (usesExistingPost && copyGiven) {
         warnings.push("Ignored the ad copy: a creative that promotes an existing post shows that post's own text.");
       }
       let textOptionCounts: { primary: number; headlines: number; descriptions: number } | undefined;
+      let effectiveCta = call_to_action_type as string | undefined;
 
       if (sourceInstagramMediaIdValidated) {
         body.source_instagram_media_id = sourceInstagramMediaIdValidated;
@@ -339,12 +412,18 @@ export function registerCreativeTools(server: McpServer): void {
         if (!pageIdValidated) {
           throw new Error("page_id is required when building a creative from scratch (no object_story_id or source_instagram_media_id provided).");
         }
-        if (image_url && !image_hash) {
+        // Meta fetches image URLs itself, so each one has to be a public address.
+        const imageUrls: Array<[string, string]> = [];
+        if (image_url && !image_hash) imageUrls.push(["image_url", image_url]);
+        (cards ?? []).forEach((card, i) => {
+          if (card.image_url && !card.image_hash) imageUrls.push([`cards[${i}].image_url`, card.image_url]);
+        });
+        for (const [field, url] of imageUrls) {
           try {
-            await assertSafePublicUrl(image_url);
+            await assertSafePublicUrl(url);
           } catch (err) {
             if (err instanceof UnsafeUrlError) {
-              throw new Error(`Refusing to forward image_url to Meta: ${err.message}`);
+              throw new Error(`Refusing to forward ${field} to Meta: ${err.message}`);
             }
             throw err;
           }
@@ -360,8 +439,15 @@ export function registerCreativeTools(server: McpServer): void {
           headlines: headlineOptions,
           descriptions: descriptionOptions,
           callToActionType: call_to_action_type,
+          destination: destinationValidated,
+          displayLink: display_link,
+          cards: cardInputs,
+          multiShareOptimized: multi_share_optimized,
+          multiShareEndCard: multi_share_end_card,
         });
         warnings.push(...story.warnings);
+        const built = asRecord(story.objectStorySpec.link_data) ?? asRecord(story.objectStorySpec.video_data);
+        effectiveCta = asRecord(built?.["call_to_action"])?.["type"] as string | undefined;
         body.object_story_spec = JSON.stringify(story.objectStorySpec);
         if (story.assetFeedSpec) {
           body.asset_feed_spec = JSON.stringify(story.assetFeedSpec);
@@ -402,8 +488,12 @@ export function registerCreativeTools(server: McpServer): void {
       }
 
       const lines = [
-        `Creative created successfully!\nID: ${result.id}\nName: ${name}${pageIdValidated ? `\nPage: ${pageIdValidated}` : ""}${objectStoryIdValidated ? `\nBoosted Post: ${objectStoryIdValidated}` : ""}${sourceInstagramMediaIdValidated ? `\nIG Post: ${sourceInstagramMediaIdValidated}` : ""}${effectiveStoryId ? `\nPost ID: ${effectiveStoryId}` : ""}\nCTA: ${call_to_action_type ?? "N/A"}`,
+        `Creative created successfully!\nID: ${result.id}\nName: ${name}${pageIdValidated ? `\nPage: ${pageIdValidated}` : ""}${objectStoryIdValidated ? `\nBoosted Post: ${objectStoryIdValidated}` : ""}${sourceInstagramMediaIdValidated ? `\nIG Post: ${sourceInstagramMediaIdValidated}` : ""}${effectiveStoryId ? `\nPost ID: ${effectiveStoryId}` : ""}\nCTA: ${effectiveCta ?? "N/A"}`,
       ];
+      if (cardInputs) lines.push(`Carousel: ${cardInputs.length} cards.`);
+      if (destinationValidated && destinationValidated.type !== "website") {
+        lines.push(`Destination: ${DESTINATION_LABELS[destinationValidated.type]}. The ad set's destination has to match it.`);
+      }
       if (textOptionCounts) {
         lines.push(`Text options: ${textOptionCounts.primary} primary text(s), ${textOptionCounts.headlines} headline(s), ${textOptionCounts.descriptions} description(s). Meta shows each person the combination likely to perform best.`);
       }

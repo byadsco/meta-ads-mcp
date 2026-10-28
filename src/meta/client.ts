@@ -12,6 +12,12 @@ import {
 import type { MetaApiResponse } from "./types/common.js";
 import { collectAllPages } from "./paginator.js";
 import { assertMetaApiVersion, resolveMetaApiVersion } from "./api-version.js";
+import { scrubCredentialsDeep, scrubErrorCredentials } from "../utils/scrub-credentials.js";
+
+// An error answer can quote the request, its token included (a Page token
+// while a Page action runs). It is cleaned before anything classifies, logs
+// or returns it.
+const withoutToken = scrubCredentialsDeep;
 
 const DEFAULT_BASE_URL = "https://graph.facebook.com";
 const DEFAULT_TIMEOUT = 30000;
@@ -272,13 +278,14 @@ export class MetaApiClient {
     // mints a duplicate ad. The WhatsApp creating edges live on plain-numeric
     // WABA/phone paths: /message_templates, /flows, /message_qrdls create
     // resources, and /request_code sends a real SMS/voice call — all mint
-    // duplicates on retry. Other POSTs (updates on /<id>) and DELETEs are
-    // idempotent at the API level.
+    // duplicates on retry. A Page's /leadgen_forms creates a lead form the
+    // same way. Other POSTs (updates on /<id>) and DELETEs are idempotent at
+    // the API level.
     const isCreatingRequest =
       method === "POST" &&
       (/^\/?act_[A-Za-z0-9]+\//.test(path) ||
         /\/copies$/.test(path) ||
-        /\/(message_templates|flows|message_qrdls|request_code)$/.test(path));
+        /\/(message_templates|flows|message_qrdls|request_code|leadgen_forms)$/.test(path));
     const canRetryTransport = !isCreatingRequest;
     const maxRetries = endBy === undefined ? this.maxRetries : 0;
     const timeout = endBy === undefined ? this.timeout : Math.max(1, endBy - Date.now());
@@ -308,7 +315,7 @@ export class MetaApiClient {
         this.rateLimiter.updateFromHeaders(response.headers, context);
         this.maybeUpdatePacerTierFromHeaders(response.headers, tokenHash, accountId);
         this.maybeLogUsage();
-        this.maybeLogVersionWarning(response.headers);
+        this.maybeLogVersionWarning(response.headers, token);
 
         // A bounded call's limit covers reading the answer too, and running
         // out of it cancels the transfer.
@@ -325,8 +332,9 @@ export class MetaApiClient {
         }
 
         if (isMetaApiError(body)) {
-          const classification = classifyMetaError(body.error);
-          this.logMetaError(body.error, classification, context, path);
+          const metaError = withoutToken(body.error, token);
+          const classification = classifyMetaError(metaError);
+          this.logMetaError(metaError, classification, context, path);
 
           if (classification.throttled) {
             // Seed the rate-limiter with the retry-after hint so sibling
@@ -354,7 +362,7 @@ export class MetaApiClient {
 
         if (!response.ok) {
           lastError = new Error(
-            `HTTP ${response.status}: ${JSON.stringify(body)}`,
+            `HTTP ${response.status}: ${JSON.stringify(withoutToken(body, token))}`,
           );
           if (response.status >= 500 && canRetryTransport && attempt < maxRetries) {
             await this.backoff(attempt);
@@ -374,12 +382,13 @@ export class MetaApiClient {
           throw lastError;
         }
 
-        // Already-classified errors bubble up unchanged.
+        // Already-classified errors bubble up unchanged, but a transport
+        // error with a code is not one of them, and may quote the request.
         if (error instanceof Error && "code" in error) {
-          throw error;
+          throw scrubErrorCredentials(error, token);
         }
 
-        lastError = error instanceof Error ? error : new Error(String(error));
+        lastError = error instanceof Error ? scrubErrorCredentials(error, token) : new Error(withoutToken(String(error), token));
         if (canRetryTransport && attempt < maxRetries) {
           await this.backoff(attempt);
           continue;
@@ -470,9 +479,10 @@ export class MetaApiClient {
   // endpoints that did not change and rejecting the ones that did. The header
   // only arrives once the version is gone, so it means the pin is already
   // overdue rather than about to be.
-  private maybeLogVersionWarning(headers: Headers): void {
-    const warning = headers.get("x-ad-api-version-warning");
-    if (!warning) return;
+  private maybeLogVersionWarning(headers: Headers, token: string): void {
+    const raw = headers.get("x-ad-api-version-warning");
+    if (!raw) return;
+    const warning = withoutToken(raw, token);
     const now = Date.now();
     if (now - this.lastVersionWarningAt < VERSION_WARNING_LOG_INTERVAL_MS) return;
     this.lastVersionWarningAt = now;

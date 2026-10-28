@@ -38,7 +38,7 @@ A ⚠️ marks a tool that changes live data, spends money or touches stored cre
 
 - `ads_get_ads` — List the ads in an ad set, campaign or account.
 - `ads_get_ad_details` — One ad in full. For a review, prefer ads_get_ad_dossier.
-- `ads_create_ad` ⚠️ — Create an ad from an existing creative, in an ad set.
+- `ads_create_ad` ⚠️ — Create an ad from an existing creative, in an ad set, with its conversion domain and labels.
 - `ads_update_ad` ⚠️ — Change an ad's name, status or creative.
 - `ads_update_ad_url_tags` ⚠️ — Rewrite the UTM tags of live ads by cloning each creative onto the same post. Skips ads with several text options unless allow_new_post.
 - `ads_update_ad_content` ⚠️ — Add, remove or replace the copy of live ads, or change link, button or media. Dry run first; shows what happens to likes and comments. `allow_post_edit` edits the post itself for one-text ads (needs `pages_manage_posts`).
@@ -50,7 +50,7 @@ A ⚠️ marks a tool that changes live data, spends money or touches stored cre
 
 - `ads_get_ad_creatives` — List creatives for an ad or account, with their UTM tags.
 - `ads_get_creative_details` — One creative in full, including the derived effective landing URL.
-- `ads_create_ad_creative` ⚠️ — Create a creative from a page post, image or video, with up to 5 primary texts, headlines and descriptions. Advantage+ AI features stay off unless requested.
+- `ads_create_ad_creative` ⚠️ — Create a creative from a page post, image, video or carousel (2-10 cards), with up to 5 primary texts, headlines and descriptions. `destination` sends people to a website, lead form, Messenger, WhatsApp, Instagram Direct or a phone call. Advantage+ AI features stay off unless requested.
 - `ads_update_ad_creative` ⚠️ — Rename a creative. Nothing else on a creative can change after creation.
 - `ads_upload_ad_image` ⚠️ — Upload an image and get the hash a creative needs.
 - `ads_get_ad_images` — List the images uploaded to an account, by hash.
@@ -121,7 +121,7 @@ A ⚠️ marks a tool that changes live data, spends money or touches stored cre
 ## Leads
 
 - `ads_get_lead_forms` — List the instant lead forms on a page.
-- `ads_create_lead_form` ⚠️ — Create an instant form for lead ads.
+- `ads_create_lead_form` ⚠️ — Create an instant form for lead ads: multiple-choice questions, intro card and thank-you screen. Uses a Page token (needs `pages_manage_ads`).
 - `ads_get_leads` — Download the leads submitted through a form.
 - `ads_get_ad_leads` — Download leads attributed to one ad.
 
