@@ -9,6 +9,14 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
+- **Business Manager access: four tools to see and change who can use each ad account, Page and pixel** (145 → 149 tools). Measured against the live API:
+  - `ads_get_business_users` lists a Business Manager's people (with email and role) and its system users, with the business-scoped `user_id` the other tools take. Meta lists only the people it shows this app: until the app has Advanced Access to `business_management` it returns just the people with a role on the app, and the reply says how many are missing.
+  - `ads_get_asset_users` lists who has access to an ad account, Page or pixel through a Business Manager, with the role their tasks amount to and the exact tasks.
+  - `ads_assign_user_to_asset` ⚠️ gives a role or replaces the one a user has: ad accounts and pixels take admin, advertiser or analyst; Pages also editor and moderator. `ads_remove_user_from_asset` ⚠️ takes the access away. Both read the asset back from Meta and report what it now holds, or that it could not be confirmed. A list counts as read in full only when Meta ends it (no `next` link); a cut list never confirms that someone lost access, nor lets the tools pick the token's only Business Manager.
+  - The caller's user token is enough for all three asset types, Pages included. A Page token would return other ids, so it is never used.
+  - Page and pixel ids look alike and share the same edge, so a Page or pixel is first read with fields only its own kind has; Meta refuses the others, and an id of the wrong kind is turned down before anything is written.
+  - A write is sent once, never retried. One whose answer is lost (a timeout, Meta's unknown error) may still have gone through: the tool reads the asset back and says the change may or may not have been applied, with what Meta shows now. A change Meta refused is reported as is.
+  - `business_id` can be left out only when the token sees a single Business Manager; otherwise the reply lists them. Names and emails stay inside the untrusted-content fence.
 - **Dynamic creative.**
   - `ads_create_ad_set` takes `is_dynamic_creative`, and `ads_create_ad_creative` takes `dynamic_creative`:
     - up to 10 images or videos (each video with a thumbnail);
@@ -19,7 +27,7 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - **Versions per placement and per language in `ads_create_ad_creative`.**
   - `placement_variants`: an image or video per placement (publisher platforms and positions). Placements Meta removed (Facebook video feeds, Instagram Explore, Messenger Stories) are refused.
   - `language_variants`: primary text, headline, description and link per set of locales, with one default. Meta refuses an ad with a language that has no description (subcode 1885817).
-  - The new **`ads_search_locales`** finds Meta's locale keys by language name. Meta names locales in the token user's language. The tool count goes from 145 to 146.
+  - The new **`ads_search_locales`** finds Meta's locale keys by language name. Meta names locales in the token user's language. The tool count goes from 149 to 150.
 - **Music and site links in `ads_create_ad_creative`.**
   - `music: true` lets Meta add a track, on image, text-options and carousel ads.
   - `site_links` adds links under the ad in Facebook Feed, and turns on the `site_extensions` feature they need.
@@ -39,7 +47,6 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   - Card image URLs go through the same public-address check as the ad's own.
 - **`ads_create_ad` takes `conversion_domain` and `ad_labels`** (by name).
 - **`ads_create_lead_form`:** multiple-choice `CUSTOM` questions, an intro card (`context_card`), a thank-you screen (`thank_you_page`) and the privacy link text.
-
 - **`ads_duplicate_ad` copies an ad into other ad sets of its account, keeping its social proof.** Measured against the live API:
   - By default every copy uses the source ad's own creative. It shows the same Facebook post and the same Instagram media, so the copies share their likes, comments and shares, and every text option comes along. Meta's own ad copy (`/copies`) and a new creative reusing the post both start Instagram over; the first also starts Facebook over.
   - Each copy carries the source's tracking specs, conversion domain and ad labels. Copies are created paused unless `status` says otherwise.

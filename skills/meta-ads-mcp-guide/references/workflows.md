@@ -163,6 +163,15 @@ Insights refuse wide windows with breakdowns in a synchronous call, because Meta
 
 An audience below roughly 1000 people will not deliver. Say that before it is created, not after.
 
+## Giving someone access
+
+1. `ads_get_business_users` — find the person or system user and their user_id. When Meta lists fewer people than the Business Manager has, `ads_get_asset_users` on an asset they already use shows their user_id.
+2. `ads_get_asset_users` on the ad account, Page or pixel — what they hold today.
+3. Confirm the person, the asset and the role with the human. `admin` lets them add and remove other people.
+4. `ads_assign_user_to_asset` — gives the role, or replaces the one they had. `ads_remove_user_from_asset` takes the access away.
+
+For an agency, `business_id` is the agency's own Business Manager, even on a client's ad account.
+
 ## Competitor research
 
 See the competitor-research skill. It spends the advertiser's Apify credit, so it has its own rules.

@@ -3,7 +3,7 @@
   "url": "https://context7.com/byadsco/meta-ads-mcp",
   "public_key": "pk_HZ7MG8rJbZtgZam6cGouY",
   "projectTitle": "Meta Ads MCP",
-  "description": "Self-hosted multi-tenant MCP server for the Meta Marketing API: 146 ads_* and whatsapp_* tools, OAuth 2.1, Ad Library research, video keyframes, Gemini analysis, ad dossier, skills.",
+  "description": "Self-hosted multi-tenant MCP server for the Meta Marketing API: 150 ads_* and whatsapp_* tools, OAuth 2.1, Ad Library research, video keyframes, Gemini analysis, ad dossier, skills.",
   "folders": ["docs", "skills"],
   "excludeFolders": ["node_modules", "dist", "tests"],
   "excludeFiles": ["CLAUDE.md"],

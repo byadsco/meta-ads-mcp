@@ -57,7 +57,7 @@ A separate CI job runs [gitleaks](https://github.com/gitleaks/gitleaks) against 
 
 ## Adding a new tool
 
-If you want to expose a Meta Marketing API endpoint that the 146 built-in tools don't cover, see the full walkthrough in [docs/adding-a-tool.md](docs/adding-a-tool.md). Quick summary:
+If you want to expose a Meta Marketing API endpoint that the 150 built-in tools don't cover, see the full walkthrough in [docs/adding-a-tool.md](docs/adding-a-tool.md). Quick summary:
 
 - New file under [src/tools/](src/tools/) (or extend an existing category) exporting a `register*Tools(server)` function that calls `server.registerTool(name, { description, inputSchema, annotations }, handler)`.
 - Use the `ads_*` naming convention (no `meta_` prefix) and the modern `registerTool` API. The legacy `server.tool(...)` form is deprecated upstream and removed from this repo in v3.0.0.
