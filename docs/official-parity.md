@@ -9,6 +9,7 @@ Meta runs its own Ads MCP server at `mcp.facebook.com/ads`. This page maps each 
 - **same name**: this server registers a tool with the official name.
 - **equivalent**: another tool here does the same job; its name is in the second column.
 - **partial (5x)**: a tool here does part of the job and phase 5x widens it.
+- **partial (follow-up)**: a tool here does part of the job, and what is missing is noted under its section for a later change.
 - **pending (5x)**: nothing here does it yet; phase 5x adds it.
 
 This server also has tools the official one lacks, among them WhatsApp Business, Business Manager access, video analysis, editing a live ad's copy while keeping its likes, and duplicating an ad with its post. They are listed in the [tool map](../skills/meta-ads-mcp-guide/references/tool-map.md).
@@ -124,13 +125,15 @@ Catalogs need the `catalog_management` permission, which goes through Meta's app
 
 | Official tool | Here | Status |
 | --- | --- | --- |
-| `ads_experiment_list_tests` | `ads_get_ad_studies` | partial (5b) |
-| `ads_experiment_check_eligibility` | — | pending (5b) |
+| `ads_experiment_list_tests` | `ads_get_ad_studies` | equivalent |
+| `ads_experiment_check_eligibility` | `ads_experiment_check_eligibility` | same name |
 | `ads_experiment_abtest_create_test` | `ads_create_ad_study` | equivalent |
-| `ads_experiment_abtest_get_test` | `ads_get_study_details` | equivalent |
-| `ads_experiment_abtest_update_test` | — | pending (5b) |
+| `ads_experiment_abtest_get_test` | `ads_get_study_details` | partial (follow-up) |
+| `ads_experiment_abtest_update_test` | `ads_experiment_abtest_update_test` | same name |
 | `ads_experiment_lift_create_test` | `ads_create_ad_study` | equivalent |
-| `ads_experiment_lift_get_test` | `ads_get_study_details` | equivalent |
+| `ads_experiment_lift_get_test` | `ads_get_study_details` | partial (follow-up) |
+
+`ads_get_study_details` gives a study's type, state, times, cells and objectives, but not its results: the official tools return those too.
 
 ## Activity logs
 

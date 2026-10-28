@@ -1,6 +1,6 @@
 # Tool map
 
-Every tool this server registers, grouped by what you are trying to do. 157 in total; 89 are read-only.
+Every tool this server registers, grouped by what you are trying to do. 159 in total; 90 are read-only.
 
 A ⚠️ marks a tool that changes live data, spends money or touches stored credentials. Read the tool's own description before calling one: it carries the argument rules this map deliberately leaves out.
 
@@ -156,9 +156,11 @@ A ⚠️ marks a tool that changes live data, spends money or touches stored cre
 
 ## A/B testing
 
-- `ads_get_ad_studies` — List A/B tests (ad studies) on the account.
-- `ads_create_ad_study` ⚠️ — Create a split test between two or more cells.
-- `ads_get_study_details` — One study and its results so far.
+- `ads_get_ad_studies` — List the account's A/B tests and lift studies, or one campaign's or ad set's, with their state.
+- `ads_experiment_check_eligibility` — Check a planned test before creating it: Business Manager, cells, ownership, overlapping tests, times. Meta has no dry run.
+- `ads_create_ad_study` ⚠️ — Create an A/B test between two or more cells, or a lift study with a control group, on the account's Business Manager.
+- `ads_get_study_details` — One study: type, state, times, cells and objectives.
+- `ads_experiment_abtest_update_test` ⚠️ — Rename a test, move its end, change its split before the start, or cancel it before it starts.
 
 ## Diagnostics and health
 

@@ -9,6 +9,23 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
+- **Two experiment tools of Meta's official Ads MCP server, under their official names** (157 → 159 tools).
+  - `ads_experiment_check_eligibility` checks a planned A/B test or lift study before it is created. It reads only:
+    - the account's Business Manager;
+    - the cells' shape;
+    - that each campaign or ad set exists and belongs to the account;
+    - that none is already in a test that is running or scheduled (Meta refuses that, subcode 1840001);
+    - that the end comes after the start.
+
+    Meta has no dry run for studies: `execution_options: ["validate_only"]` creates the study (measured).
+  - `ads_experiment_abtest_update_test` ⚠️ edits or cancels a test.
+    - **Edit:** rename it, change its description, move its end to a time still in the future, or change every cell's share before the start.
+    - **Cancel:** a test that has not started is deleted and will not run. A running one is not canceled; its end can be moved earlier instead.
+- **`ads_get_ad_studies` lists an account's studies, or one campaign's or ad set's, and can keep one type.**
+  - Meta does not list a study made through the API on the account or on the Business Manager. Measured: it shows it on the campaigns and ad sets in its cells.
+  - So the tool reads the account's campaigns and ad sets with their studies.
+  - Each study shows its state: scheduled, running, ended or canceled.
+
 - **Seven tools of Meta's official Ads MCP server, under their official names** (150 → 157 tools). Each was measured against the live API first.
   - `ads_get_ad_account_pages`: the Pages used for ads on an account (`promote_pages`).
   - `ads_get_user_pages`: the Pages the person can advertise with (ADVERTISE task), with their Instagram account. It names its fields itself, because `/me/accounts` returns every Page's access token otherwise.
@@ -167,6 +184,17 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Fixed
 
+- **The three study tools failed against Meta.** Each was measured on v26.0.
+  - **`ads_create_ad_study` never created a study.**
+    - It posted to `/act_{id}/ad_studies`, which Meta answers "Unsupported post request". It now posts to the account's Business Manager, or `business_id`.
+    - It sent ISO times, which Meta refuses ("Param end_time must be a number"). They now go as Unix seconds.
+    - Its lift type was `LIFT_STUDY`; Meta's is `LIFT`. A lift study now gets a control share per cell, `cooldown_start_time` and `observation_end_time`, which Meta requires (subcode 1840013), and pixel objectives.
+    - The shape is checked before calling Meta: two cells for an A/B test, one level per cell, no entity in two cells, the end after the start (subcode 1840010).
+  - **`ads_get_study_details` always failed.** It asked for `confidence_level`, which Meta does not let anyone read ("Tried accessing nonexisting field"). It now reads the documented fields, the cells with their ad sets or campaigns, and the objectives.
+  - **`ads_get_ad_studies` read `/act_{id}/ad_studies`, which did not show a study made through the API.** See *Added*.
+  - Study names and descriptions now come inside the untrusted-content fence.
+  - The `fields` argument of `ads_get_ad_studies` and `ads_get_study_details` is gone: both read a fixed set.
+- **A study is never created twice.** `POST /{business_id}/ad_studies` joins the creating calls the client never retries after a lost answer.
 - **`ads_create_campaign` with `special_ad_categories: []` failed** with "special_ad_categories is required": the list went out as empty text. The categories now go as a JSON list, and `NONE` as an empty one.
 - **`ads_get_lead_forms` and `ads_create_lead_form` failed against Meta: forms answer only to a Page token (#190).** Both now get one with the person's token for that call only, as route B of `ads_update_ad_content` does. It is never logged, returned or stored, and the person has to manage the Page (`pages_manage_ads`).
   - `ads_get_lead_forms` takes only the form's own fields, so no expansion (`page{access_token}`) can reach the Page's token.

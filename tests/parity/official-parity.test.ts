@@ -66,7 +66,7 @@ describe("parity with Meta's official Ads MCP server", () => {
   });
 
   it("every status is one of the documented ones", () => {
-    const bad = rows.filter((r) => !/^(same name|equivalent|partial \(5[a-f]\)|pending \(5[a-f]\))$/.test(r.status));
+    const bad = rows.filter((r) => !/^(same name|equivalent|partial \((?:5[a-f]|follow-up)\)|pending \(5[a-f]\))$/.test(r.status));
     expect(bad).toEqual([]);
   });
 

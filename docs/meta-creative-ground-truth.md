@@ -227,6 +227,38 @@ Each of these was accepted as a creative and as a paused ad.
     - A `name CONTAIN` filter on the ad set's ads found the ad by a tag in its name.
 - **Business Manager Pages.** `GET /{business_id}/owned_pages` and `/client_pages` both work. The test Business Manager neither owns the test Page nor has it as a client.
 
+## A/B tests and lift studies (measured 2026-10-28)
+
+Measured with paused campaigns and ad sets, and studies scheduled a week ahead, all deleted afterwards.
+
+- **Where a study is made.**
+  - `POST /act_{id}/ad_studies` is "Unsupported post request".
+  - `POST /{business_id}/ad_studies` works; the account's Business Manager is `GET /act_{id}?fields=business{id}`. `POST /me/ad_studies` works too.
+- **Times.** `start_time` and `end_time` are Unix seconds. ISO text is refused: "Param end_time must be a number".
+- **No dry run.** `execution_options: ["validate_only"]` is ignored and the study is created.
+- **Rules Meta enforces.**
+  - An ad object cannot be in two tests active at the same time (subcode 1840001).
+  - The end must come after the start (subcode 1840010).
+  - A lift study needs `observation_end_time` at or after the end (subcode 1840009), and `cooldown_start_time` (subcode 1840013).
+- **Lift study.** Accepted with:
+  - `cooldown_start_time` = `start_time` and `observation_end_time` = `end_time`;
+  - one cell `{ treatment_percentage: 90, control_percentage: 10, adsets: [id] }`;
+  - an objective `{ name, type: "CONVERSIONS", is_primary: true, adspixels: [{ id, event_names: ["fb_pixel_purchase"] }] }`.
+
+  It reads back as `type: "LIFT"` with its objective.
+- **Reading.**
+  - A study's fields: `business`, `cells`, `created_by`, `end_time`, `id`, `name`, `start_time`, `type`; `canceled_time` when canceled.
+  - `confidence_level` can be written but not read: "Tried accessing nonexisting field (confidence_level)".
+  - Cells read through `cells{id,name,treatment_percentage,control_percentage,adsets{id},campaigns{id}}`, objectives through `objectives{id,name,type,is_primary}`.
+- **Listing.**
+  - A study made through the API is not listed by `/act_{id}/ad_studies`, `/{business_id}/ad_studies` (with or without fields) or `/me/ad_studies`.
+  - It is listed by the `ad_studies` edge of each campaign or ad set in its cells, and by `/act_{id}/adsets?fields=ad_studies{…}` and `/act_{id}/campaigns?fields=ad_studies{…}`.
+  - A campaign's edge does not list a study whose cells hold only its ad sets.
+- **Changing a study.**
+  - `POST /{study_id}` with `name`, `description` or a later `end_time` answers `{ success, cell_ids, objective_ids }`.
+  - Before the start, `cells: [{ id, treatment_percentage }, …, { name, treatment_percentage, adsets }]` changed the split to 34/33/33 and added a cell.
+- **Deleting.** `DELETE /{study_id}` on a study that has not started answers `{ success: true }`, and the study can no longer be read. Meta documents that the start and the split of a running study cannot change, and that its end can only move to a time in the future.
+
 ## Lead forms
 
 - `GET` and `POST /{page_id}/leadgen_forms` answer only to a Page token: a user token gets `(#190) This method must be called with a Page Access Token`.

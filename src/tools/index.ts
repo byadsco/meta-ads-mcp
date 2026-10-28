@@ -76,7 +76,7 @@ export function registerAllTools(server: McpServer): void {
   registerPixelTools(server);        // 5 tools — Pixel & events manager
   registerCommentTools(server);      // 4 tools — Ad comment moderation
   registerRuleTools(server);         // 5 tools — Automated rules
-  registerABTestingTools(server);    // 3 tools — A/B split testing
+  registerABTestingTools(server);    // 5 tools — A/B tests and lift studies (+ eligibility check, edit/cancel)
   registerReportTools(server);       // 4 tools — Async scheduled reports (+ run_and_wait)
   registerBillingTools(server);      // 4 tools — Billing, spend limits & invoices
   registerRateStatusTools(server);   // 1 tool — Rate-limit usage + circuit status
@@ -114,5 +114,5 @@ export function registerAllTools(server: McpServer): void {
   // ─── Token Management ────────────────────────────────────
   registerTokenTools(server);        // 4 tools — list / set-active / register / delete
 
-  // Total: 157 tools (79 renamed + 14 new in v3 + 3 audience-sharing + 1 invoices + 27 WhatsApp + 1 url-tags + 1 bulk video ads + 1 creative media + 9 Ad Library/Apify + 1 video media + 1 video analysis + 3 Gemini key mgmt + 1 ad dossier + 1 ad content editor + 2 social proof + 4 Business Manager access + 1 locale search + 7 official-parity tools)
+  // Total: 159 tools (79 renamed + 14 new in v3 + 3 audience-sharing + 1 invoices + 27 WhatsApp + 1 url-tags + 1 bulk video ads + 1 creative media + 9 Ad Library/Apify + 1 video media + 1 video analysis + 3 Gemini key mgmt + 1 ad dossier + 1 ad content editor + 2 social proof + 4 Business Manager access + 1 locale search + 7 official-parity tools + 2 experiment tools)
 }

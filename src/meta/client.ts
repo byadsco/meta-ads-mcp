@@ -285,7 +285,7 @@ export class MetaApiClient {
       method === "POST" &&
       (/^\/?act_[A-Za-z0-9]+\//.test(path) ||
         /\/copies$/.test(path) ||
-        /\/(message_templates|flows|message_qrdls|request_code|leadgen_forms)$/.test(path));
+        /\/(message_templates|flows|message_qrdls|request_code|leadgen_forms|ad_studies)$/.test(path));
     const canRetryTransport = !isCreatingRequest;
     const maxRetries = endBy === undefined ? this.maxRetries : 0;
     const timeout = endBy === undefined ? this.timeout : Math.max(1, endBy - Date.now());
