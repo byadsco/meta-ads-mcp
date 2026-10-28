@@ -106,6 +106,33 @@ describe("registerAdTools", () => {
       })).rejects.toThrow(/conversion_domain/);
       expect(vi.mocked(fetch)).not.toHaveBeenCalled();
     });
+
+    it("sends the flexible format's groups with the ad", async () => {
+      const server = createMockMcpServer();
+      registerAdTools(server as never);
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockFetchResponse({ id: "3009" })));
+
+      const result = await server._registeredTools.find((t) => t.name === "ads_create_ad")!.handler({
+        account_id: "123", name: "Ad", ad_set_id: "2001", creative_id: "4001", status: "PAUSED",
+        flexible_format: { groups: [{ image_hashes: ["h1"], video_ids: ["800123"], primary_texts: ["Uno"], headlines: ["T"], call_to_action: { type: "SHOP_NOW", link: "https://example.com/" } }] },
+      }) as ToolResult;
+
+      const spec = JSON.parse(bodyOf(0).get("creative_asset_groups_spec")!);
+      expect(spec.groups[0]).toMatchObject({ images: [{ hash: "h1" }], videos: [{ video_id: "800123" }], call_to_action: { type: "SHOP_NOW" } });
+      expect(result.content[0].text).toMatch(/Flexible format: 1 group/);
+    });
+
+    it("refuses a malformed video in a flexible format group, before calling Meta", async () => {
+      const server = createMockMcpServer();
+      registerAdTools(server as never);
+      vi.stubGlobal("fetch", vi.fn());
+
+      await expect(server._registeredTools.find((t) => t.name === "ads_create_ad")!.handler({
+        account_id: "123", name: "Ad", ad_set_id: "2001", creative_id: "4001", status: "PAUSED",
+        flexible_format: { groups: [{ video_ids: ["1/../me"], call_to_action: { type: "SHOP_NOW", link: "https://example.com/" } }] },
+      })).rejects.toThrow(/video_ids\[0\]/);
+      expect(vi.mocked(fetch)).not.toHaveBeenCalled();
+    });
   });
 
   describe("ads_update_ad handler", () => {

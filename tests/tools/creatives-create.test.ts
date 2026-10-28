@@ -423,3 +423,107 @@ describe("ads_create_ad_creative carousels and destinations", () => {
     expect(schema.safeParse({ account_id: "act_1", name: "c", destination: { type: "instagram_direct" } }).success).toBe(true);
   });
 });
+
+describe("ads_create_ad_creative dynamic creative, versions, music and site links", () => {
+  beforeEach(() => {
+    setupTestToken();
+  });
+
+  afterEach(() => {
+    cleanupTestToken();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  const DYNAMIC = {
+    image_hashes: ["h1", "h2"],
+    videos: [{ video_id: "800123", thumbnail_hash: "t1" }],
+    primary_texts: ["Uno", "Dos"],
+    headlines: ["T1"],
+    call_to_action_types: ["LEARN_MORE", "SHOP_NOW"],
+    links: [{ url: "https://example.com/", display_url: "example.com" }],
+    format: "AUTOMATIC_FORMAT",
+  };
+  const PLACEMENTS = [
+    { placements: { publisher_platforms: ["facebook"], facebook_positions: ["feed"] }, image_hash: "fb" },
+    { placements: { publisher_platforms: ["instagram"], instagram_positions: ["stream", "story"] }, image_hash: "ig" },
+  ];
+  const LANGUAGES = [
+    { locales: [23], primary_text: "Hola", headline: "Titular", description: "Desc" },
+    { locales: [6], default: true, primary_text: "Hello", headline: "Headline", description: "Desc" },
+  ];
+
+  it("sends a dynamic creative as the page identity plus a REGULAR feed, with no link data", async () => {
+    stubCreateAndReadBack();
+
+    const result = await createHandler()({ ...EMPTY_INPUT, page_id: "6001", instagram_actor_id: "17841400000000001", dynamic_creative: DYNAMIC }) as { content: Array<{ text: string }> };
+
+    const body = sentBody();
+    expect(JSON.parse(body.object_story_spec)).toEqual({ page_id: "6001", instagram_user_id: "17841400000000001" });
+    expect(JSON.parse(body.asset_feed_spec)).toMatchObject({ optimization_type: "REGULAR", ad_formats: ["AUTOMATIC_FORMAT"], videos: [{ video_id: "800123", thumbnail_hash: "t1" }] });
+    expect(result.content[0].text).toContain("is_dynamic_creative");
+  });
+
+  it("sends placement versions with the ad's own copy, link and button", async () => {
+    stubCreateAndReadBack();
+
+    await createHandler()({ ...EMPTY_INPUT, page_id: "6001", message: "Text", link_url: "https://example.com/", placement_variants: PLACEMENTS });
+
+    const feed = JSON.parse(sentBody().asset_feed_spec);
+    expect(feed).toMatchObject({ optimization_type: "PLACEMENT", bodies: [{ text: "Text" }], call_to_action_types: ["LEARN_MORE"] });
+    expect(feed.asset_customization_rules).toHaveLength(2);
+  });
+
+  it("sends language versions over the ad's image", async () => {
+    stubCreateAndReadBack();
+
+    await createHandler()({ ...EMPTY_INPUT, page_id: "6001", image_hash: "h1", link_url: "https://example.com/", call_to_action_type: "SIGN_UP", language_variants: LANGUAGES });
+
+    const feed = JSON.parse(sentBody().asset_feed_spec);
+    expect(feed).toMatchObject({ optimization_type: "LANGUAGE", images: [{ hash: "h1" }], call_to_action_types: ["SIGN_UP"] });
+    expect(feed.asset_customization_rules[1]).toMatchObject({ is_default: true, customization_spec: { locales: [6] } });
+  });
+
+  it("lets Meta add music to an image ad", async () => {
+    stubCreateAndReadBack();
+
+    await createHandler()({ ...EMPTY_INPUT, page_id: "6001", image_hash: "h1", link_url: "https://example.com/", message: "Text", music: true });
+
+    const body = sentBody();
+    expect(JSON.parse(body.asset_feed_spec)).toEqual({ audios: [{ type: "random" }] });
+    expect(JSON.parse(body.object_story_spec).link_data).toMatchObject({ image_hash: "h1", message: "Text" });
+  });
+
+  it("adds site links and turns on the feature that shows them", async () => {
+    stubCreateAndReadBack();
+
+    await createHandler()({
+      ...EMPTY_INPUT, page_id: "6001", image_hash: "h1", link_url: "https://example.com/",
+      site_links: [{ title: "Shoes", url: "https://example.com/shoes", image_hash: "h2" }, { title: "Bags", url: "https://example.com/bags" }],
+    });
+
+    const body = sentBody();
+    expect(JSON.parse(body.creative_sourcing_spec).site_links_spec).toHaveLength(2);
+    expect(JSON.parse(body.degrees_of_freedom_spec).creative_features_spec.site_extensions).toEqual({ enroll_status: "OPT_IN" });
+  });
+
+  it.each([
+    ["two layouts at once", { image_hash: undefined, dynamic_creative: DYNAMIC, placement_variants: PLACEMENTS }, /one of/],
+    ["a dynamic creative with the ad's own image", { image_hash: "h0", dynamic_creative: DYNAMIC }, /dynamic_creative/],
+    ["placement versions with several primary texts", { link_url: "https://example.com/", primary_texts: ["a", "b"], placement_variants: PLACEMENTS }, /primary_texts/],
+    ["language versions with the ad's own copy", { image_hash: "h1", link_url: "https://example.com/", message: "x", language_variants: LANGUAGES }, /message/],
+    ["music on a dynamic creative", { dynamic_creative: DYNAMIC, music: true }, /music/],
+    ["site links on a carousel", { link_url: "https://example.com/", cards: [{ image_hash: "h1" }, { image_hash: "h2" }], site_links: [{ title: "A", url: "https://example.com/a" }] }, /site_links/],
+    ["site links with the feature turned off", { image_hash: "h1", site_links: [{ title: "A", url: "https://example.com/a" }], advantage_creative: { site_extensions: "OPT_OUT" } }, /site_extensions/],
+    ["a malformed video in a dynamic creative", { dynamic_creative: { ...DYNAMIC, videos: [{ video_id: "1/../me", thumbnail_hash: "t" }] } }, /video/],
+    ["music on a promoted post", { object_story_id: "6001_9001", music: true }, /music/],
+    ["carousel settings on a dynamic creative", { dynamic_creative: { ...DYNAMIC, format: "CAROUSEL" }, multi_share_optimized: false }, /multi_share_optimized/],
+    ["carousel settings on placement versions", { link_url: "https://example.com/", placement_variants: PLACEMENTS, multi_share_end_card: false }, /multi_share_end_card/],
+    ["carousel settings on language versions", { image_hash: "h1", link_url: "https://example.com/", language_variants: LANGUAGES, multi_share_optimized: true }, /multi_share_optimized/],
+  ])("refuses %s before calling Meta", async (_label, extra, error) => {
+    vi.stubGlobal("fetch", vi.fn());
+
+    await expect(createHandler()({ ...EMPTY_INPUT, page_id: "6001", ...extra })).rejects.toThrow(error);
+    expect(vi.mocked(fetch)).not.toHaveBeenCalled();
+  });
+});

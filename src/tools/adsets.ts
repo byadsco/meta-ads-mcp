@@ -854,13 +854,14 @@ export function registerAdSetTools(server: McpServer): void {
         start_time: z.string().optional().describe("ISO 8601 start time"),
         end_time: z.string().optional().describe("ISO 8601 end time (required for lifetime_budget)"),
         promoted_object: z.record(z.string(), z.unknown()).optional().describe("Promoted object (e.g., { page_id: '123' } or { pixel_id: '456', custom_event_type: 'PURCHASE' })"),
+        is_dynamic_creative: z.boolean().optional().describe("Dynamic creative: the ad set holds a single ad whose creative is a dynamic_creative feed (ads_create_ad_creative), and Meta mixes its images, videos and texts. Only such an ad set takes that creative, and it takes only one ad, which can be deleted only with the ad set."),
       },
       annotations: { ...CREATE },
     },
     async ({
       account_id, campaign_id, name, destination_type, status, daily_budget, lifetime_budget,
       optimization_goal, billing_event, bid_amount, bid_strategy, targeting,
-      start_time, end_time, promoted_object,
+      start_time, end_time, promoted_object, is_dynamic_creative,
     }) => {
       const accountPath = normalizeAccountId(account_id);
       const campaignIdValidated = validateMetaId(campaign_id, "campaign");
@@ -882,6 +883,7 @@ export function registerAdSetTools(server: McpServer): void {
       if (start_time) body.start_time = start_time;
       if (end_time) body.end_time = end_time;
       if (promoted_object) body.promoted_object = JSON.stringify(promoted_object);
+      if (is_dynamic_creative) body.is_dynamic_creative = true;
 
       const result = await metaApiClient.postForm<{ id: string }>(`/${accountPath}/adsets`, body);
       const amountLines = await statedAmounts(body, { accountId: accountPath });

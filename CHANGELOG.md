@@ -9,6 +9,23 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
+- **Dynamic creative.**
+  - `ads_create_ad_set` takes `is_dynamic_creative`, and `ads_create_ad_creative` takes `dynamic_creative`:
+    - up to 10 images or videos (each video with a thumbnail);
+    - up to 5 primary texts, headlines, descriptions, buttons and links;
+    - a format (`SINGLE_IMAGE`, `SINGLE_VIDEO`, `CAROUSEL` or `AUTOMATIC_FORMAT`).
+  - Meta's limits are checked before the call: counts, 30 assets in all, text lengths, repeats and media per format.
+  - Measured live: the ad is accepted in a dynamic-creative ad set. Meta refuses a second ad there (subcode 1885553), and refuses the creative in a regular ad set (subcode 1885998).
+- **Versions per placement and per language in `ads_create_ad_creative`.**
+  - `placement_variants`: an image or video per placement (publisher platforms and positions). Placements Meta removed (Facebook video feeds, Instagram Explore, Messenger Stories) are refused.
+  - `language_variants`: primary text, headline, description and link per set of locales, with one default. Meta refuses an ad with a language that has no description (subcode 1885817).
+  - The new **`ads_search_locales`** finds Meta's locale keys by language name. Meta names locales in the token user's language. The tool count goes from 145 to 146.
+- **Music and site links in `ads_create_ad_creative`.**
+  - `music: true` lets Meta add a track, on image, text-options and carousel ads.
+  - `site_links` adds links under the ad in Facebook Feed, and turns on the `site_extensions` feature they need.
+- **Flexible format in `ads_create_ad` (`flexible_format`).** Groups of images or videos and texts, from which Meta picks the format per placement. Every group needs media and the same button type. Meta allows it on Sales and App promotion campaigns.
+- Every new shape was measured live on v26.0, as a creative and a paused ad; the details are in `docs/meta-creative-ground-truth.md`.
+
 - **Carousels in `ads_create_ad_creative` (`cards`).**
   - 2 to 10 cards, each with its own image (or a video with a thumbnail), headline, description, link and button.
   - The ad's `link_url` covers cards without their own link, and `display_link` sets the link text under the media.

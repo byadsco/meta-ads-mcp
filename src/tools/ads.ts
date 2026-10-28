@@ -5,7 +5,10 @@ import { normalizeAccountId, validateMetaId } from "../utils/format.js";
 import { buildFieldsParam, normalizeUrlTags, requireOneOf } from "../utils/validation.js";
 import { AD_DEFAULT_FIELDS } from "../meta/types/ad.js";
 import type { Ad, AdCreative, MetaApiResponse } from "../meta/types/index.js";
+import { buildAssetGroups } from "../meta/asset-feed.js";
+import { MAX_HEADLINE_LENGTH } from "../meta/creative-spec.js";
 import { READ, CREATE, UPDATE, DELETE, WRITE_WARNING } from "./_register.js";
+import { ctaEnum } from "./creatives.js";
 import {
   asRecord,
   carryOverFields,
@@ -214,16 +217,37 @@ export function registerAdTools(server: McpServer): void {
           .describe("Tracking specifications"),
         conversion_domain: z.string().optional().describe("Domain where the ad's conversions happen, without scheme or path (e.g. example.com)"),
         ad_labels: z.array(z.string().min(1)).max(50).optional().describe("Labels to tag the ad with, by name; Meta creates any that do not exist"),
+        flexible_format: z.object({
+          groups: z.array(z.object({
+            image_hashes: z.array(z.string().min(1)).max(10).default([]),
+            video_ids: z.array(z.string()).max(10).default([]),
+            primary_texts: z.array(z.string().min(1)).max(5).default([]),
+            headlines: z.array(z.string().min(1).max(MAX_HEADLINE_LENGTH)).max(5).default([]),
+            descriptions: z.array(z.string().min(1)).max(5).default([]),
+            call_to_action: z.object({ type: ctaEnum, link: z.string() }).describe("The same button type in every group"),
+          })).min(1).max(10),
+        }).optional().describe("Flexible format: groups of images or videos and texts, from which Meta builds the format each placement shows best (single image, video or carousel). Meta allows it on Sales and App promotion campaigns only"),
       },
       annotations: { ...CREATE },
     },
-    async ({ account_id, name, ad_set_id, creative_id, status, tracking_specs, conversion_domain, ad_labels }) => {
+    async ({ account_id, name, ad_set_id, creative_id, status, tracking_specs, conversion_domain, ad_labels, flexible_format }) => {
       const accountPath = normalizeAccountId(account_id);
       const adSetIdValidated = validateMetaId(ad_set_id, "adset");
       const creativeIdValidated = validateMetaId(creative_id, "creative");
       if (conversion_domain !== undefined && !DOMAIN.test(conversion_domain)) {
         throw new Error("conversion_domain is a bare domain, without scheme or path (e.g. example.com).");
       }
+      const assetGroups = flexible_format ? buildAssetGroups(flexible_format.groups.map((g, i) => ({
+        imageHashes: g.image_hashes ?? [],
+        videoIds: (g.video_ids ?? []).map((id, j) => {
+          if (!/^\d+$/.test(id)) throw new Error(`flexible_format.groups[${i}].video_ids[${j}] is not a video ID: video IDs are numeric.`);
+          return id;
+        }),
+        primaryTexts: g.primary_texts ?? [],
+        headlines: g.headlines ?? [],
+        descriptions: g.descriptions ?? [],
+        callToAction: g.call_to_action,
+      }))) : undefined;
 
       const body: Record<string, string | number | boolean> = {
         name,
@@ -235,6 +259,7 @@ export function registerAdTools(server: McpServer): void {
       if (tracking_specs) body.tracking_specs = JSON.stringify(tracking_specs);
       if (conversion_domain) body.conversion_domain = conversion_domain;
       if (ad_labels && ad_labels.length > 0) body.adlabels = JSON.stringify(ad_labels.map((label) => ({ name: label })));
+      if (assetGroups) body.creative_asset_groups_spec = JSON.stringify(assetGroups);
 
       const result = await metaApiClient.postForm<{ id: string }>(`/${accountPath}/ads`, body);
 
@@ -242,7 +267,7 @@ export function registerAdTools(server: McpServer): void {
         content: [
           {
             type: "text",
-            text: `Ad created successfully!\nID: ${result.id}\nName: ${name}\nAd Set: ${adSetIdValidated}\nCreative: ${creativeIdValidated}\nStatus: ${status}`,
+            text: `Ad created successfully!\nID: ${result.id}\nName: ${name}\nAd Set: ${adSetIdValidated}\nCreative: ${creativeIdValidated}\nStatus: ${status}${flexible_format ? `\nFlexible format: ${flexible_format.groups.length} group(s); Meta picks the format per placement.` : ""}`,
           },
         ],
       };
