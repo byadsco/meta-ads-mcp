@@ -22,6 +22,7 @@ import {
 } from "../meta/creative-rebuild.js";
 
 const statusEnum = z.enum(["ACTIVE", "PAUSED", "DELETED", "ARCHIVED"]);
+const DOMAIN = /^(?=.{1,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i;
 
 type RebuildStrategy = "reuse_post" | "clone_spec" | "reuse_instagram_media" | "clone_feed";
 
@@ -211,13 +212,18 @@ export function registerAdTools(server: McpServer): void {
           .array(z.record(z.string(), z.unknown()))
           .optional()
           .describe("Tracking specifications"),
+        conversion_domain: z.string().optional().describe("Domain where the ad's conversions happen, without scheme or path (e.g. example.com)"),
+        ad_labels: z.array(z.string().min(1)).max(50).optional().describe("Labels to tag the ad with, by name; Meta creates any that do not exist"),
       },
       annotations: { ...CREATE },
     },
-    async ({ account_id, name, ad_set_id, creative_id, status, tracking_specs }) => {
+    async ({ account_id, name, ad_set_id, creative_id, status, tracking_specs, conversion_domain, ad_labels }) => {
       const accountPath = normalizeAccountId(account_id);
       const adSetIdValidated = validateMetaId(ad_set_id, "adset");
       const creativeIdValidated = validateMetaId(creative_id, "creative");
+      if (conversion_domain !== undefined && !DOMAIN.test(conversion_domain)) {
+        throw new Error("conversion_domain is a bare domain, without scheme or path (e.g. example.com).");
+      }
 
       const body: Record<string, string | number | boolean> = {
         name,
@@ -227,6 +233,8 @@ export function registerAdTools(server: McpServer): void {
       };
 
       if (tracking_specs) body.tracking_specs = JSON.stringify(tracking_specs);
+      if (conversion_domain) body.conversion_domain = conversion_domain;
+      if (ad_labels && ad_labels.length > 0) body.adlabels = JSON.stringify(ad_labels.map((label) => ({ name: label })));
 
       const result = await metaApiClient.postForm<{ id: string }>(`/${accountPath}/ads`, body);
 

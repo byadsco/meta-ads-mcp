@@ -45,6 +45,27 @@ Frequency above roughly 3 in a short window, a falling CTR with a stable CPM, an
 
 Advantage+ AI features that rewrite copy or edit media stay off unless you list them in `advantage_creative`. The ad's post appears a few minutes after the ad exists.
 
+## A carousel, or an ad that does not lead to a website
+
+"Run these four products as a carousel." "Send people to WhatsApp." "Collect leads in a form."
+
+1. **Carousel:** `ads_create_ad_creative` with `cards`.
+   - 2 to 10 cards, each with its own image (or a video with a thumbnail), headline, description, link and button.
+   - The ad's `link_url` covers cards without their own link.
+   - `multi_share_optimized` lets Meta order the cards by performance.
+2. **Other destinations:** `ads_create_ad_creative` with `destination`.
+   - **`lead_form`:** with a form from `ads_create_lead_form` or `ads_get_lead_forms`.
+   - **Messaging:** `messenger` (with a welcome message and up to 4 ice breakers), `whatsapp` or `instagram_direct`.
+   - **`call`:** with a phone number in international format.
+   - Lead forms and messaging use Meta's own link, so `link_url` does not apply to them.
+   - The ad set's destination has to match, as in Ads Manager:
+     - a lead form needs a leads campaign with `ON_AD`;
+     - Messenger, WhatsApp and Instagram Direct need the matching messaging destination;
+     - a call needs `PHONE_CALL`.
+3. `ads_create_ad`, paused, with `conversion_domain` when the campaign optimizes for conversions.
+
+A WhatsApp ad needs a WhatsApp number connected to the Page to deliver: Meta accepts the ad without one, so check the Page first. Lead forms are read and created with a Page token, so the person has to manage the Page.
+
 ## Changing the copy of a live ad
 
 "Drop the second headline and add a primary text to these ads."

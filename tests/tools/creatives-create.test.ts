@@ -337,3 +337,89 @@ describe("ads_create_ad_creative request body", () => {
     expect(vi.mocked(fetch)).not.toHaveBeenCalled();
   });
 });
+
+describe("ads_create_ad_creative carousels and destinations", () => {
+  beforeEach(() => {
+    setupTestToken();
+  });
+
+  afterEach(() => {
+    cleanupTestToken();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it("sends a carousel's cards, display link and card ordering", async () => {
+    stubCreateAndReadBack();
+
+    const result = await createHandler()({
+      ...EMPTY_INPUT,
+      page_id: "6001",
+      link_url: "https://example.com/",
+      message: "Swipe",
+      display_link: "example.com",
+      call_to_action_type: "SHOP_NOW",
+      cards: [
+        { image_hash: "h1", headline: "One", link_url: "https://example.com/1" },
+        { video_id: "800123", image_hash: "thumb", headline: "Two" },
+      ],
+      multi_share_optimized: false,
+    }) as { content: Array<{ text: string }> };
+
+    const linkData = JSON.parse(sentBody().object_story_spec).link_data;
+    expect(linkData).toMatchObject({ link: "https://example.com/", message: "Swipe", caption: "example.com", multi_share_optimized: false });
+    expect(linkData.child_attachments).toHaveLength(2);
+    expect(linkData.child_attachments[1]).toMatchObject({ video_id: "800123", image_hash: "thumb", call_to_action: { type: "SHOP_NOW" } });
+    expect(result.content[0].text).toContain("Carousel: 2 cards");
+  });
+
+  it("opens a lead form from the ad's button", async () => {
+    stubCreateAndReadBack();
+
+    await createHandler()({ ...EMPTY_INPUT, page_id: "6001", image_hash: "h", message: "Sign up", destination: { type: "lead_form", lead_form_id: "7001" } });
+
+    expect(JSON.parse(sentBody().object_story_spec).link_data).toMatchObject({
+      link: "http://fb.me/", call_to_action: { type: "SIGN_UP", value: { lead_gen_form_id: "7001" } },
+    });
+  });
+
+  it("calls a phone number", async () => {
+    stubCreateAndReadBack();
+
+    await createHandler()({ ...EMPTY_INPUT, page_id: "6001", image_hash: "h", link_url: "https://example.com/", destination: { type: "call", phone_number: "+573001234567" } });
+
+    expect(JSON.parse(sentBody().object_story_spec).link_data.call_to_action).toEqual({ type: "CALL_NOW", value: { link: "tel:+573001234567" } });
+  });
+
+  it("refuses a card image URL that points inside a private network, before calling Meta", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+
+    await expect(createHandler()({
+      ...EMPTY_INPUT, page_id: "6001", link_url: "https://example.com/",
+      cards: [{ image_hash: "h1" }, { image_url: "http://169.254.169.254/latest/meta-data" }],
+    })).rejects.toThrow(/cards\[1\]/);
+    expect(vi.mocked(fetch)).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["a malformed card video_id", { link_url: "https://example.com/", cards: [{ image_hash: "h1" }, { video_id: "1/../me", image_hash: "t" }] }, /video/],
+    ["a malformed lead_form_id", { image_hash: "h", destination: { type: "lead_form", lead_form_id: "x/../me" } }, /lead_form/],
+    ["a destination on a promoted post", { object_story_id: "6001_9001", destination: { type: "whatsapp" } }, /destination/],
+    ["cards on a promoted post", { object_story_id: "6001_9001", cards: [{ image_hash: "h1" }, { image_hash: "h2" }] }, /cards/],
+  ])("refuses %s before calling Meta", async (_label, extra, error) => {
+    vi.stubGlobal("fetch", vi.fn());
+
+    await expect(createHandler()({ ...EMPTY_INPUT, page_id: "6001", ...extra })).rejects.toThrow(error);
+    expect(vi.mocked(fetch)).not.toHaveBeenCalled();
+  });
+
+  it("publishes the card count and phone format in the input schema", () => {
+    const server = createMockMcpServer();
+    registerCreativeTools(server as never);
+    const schema = z.object(server._registeredTools.find((t) => t.name === "ads_create_ad_creative")!.schema as z.ZodRawShape);
+
+    expect(schema.safeParse({ account_id: "act_1", name: "c", cards: [{ image_hash: "h" }] }).success).toBe(false);
+    expect(schema.safeParse({ account_id: "act_1", name: "c", destination: { type: "call", phone_number: "300 123" } }).success).toBe(false);
+    expect(schema.safeParse({ account_id: "act_1", name: "c", destination: { type: "instagram_direct" } }).success).toBe(true);
+  });
+});

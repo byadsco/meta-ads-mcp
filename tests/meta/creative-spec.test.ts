@@ -209,3 +209,139 @@ describe("buildFeatureSpec", () => {
     expect(() => buildFeatureSpec({ standard_enhancements: "OPT_IN" })).toThrow(/standard_enhancements/);
   });
 });
+
+describe("buildStorySpec: carousels", () => {
+  const card = (n: number, extra: Record<string, unknown> = {}) => ({ imageHash: `h${n}`, headline: `Card ${n}`, ...extra });
+
+  it("lays the cards out as child_attachments, each with its own link and button", () => {
+    const result = buildStorySpec({
+      pageId: "6001",
+      instagramUserId: "17841400000000001",
+      linkUrl: "https://example.com/",
+      primaryTexts: ["Swipe"],
+      headlines: [],
+      descriptions: [],
+      callToActionType: "SHOP_NOW",
+      displayLink: "example.com",
+      cards: [
+        card(1, { linkUrl: "https://example.com/1", description: "First" }),
+        card(2, { callToActionType: "LEARN_MORE" }),
+      ],
+      multiShareOptimized: true,
+      multiShareEndCard: false,
+    });
+
+    expect(result.assetFeedSpec).toBeUndefined();
+    expect(result.objectStorySpec).toEqual({
+      page_id: "6001",
+      instagram_user_id: "17841400000000001",
+      link_data: {
+        link: "https://example.com/",
+        message: "Swipe",
+        caption: "example.com",
+        multi_share_optimized: true,
+        multi_share_end_card: false,
+        child_attachments: [
+          { image_hash: "h1", link: "https://example.com/1", name: "Card 1", description: "First", call_to_action: { type: "SHOP_NOW", value: { link: "https://example.com/1" } } },
+          { image_hash: "h2", link: "https://example.com/", name: "Card 2", call_to_action: { type: "LEARN_MORE", value: { link: "https://example.com/" } } },
+        ],
+      },
+    });
+  });
+
+  it("takes a video card with its thumbnail, and an image URL card", () => {
+    const result = buildStorySpec({
+      pageId: "6001",
+      linkUrl: "https://example.com/",
+      ...NO_TEXT,
+      cards: [{ videoId: "800123", imageHash: "thumb" }, { imageUrl: "https://cdn.example.com/b.jpg" }],
+    });
+
+    const cards = (result.objectStorySpec.link_data as { child_attachments: unknown[] }).child_attachments;
+    expect(cards).toEqual([
+      { video_id: "800123", image_hash: "thumb", link: "https://example.com/" },
+      { picture: "https://cdn.example.com/b.jpg", link: "https://example.com/" },
+    ]);
+  });
+
+  it("puts several primary texts of a carousel in a DEGREES_OF_FREEDOM feed", () => {
+    const result = buildStorySpec({ pageId: "6001", linkUrl: "https://example.com/", primaryTexts: ["One", "Two"], headlines: [], descriptions: [], cards: [card(1), card(2)] });
+
+    expect(result.assetFeedSpec).toEqual({ bodies: [{ text: "One" }, { text: "Two" }], optimization_type: "DEGREES_OF_FREEDOM" });
+    expect((result.objectStorySpec.link_data as Record<string, unknown>).message).toBeUndefined();
+  });
+
+  it.each([
+    ["one card, which Meta refuses (#194)", { cards: [card(1)] }, /2 to 10 cards/],
+    ["eleven cards", { cards: Array.from({ length: 11 }, (_, i) => card(i)) }, /2 to 10 cards/],
+    ["a card without media", { cards: [card(1), { headline: "No media" }] }, /cards\[1\].*image/],
+    ["a video card without a thumbnail", { cards: [card(1), { videoId: "800123" }] }, /cards\[1\].*thumbnail/],
+    ["media of the ad itself", { imageHash: "top", cards: [card(1), card(2)] }, /image_hash, image_url and video_id belong on the cards/],
+    ["headlines of the ad itself", { headlines: ["H"], cards: [card(1), card(2)] }, /headline.*cards/],
+    ["no link", { linkUrl: undefined, cards: [card(1), card(2)] }, /link_url/],
+    ["another destination", { destination: { type: "call" as const, phoneNumber: "+573001234567" }, cards: [card(1), card(2)] }, /website/],
+  ])("refuses a carousel with %s", (_label, extra, error) => {
+    expect(() => buildStorySpec({ pageId: "6001", linkUrl: "https://example.com/", ...NO_TEXT, ...extra })).toThrow(error);
+  });
+
+  it("refuses carousel settings without cards", () => {
+    expect(() => buildStorySpec({ pageId: "6001", imageHash: "h", linkUrl: "https://example.com/", ...NO_TEXT, multiShareOptimized: true })).toThrow(/cards/);
+  });
+});
+
+describe("buildStorySpec: destinations", () => {
+  const image = { pageId: "6001", imageHash: "h", primaryTexts: ["Text"], headlines: [], descriptions: [] };
+  const linkData = (result: ReturnType<typeof buildStorySpec>) => result.objectStorySpec.link_data as Record<string, unknown>;
+
+  it("opens a lead form, with Meta's placeholder link and a SIGN_UP button by default", () => {
+    const result = buildStorySpec({ ...image, destination: { type: "lead_form", leadFormId: "7001" } });
+
+    expect(linkData(result)).toMatchObject({ link: "http://fb.me/", call_to_action: { type: "SIGN_UP", value: { lead_gen_form_id: "7001" } } });
+  });
+
+  it("opens a Messenger chat with a welcome message and ice breakers", () => {
+    const result = buildStorySpec({
+      ...image,
+      callToActionType: "SEND_MESSAGE",
+      destination: { type: "messenger", welcomeMessage: "Hi!", iceBreakers: [{ question: "Price?", response: "Let us tell you" }] },
+    });
+
+    const data = linkData(result);
+    expect(data).toMatchObject({ link: "https://fb.com/messenger_doc/", call_to_action: { type: "SEND_MESSAGE", value: { app_destination: "MESSENGER" } } });
+    expect(JSON.parse(data.page_welcome_message as string)).toMatchObject({
+      type: "VISUAL_EDITOR",
+      text_format: { customer_action_type: "ice_breakers", message: { text: "Hi!", ice_breakers: [{ title: "Price?", response: "Let us tell you" }] } },
+    });
+  });
+
+  it("opens WhatsApp and Instagram Direct with the buttons Meta accepted", () => {
+    expect(linkData(buildStorySpec({ ...image, destination: { type: "whatsapp" } }))).toMatchObject({
+      link: "https://api.whatsapp.com/send", call_to_action: { type: "WHATSAPP_MESSAGE", value: { app_destination: "WHATSAPP" } },
+    });
+    expect(linkData(buildStorySpec({ ...image, instagramUserId: "17841400000000001", destination: { type: "instagram_direct" } }))).toMatchObject({
+      link: "https://www.instagram.com", call_to_action: { type: "INSTAGRAM_MESSAGE", value: { app_destination: "INSTAGRAM_DIRECT" } },
+    });
+  });
+
+  it("calls a phone number, keeping the ad's own link", () => {
+    const result = buildStorySpec({ ...image, linkUrl: "https://example.com/", destination: { type: "call", phoneNumber: "+573001234567" } });
+
+    expect(linkData(result)).toMatchObject({ link: "https://example.com/", call_to_action: { type: "CALL_NOW", value: { link: "tel:+573001234567" } } });
+  });
+
+  it("puts a video's destination in its button", () => {
+    const result = buildStorySpec({ ...image, imageHash: "thumb", videoId: "800123", destination: { type: "lead_form", leadFormId: "7001" } });
+
+    expect(result.objectStorySpec.video_data).toMatchObject({ call_to_action: { type: "SIGN_UP", value: { lead_gen_form_id: "7001" } } });
+  });
+
+  it.each([
+    ["a call without the ad's link", { destination: { type: "call" as const, phoneNumber: "+573001234567" } }, /link_url/],
+    ["a phone number that is not in international format", { linkUrl: "https://example.com/", destination: { type: "call" as const, phoneNumber: "3001234567" } }, /\+/],
+    ["Instagram Direct without an Instagram account", { destination: { type: "instagram_direct" as const } }, /instagram/i],
+    ["a link with a lead form", { linkUrl: "https://example.com/", destination: { type: "lead_form" as const, leadFormId: "7001" } }, /link_url/],
+    ["ice breakers without a welcome message", { destination: { type: "messenger" as const, iceBreakers: [{ question: "Q", response: "R" }] } }, /welcome_message/],
+  ])("refuses %s", (_label, extra, error) => {
+    expect(() => buildStorySpec({ ...image, ...extra })).toThrow(error);
+  });
+});

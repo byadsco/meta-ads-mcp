@@ -80,6 +80,34 @@ describe("registerAdTools", () => {
     ]);
   });
 
+  describe("ads_create_ad handler", () => {
+    it("sends the conversion domain and the ad labels by name", async () => {
+      const server = createMockMcpServer();
+      registerAdTools(server as never);
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockFetchResponse({ id: "3009" })));
+
+      await server._registeredTools.find((t) => t.name === "ads_create_ad")!.handler({
+        account_id: "123", name: "Ad", ad_set_id: "2001", creative_id: "4001", status: "PAUSED",
+        conversion_domain: "example.com", ad_labels: ["Promo", "Q4"],
+      });
+
+      const body = bodyOf(0);
+      expect(body.get("conversion_domain")).toBe("example.com");
+      expect(JSON.parse(body.get("adlabels")!)).toEqual([{ name: "Promo" }, { name: "Q4" }]);
+    });
+
+    it("refuses a conversion domain given as a URL, before calling Meta", async () => {
+      const server = createMockMcpServer();
+      registerAdTools(server as never);
+      vi.stubGlobal("fetch", vi.fn());
+
+      await expect(server._registeredTools.find((t) => t.name === "ads_create_ad")!.handler({
+        account_id: "123", name: "Ad", ad_set_id: "2001", creative_id: "4001", status: "PAUSED", conversion_domain: "https://example.com/",
+      })).rejects.toThrow(/conversion_domain/);
+      expect(vi.mocked(fetch)).not.toHaveBeenCalled();
+    });
+  });
+
   describe("ads_update_ad handler", () => {
     it("updates name and status with a single request", async () => {
       const server = createMockMcpServer();

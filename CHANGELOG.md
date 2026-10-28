@@ -9,6 +9,20 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
+- **Carousels in `ads_create_ad_creative` (`cards`).**
+  - 2 to 10 cards, each with its own image (or a video with a thumbnail), headline, description, link and button.
+  - The ad's `link_url` covers cards without their own link, and `display_link` sets the link text under the media.
+  - `multi_share_optimized` lets Meta order the cards; `multi_share_end_card` controls the end card.
+  - Several primary texts go in a text-options feed, as for other ads.
+  - Meta's refusal of a single card (#194) is caught before the call. The shape was measured live: creative, preview and ad.
+- **Destinations in `ads_create_ad_creative` (`destination`).**
+  - `lead_form`, `messenger` (welcome message and up to 4 ice breakers), `whatsapp`, `instagram_direct` and `call` (international number).
+  - Each sets the link and button value Meta expects, measured live as creative and paused ad in a matching ad set. Lead forms and messaging use Meta's own link, so `link_url` is refused with them.
+  - The `INSTAGRAM_MESSAGE` button joins the button list.
+  - Card image URLs go through the same public-address check as the ad's own.
+- **`ads_create_ad` takes `conversion_domain` and `ad_labels`** (by name).
+- **`ads_create_lead_form`:** multiple-choice `CUSTOM` questions, an intro card (`context_card`), a thank-you screen (`thank_you_page`) and the privacy link text.
+
 - **`ads_duplicate_ad` copies an ad into other ad sets of its account, keeping its social proof.** Measured against the live API:
   - By default every copy uses the source ad's own creative. It shows the same Facebook post and the same Instagram media, so the copies share their likes, comments and shares, and every text option comes along. Meta's own ad copy (`/copies`) and a new creative reusing the post both start Instagram over; the first also starts Facebook over.
   - Each copy carries the source's tracking specs, conversion domain and ad labels. Copies are created paused unless `status` says otherwise.
@@ -85,6 +99,13 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Fixed
 
+- **`ads_get_lead_forms` and `ads_create_lead_form` failed against Meta: forms answer only to a Page token (#190).** Both now get one with the person's token for that call only, as route B of `ads_update_ad_content` does. It is never logged, returned or stored, and the person has to manage the Page (`pages_manage_ads`).
+  - `ads_get_lead_forms` takes only the form's own fields, so no expansion (`page{access_token}`) can reach the Page's token.
+  - Whatever a Page-token call returns or throws is cleaned of that token wherever it appears, and of any credential-named field. The cleaning keeps cycles and handles any depth.
+  - A form needs `thank_you_page` or `follow_up_action_url`, and every multiple-choice answer needs a `key`, as Meta requires.
+  - The phone question's type is `PHONE`; the tool's example said `PHONE_NUMBER`, which Meta rejects.
+- **The Meta client cleans error answers before logging or returning them.** The token in use is removed wherever it appears, together with credential-named fields and name=value pairs. This covers Meta's errors, HTTP error bodies, transport errors (with a code or not, and their causes) and Meta's version warning header. Every such error is replaced by a new one built from an allowlist, each part cleaned: its message with its causes' messages, its name and its code. An `McpError` keeps its code, and its data is cleaned as JSON. Nothing else of the original (stack, other fields, nested errors) is passed on, and the cleaning never throws.
+- **A Page's lead form is never created twice.** `POST /{page}/leadgen_forms` joins the creating calls the client never retries after a lost answer.
 - **`ads_update_ad_url_tags` works on creatives built before v22.0.** They still report `standard_enhancements`, which Meta rejects in any form, so cloning their Advantage+ settings failed. The replacement now drops that key and keeps the rest. It also keeps `contextual_multi_ads`, and carousels whose feed holds only `promotional_metadata` reuse their post again instead of being skipped.
 - **`ads_get_ad_comments` with `ad_id` finds the ad's post again.** It asked the Ad node for `effective_object_story_id`, which Meta rejects there; it now reads it from the ad's creative.
 - **`ads_delete_ad` explains dynamic-creative ads.** Meta refuses to delete such an ad on its own (subcode 1340029). The tool checks the ad set first and points to `ads_delete_ad_set` or pausing it.
