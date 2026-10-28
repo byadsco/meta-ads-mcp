@@ -21,7 +21,7 @@ A ⚠️ marks a tool that changes live data, spends money or touches stored cre
 
 - `ads_get_campaigns` — List the campaigns on an account, filterable by status.
 - `ads_get_campaign_details` — One campaign in full, including budget and special ad categories.
-- `ads_create_campaign` ⚠️ — Create a campaign. Objective and special_ad_categories cannot be changed later.
+- `ads_create_campaign` ⚠️ — Create a campaign, with a lifetime `spend_cap` (minor unit, like budgets) and the countries of a special ad category. Objective and special_ad_categories cannot be changed later.
 - `ads_update_campaign` ⚠️ — Change a campaign's name, status, budget or bid strategy.
 - `ads_delete_campaign` ⚠️ — Delete a campaign and everything under it.
 
@@ -29,7 +29,7 @@ A ⚠️ marks a tool that changes live data, spends money or touches stored cre
 
 - `ads_get_ad_sets` — List the ad sets in a campaign or account.
 - `ads_get_ad_set_details` — One ad set in full, including its targeting spec.
-- `ads_create_ad_set` ⚠️ — Create an ad set: budget, schedule, optimization goal and targeting. `is_dynamic_creative` makes it hold one dynamic-creative ad.
+- `ads_create_ad_set` ⚠️ — Create an ad set: budget, schedule, optimization goal and targeting, plus attribution windows, a frequency cap and the EU transparency names. `is_dynamic_creative` makes it hold one dynamic-creative ad.
 - `ads_update_ad_set` ⚠️ — Change an ad set's budget, schedule, status or targeting.
 - `ads_clone_ad_set_bundle` ⚠️ — Copy an ad set with its ads into another campaign, keeping creatives and targeting.
 - `ads_delete_ad_set` ⚠️ — Delete an ad set and its ads.
@@ -50,7 +50,7 @@ A ⚠️ marks a tool that changes live data, spends money or touches stored cre
 
 - `ads_get_ad_creatives` — List creatives for an ad or account, with their UTM tags.
 - `ads_get_creative_details` — One creative in full, including the derived effective landing URL.
-- `ads_create_ad_creative` ⚠️ — Create a creative from a page post, image, video or carousel (2-10 cards), with up to 5 primary texts, headlines and descriptions. `destination` sends people to a website, lead form, Messenger, WhatsApp, Instagram Direct or a phone call. Also dynamic creative, versions per placement or language, music and site links. Advantage+ AI features stay off unless requested.
+- `ads_create_ad_creative` ⚠️ — Create a creative from a page post, image, video or carousel (2-10 cards), with up to 5 primary texts, headlines and descriptions. `destination` sends people to a website, lead form, Messenger, WhatsApp, Instagram Direct or a phone call. Also dynamic creative, versions per placement or language, music and site links, and `advanced_creative_fields` for allowlisted fields it does not model. Advantage+ AI features stay off unless requested.
 - `ads_update_ad_creative` ⚠️ — Rename a creative. Nothing else on a creative can change after creation.
 - `ads_upload_ad_image` ⚠️ — Upload an image and get the hash a creative needs.
 - `ads_get_ad_images` — List the images uploaded to an account, by hash.
@@ -65,7 +65,7 @@ A ⚠️ marks a tool that changes live data, spends money or touches stored cre
 - `ads_get_video_media` — Get an ad video a model can actually analyze: keyframes, the MP4 itself, or signed links. Own videos and Ad Library videos.
 - `ads_analyze_video` — Have the server watch a video with Gemini and return a structured read. Needs the tenant's Gemini key.
 - `ads_get_ad_preview` — A shareable preview link for an ad.
-- `ads_generate_preview` — Render a preview for a creative in a given placement.
+- `ads_generate_preview` — Render a preview in a given placement, from creative fields or from any existing creative by `creative_id`.
 
 ## Generic entity helpers
 

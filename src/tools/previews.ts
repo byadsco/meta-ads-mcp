@@ -120,10 +120,11 @@ export function registerPreviewTools(server: McpServer): void {
     "ads_generate_preview",
     {
       description:
-        "Generate a preview from a creative specification without creating an actual ad. Useful for previewing creative concepts before launch. Either pass the same simple fields as ads_create_ad_creative (page_id, image_hash / image_url / video_id, link_url, primary_texts / headlines / descriptions, call_to_action_type), which build the creative exactly as that tool would, including several text options; or pass a raw creative spec. A creative with several text options previews one combination.",
+        "Generate a preview from a creative specification without creating an actual ad. Useful for previewing creative concepts before launch. Either pass the same simple fields as ads_create_ad_creative (page_id, image_hash / image_url / video_id, link_url, primary_texts / headlines / descriptions, call_to_action_type), which build the creative exactly as that tool would, including several text options; or pass a raw creative spec; or pass creative_id to preview a creative that already exists, in any layout (carousel, dynamic creative, placement or language versions, site links, destinations). A creative costs nothing until an ad runs it, so the way to preview those layouts is to create the creative and pass its creative_id. A creative with several text options previews one combination.",
       inputSchema: {
         account_id: z.string().describe("Ad account ID"),
         ad_format: adFormatEnum.default("MOBILE_FEED_STANDARD"),
+        creative_id: z.string().optional().describe("An existing creative to preview, in any layout. Use instead of the simple fields and creative"),
         page_id: z.string().optional().describe("Facebook Page ID. Use the simple fields or creative, not both."),
         instagram_actor_id: z.string().optional().describe("Instagram account ID for Instagram placements"),
         image_hash: z.string().optional(),
@@ -194,23 +195,29 @@ export function registerPreviewTools(server: McpServer): void {
       annotations: { ...READ },
     },
     async ({
-      account_id, ad_format, page_id, instagram_actor_id, image_hash, image_url, video_id, link_url,
+      account_id, ad_format, creative_id, page_id, instagram_actor_id, image_hash, image_url, video_id, link_url,
       message, headline, description, primary_texts, headlines, descriptions, call_to_action_type, creative,
     }) => {
       const accountPath = normalizeAccountId(account_id);
       const warnings: string[] = [];
-      let spec: Record<string, unknown>;
+      let spec: Record<string, unknown> = {};
 
       const simpleFields = {
         page_id, instagram_actor_id, image_hash, image_url, video_id, link_url, message, headline,
         description, primary_texts, headlines, descriptions, call_to_action_type,
       };
       const simpleGiven = Object.entries(simpleFields).filter(([, value]) => value !== undefined).map(([key]) => key);
+      if (creative_id !== undefined && (creative || simpleGiven.length > 0)) {
+        throw new Error(`Pass creative_id alone: it previews an existing creative (got creative_id and ${[creative ? "creative" : "", ...simpleGiven].filter(Boolean).join(", ")}).`);
+      }
       if (creative && simpleGiven.length > 0) {
         throw new Error(`Pass either the simple fields or creative, not both (got creative and ${simpleGiven.join(", ")}).`);
       }
 
-      if (creative) {
+      if (creative_id !== undefined) {
+        // Validated before anything else, so a malformed ID never reaches a path.
+        validateMetaId(creative_id, "creative");
+      } else if (creative) {
         const raw = structuredClone(creative);
         raw.object_story_spec.page_id = validateMetaId(raw.object_story_spec.page_id, "page");
         const linkData = raw.object_story_spec.link_data;
@@ -252,13 +259,15 @@ export function registerPreviewTools(server: McpServer): void {
         throw new Error("Pass page_id with the simple creative fields, or a raw creative spec.");
       }
 
-      const response = await metaApiClient.get<MetaApiResponse<AdPreview>>(
-        `/${accountPath}/generatepreviews`,
-        {
-          ad_format,
-          creative: JSON.stringify(spec),
-        },
-      );
+      const response = creative_id !== undefined
+        ? await metaApiClient.get<MetaApiResponse<AdPreview>>(`/${creative_id}/previews`, { ad_format })
+        : await metaApiClient.get<MetaApiResponse<AdPreview>>(
+          `/${accountPath}/generatepreviews`,
+          {
+            ad_format,
+            creative: JSON.stringify(spec),
+          },
+        );
       const previews = response.data ?? [];
 
       if (previews.length === 0) {

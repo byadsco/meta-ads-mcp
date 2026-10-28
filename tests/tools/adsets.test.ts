@@ -1031,6 +1031,26 @@ describe("registerAdSetTools", () => {
       expect(sent(0).get("is_dynamic_creative")).toBe("true");
       expect(sent(1).has("is_dynamic_creative")).toBe(false);
     });
+
+    it("sends the EU ad transparency names, the attribution windows and a frequency cap", async () => {
+      const server = createMockMcpServer();
+      registerAdSetTools(server as never);
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockFetchResponse({ id: "2001" })));
+
+      await server._registeredTools.find((t) => t.name === "ads_create_ad_set")!.handler({
+        account_id: "act_123", campaign_id: "1001", name: "EU", destination_type: "WEBSITE", status: "PAUSED",
+        optimization_goal: "REACH", billing_event: "IMPRESSIONS", targeting: { geo_locations: { countries: ["ES"] } },
+        dsa_beneficiary: "Brand SL", dsa_payor: "Agency SL",
+        attribution_spec: [{ event_type: "CLICK_THROUGH", window_days: 7 }, { event_type: "VIEW_THROUGH", window_days: 1 }],
+        frequency_control_specs: [{ event: "IMPRESSIONS", interval_days: 7, max_frequency: 2 }],
+      });
+
+      const sent = new URLSearchParams(vi.mocked(fetch).mock.calls[0][1]?.body as string);
+      expect(sent.get("dsa_beneficiary")).toBe("Brand SL");
+      expect(sent.get("dsa_payor")).toBe("Agency SL");
+      expect(JSON.parse(sent.get("attribution_spec")!)).toEqual([{ event_type: "CLICK_THROUGH", window_days: 7 }, { event_type: "VIEW_THROUGH", window_days: 1 }]);
+      expect(JSON.parse(sent.get("frequency_control_specs")!)).toEqual([{ event: "IMPRESSIONS", interval_days: 7, max_frequency: 2 }]);
+    });
   });
 
   describe("ads_update_ad_set handler", () => {

@@ -295,9 +295,19 @@ describe("money amounts in what a model reads on tools/list", () => {
   describe("the account spend cap, which is not in the minor unit", () => {
     const spendCap = () => published().find((tool) => tool.name === "ads_update_spend_cap")!;
 
-    it("is the only tool that takes a spend_cap", () => {
+    it("is the only tool that takes a spend_cap besides a campaign's own, which is in the minor unit", () => {
       const taking = published().filter((tool) => tool.parameters.has("spend_cap")).map((tool) => tool.name);
-      expect(taking).toEqual(["ads_update_spend_cap"]);
+      expect(taking.sort()).toEqual(["ads_create_campaign", "ads_update_spend_cap"]);
+    });
+
+    // Measured on a USD account: 5000 is refused under the $100 minimum and
+    // 10000 reads back as 10000.
+    it("a campaign's spend_cap says it is in the budgets' unit, not the account cap's", () => {
+      const campaign = published().find((tool) => tool.name === "ads_create_campaign")!;
+      const text = campaign.descriptions.find((description) => /spend over its lifetime/.test(description)) ?? "";
+      expect(text).toMatch(/same unit as daily_budget/);
+      expect(text).toMatch(/NOT the standard unit of the account spend cap \(ads_update_spend_cap\)/);
+      expect(text).toMatch(/10000 = USD 100\.00/);
     });
 
     it.each(["the tool description", "the parameter description"])("%s names the standard unit with an example of each kind", (which) => {

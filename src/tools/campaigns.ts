@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { metaApiClient } from "../meta/client.js";
-import { statedAmounts } from "../meta/account-currency.js";
+import { CAMPAIGN_AMOUNT_LABELS, statedAmounts } from "../meta/account-currency.js";
 import { MINOR_UNIT_NOTE } from "../meta/currency.js";
 import { normalizeAccountId, validateMetaId } from "../utils/format.js";
 import { buildFieldsParam } from "../utils/validation.js";
@@ -162,6 +162,13 @@ export function registerCampaignTools(server: McpServer): void {
           .describe(`${ADSET_BUDGET_SHARING_EXPLAINER} Marketing API v24.0+ requires this whenever the campaign has no budget of its own; when omitted in that case the tool sends false.`),
         bid_strategy: bidStrategyEnum.optional(),
         buying_type: z.enum(["AUCTION", "RESERVED"]).default("AUCTION"),
+        spend_cap: z
+          .number()
+          .int()
+          .positive()
+          .optional()
+          .describe("Most the campaign may spend over its lifetime, in the same unit as daily_budget (USD 10000 = USD 100.00, COP 500000 = 500,000 pesos). This is NOT the standard unit of the account spend cap (ads_update_spend_cap). Meta's minimum is about USD 100 in the account currency."),
+        special_ad_category_country: z.array(z.string().regex(/^[A-Z]{2}$/)).min(1).optional().describe("Countries (ISO codes) where the special ad categories apply, e.g. [\"CO\"]"),
       },
       annotations: { ...CREATE },
     },
@@ -176,6 +183,8 @@ export function registerCampaignTools(server: McpServer): void {
       is_adset_budget_sharing_enabled,
       bid_strategy,
       buying_type,
+      spend_cap,
+      special_ad_category_country,
     }) => {
       const id = normalizeAccountId(account_id);
 
@@ -183,7 +192,7 @@ export function registerCampaignTools(server: McpServer): void {
         name,
         objective,
         status,
-        special_ad_categories,
+        special_ad_categories: JSON.stringify(special_ad_categories.filter((category) => category !== "NONE")),
         buying_type,
       };
 
@@ -199,6 +208,8 @@ export function registerCampaignTools(server: McpServer): void {
         body.is_adset_budget_sharing_enabled = false;
       }
       if (bid_strategy) body.bid_strategy = bid_strategy;
+      if (spend_cap !== undefined) body.spend_cap = String(spend_cap);
+      if (special_ad_category_country) body.special_ad_category_country = JSON.stringify(special_ad_category_country);
 
       const result = await metaApiClient.postForm<{ id: string }>(
         `/${id}/campaigns`,
@@ -208,7 +219,7 @@ export function registerCampaignTools(server: McpServer): void {
       const budgetSharingLine = body.is_adset_budget_sharing_enabled === undefined
         ? ""
         : `\nAd set budget sharing: ${body.is_adset_budget_sharing_enabled ? "on" : "off"}`;
-      const amountLines = await statedAmounts(body, { accountId: id });
+      const amountLines = await statedAmounts(body, { accountId: id }, CAMPAIGN_AMOUNT_LABELS);
 
       return {
         content: [

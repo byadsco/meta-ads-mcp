@@ -106,11 +106,16 @@ export function entityAccountCurrency(entityId: string): Promise<string | undefi
   return lookup({ entityId });
 }
 
-const AMOUNT_LABELS = {
+const AMOUNT_LABELS: Readonly<Record<string, string>> = {
   daily_budget: "Daily budget",
   lifetime_budget: "Lifetime budget",
   bid_amount: "Bid amount",
-} as const;
+};
+
+// A campaign's spend_cap is in the budgets' minor unit, but the same field
+// sent to an ad account is the account cap, in whole currency. Only a write
+// known to be a new campaign states it.
+export const CAMPAIGN_AMOUNT_LABELS: Readonly<Record<string, string>> = { ...AMOUNT_LABELS, spend_cap: "Spend cap" };
 
 /**
  * Lines for the result of a write, one per amount in the body that was sent,
@@ -119,11 +124,11 @@ const AMOUNT_LABELS = {
  * itself, never the tool's arguments: an argument the handler dropped must
  * not be confirmed. Empty, and without any request, when the body carried no
  * amount. A value that is neither a number nor a string of digits is left
- * out.
+ * out. `labels` names the fields read; the default is the budgets and the bid.
  */
-export async function statedAmounts(sentBody: Record<string, unknown>, owner: Owner): Promise<string> {
+export async function statedAmounts(sentBody: Record<string, unknown>, owner: Owner, labels = AMOUNT_LABELS): Promise<string> {
   const given: Array<[string, number]> = [];
-  for (const [field, label] of Object.entries(AMOUNT_LABELS)) {
+  for (const [field, label] of Object.entries(labels)) {
     const raw = sentBody[field];
     const amount = typeof raw === "string" && /^\d{1,15}$/.test(raw) ? Number(raw) : raw;
     if (typeof amount === "number" && Number.isFinite(amount)) given.push([label, amount]);

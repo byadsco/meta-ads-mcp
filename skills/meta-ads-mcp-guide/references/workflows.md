@@ -62,6 +62,17 @@ Advantage+ AI features that rewrite copy or edit media stay off unless you list 
 - **Music.** `music: true` lets Meta add a track to an image or carousel ad.
 - **Site links.** `site_links` adds extra links under the ad in Facebook Feed.
 - **Flexible format.** On Sales or App campaigns, `ads_create_ad` with `flexible_format` hands Meta groups of media and texts to build the best format per placement.
+- **Check any of these before the ad exists.** `ads_generate_preview` with the `creative_id` shows the creative in a placement, whatever its layout.
+- **Something Ads Manager offers that no field above covers.** `advanced_creative_fields` sends allowlisted creative fields as they are, such as `applink_treatment`. Meta validates them.
+
+## Capping a campaign's spend, frequency and attribution
+
+"Never spend more than 2 million pesos on this campaign." "Show it at most twice a week." "Count 7-day clicks and 1-day views."
+
+- **Campaign spend cap.** `ads_create_campaign` with `spend_cap`, in the same unit as `daily_budget`: USD 10000 is USD 100.00, COP 2000000 is 2,000,000 pesos. Meta refuses a cap under about USD 100. It is not the account cap of `ads_update_spend_cap`, which takes whole currency.
+- **Frequency cap.** `ads_create_ad_set` with `frequency_control_specs: [{ event: "IMPRESSIONS", interval_days: 7, max_frequency: 2 }]`, on a reach ad set.
+- **Attribution.** `ads_create_ad_set` with `attribution_spec`, e.g. `[{ event_type: "CLICK_THROUGH", window_days: 7 }, { event_type: "VIEW_THROUGH", window_days: 1 }]`.
+- **Ads seen in the EU.** `dsa_beneficiary` and `dsa_payor` name who benefits and who pays; without them Meta uses the account's defaults.
 
 ## A carousel, or an ad that does not lead to a website
 
