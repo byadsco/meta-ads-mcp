@@ -527,3 +527,42 @@ describe("ads_create_ad_creative dynamic creative, versions, music and site link
     expect(vi.mocked(fetch)).not.toHaveBeenCalled();
   });
 });
+
+describe("ads_create_ad_creative advanced_creative_fields", () => {
+  beforeEach(() => {
+    setupTestToken();
+  });
+
+  afterEach(() => {
+    cleanupTestToken();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it("sends allowed creative fields this tool does not model, text as is and objects as JSON", async () => {
+    stubCreateAndReadBack();
+
+    await createHandler()({
+      ...EMPTY_INPUT, page_id: "6001", image_hash: "h", link_url: "https://example.com/",
+      advanced_creative_fields: { applink_treatment: "web_only", branded_content: { ad_format: 1 } },
+    });
+
+    const body = sentBody();
+    expect(body.applink_treatment).toBe("web_only");
+    expect(JSON.parse(body.branded_content)).toEqual({ ad_format: 1 });
+  });
+
+  it.each([
+    ["a field this tool builds itself", { object_story_spec: { page_id: "1" } }, /object_story_spec/],
+    ["a field outside the allowed list", { access_token: "x" }, /access_token/],
+    ["a value over 16 KB", { template_url_spec: { x: "y".repeat(17_000) } }, /16 KB/],
+    ["a prototype key", JSON.parse('{"__proto__": {"object_story_spec": {}}}') as Record<string, unknown>, /__proto__/],
+    ["a key that differs only in case", { Applink_Treatment: "web_only" }, /Applink_Treatment/],
+    ["text under 16 KB in characters but over it in bytes", { template_url_spec: { x: "é".repeat(9_000) } }, /16 KB/],
+  ])("refuses %s before calling Meta", async (_label, fields, error) => {
+    vi.stubGlobal("fetch", vi.fn());
+
+    await expect(createHandler()({ ...EMPTY_INPUT, page_id: "6001", image_hash: "h", advanced_creative_fields: fields })).rejects.toThrow(error);
+    expect(vi.mocked(fetch)).not.toHaveBeenCalled();
+  });
+});

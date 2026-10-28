@@ -153,6 +153,26 @@ describe("registerCampaignTools", () => {
       expect(params.get("is_adset_budget_sharing_enabled")).toBe("true");
     });
 
+    it("sends a spend cap and the countries of a special ad category", async () => {
+      const params = await createCampaign({ special_ad_categories: ["ONLINE_GAMBLING_AND_GAMING"], special_ad_category_country: ["CO", "MX"], spend_cap: 100000 });
+
+      expect(params.get("spend_cap")).toBe("100000");
+      expect(JSON.parse(params.get("special_ad_category_country")!)).toEqual(["CO", "MX"]);
+      expect(JSON.parse(params.get("special_ad_categories")!)).toEqual(["ONLINE_GAMBLING_AND_GAMING"]);
+    });
+
+    // Measured: an empty list sent as text arrives empty and Meta answers
+    // "special_ad_categories is required"; a JSON list, empty or not, is taken.
+    it.each([
+      ["an empty list", [], []],
+      ["NONE", ["NONE"], []],
+      ["two categories", ["HOUSING", "EMPLOYMENT"], ["HOUSING", "EMPLOYMENT"]],
+      ["NONE next to a real category", ["NONE", "HOUSING"], ["HOUSING"]],
+    ])("sends special ad categories as a JSON list Meta accepts: %s", async (_label, categories, sent) => {
+      const params = await createCampaign({ special_ad_categories: categories });
+      expect(JSON.parse(params.get("special_ad_categories")!)).toEqual(sent);
+    });
+
     it.each([
       ["daily_budget", 5000],
       ["lifetime_budget", 900000],
@@ -309,6 +329,17 @@ describe("registerCampaignTools", () => {
 
       expect(text.split("\n")).toContain("Lifetime budget: COP 900,000 (account currency COP)");
       expect(text).not.toContain("Daily budget");
+    });
+
+    // Measured on a USD account: 5000 is refused as under the $100 minimum and
+    // 10000 reads back as 10000, so the campaign cap is in the minor unit,
+    // unlike the account cap.
+    it("create: a campaign spend cap gets its own line, in the budgets' minor unit", async () => {
+      stubWriteAndCurrencyLookup({ write: { id: "1000204" }, account: { currency: "USD" } });
+
+      const text = await create({ spend_cap: 10000 });
+
+      expect(text.split("\n")).toContain("Spend cap: USD 100.00 (account currency USD)");
     });
 
     it("create: still succeeds when the currency lookup throws, and says only what it knows", async () => {

@@ -71,6 +71,31 @@ function toDestination(input: z.infer<typeof destinationSchema>): Destination {
   }
 }
 
+// Top-level creative fields Meta's POST /adcreatives takes and this tool does
+// not build, for partnership ads, deep-link behaviour, crops and the like.
+// None of them is a field the tool sets itself, so one cannot override the
+// creative it builds.
+export const ADVANCED_CREATIVE_FIELDS = [
+  "applink_treatment", "branded_content", "facebook_branded_content", "instagram_branded_content",
+  "image_crops", "interactive_components_spec", "portrait_customizations", "product_set_id",
+  "template_url_spec", "categorization_criteria",
+] as const;
+const ADVANCED_MAX_BYTES = 16_384;
+
+function advancedFields(fields: Record<string, unknown> | undefined): Record<string, string> {
+  if (!fields) return {};
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(fields)) {
+    if (!(ADVANCED_CREATIVE_FIELDS as readonly string[]).includes(key)) {
+      throw new Error(`advanced_creative_fields takes only ${ADVANCED_CREATIVE_FIELDS.join(", ")}; ${JSON.stringify(key.slice(0, 64))} is not one of them.`);
+    }
+    if (value === undefined || value === null) continue;
+    out[key] = typeof value === "string" ? value : typeof value === "object" ? JSON.stringify(value) : String(value);
+  }
+  if (Buffer.byteLength(JSON.stringify(out)) > ADVANCED_MAX_BYTES) throw new Error("advanced_creative_fields are capped at 16 KB in all.");
+  return out;
+}
+
 const positions = z.array(z.string().regex(/^[a-z_]+$/)).min(1);
 const placementsSchema = z.object({
   publisher_platforms: z.array(z.enum(["facebook", "instagram", "messenger", "audience_network", "threads"])).min(1),
@@ -473,6 +498,10 @@ export function registerCreativeTools(server: McpServer): void {
           .boolean()
           .optional()
           .describe("Let Meta show this ad alongside other advertisers' ads (multi-advertiser ads). Off unless true."),
+        advanced_creative_fields: z
+          .record(z.string(), z.unknown())
+          .optional()
+          .describe(`Creative fields this tool does not model, sent as they are (text as is, objects as JSON), for what Ads Manager can do and the fields above cannot. Only these top-level fields: ${ADVANCED_CREATIVE_FIELDS.join(", ")}. Up to 16 KB in all. Meta validates them.`),
       },
       annotations: { ...CREATE },
     },
@@ -483,7 +512,9 @@ export function registerCreativeTools(server: McpServer): void {
       advantage_creative, multi_advertiser_ads,
       destination, cards, display_link, multi_share_optimized, multi_share_end_card,
       dynamic_creative, placement_variants, language_variants, music, site_links,
+      advanced_creative_fields,
     }) => {
+      const advanced = advancedFields(advanced_creative_fields);
       if (site_links && advantage_creative?.site_extensions === "OPT_OUT") {
         throw new Error("site_links need the site_extensions feature on: drop site_extensions: OPT_OUT from advantage_creative.");
       }
@@ -633,6 +664,7 @@ export function registerCreativeTools(server: McpServer): void {
       if (normalizedUrlTags) body.url_tags = normalizedUrlTags;
       body.degrees_of_freedom_spec = JSON.stringify(featureSpec.degrees_of_freedom_spec);
       body.contextual_multi_ads = JSON.stringify(featureSpec.contextual_multi_ads);
+      Object.assign(body, advanced);
 
       const result = await metaApiClient.postForm<{ id: string }>(
         `/${accountPath}/adcreatives`,

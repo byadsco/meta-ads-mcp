@@ -164,4 +164,22 @@ describe("ads_generate_preview", () => {
 
     expect(creative).toEqual(before);
   });
+
+  it("previews a creative that already exists, whatever its layout", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(mockFetchResponse(PREVIEW)));
+
+    const result = await generatePreview()({ account_id: "act_123", ad_format: "INSTAGRAM_STORY", creative_id: "4001" }) as { content: Array<{ text: string }> };
+
+    expect(fetchCallSummary()).toEqual(["GET /4001/previews"]);
+    expect(new URL(String(vi.mocked(fetch).mock.calls[0][0])).searchParams.get("ad_format")).toBe("INSTAGRAM_STORY");
+    expect(result.content[0].text).toContain("preview_iframe.php");
+  });
+
+  it("refuses creative_id together with a spec, and a malformed creative_id", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+
+    await expect(generatePreview()({ account_id: "act_123", ad_format: "MOBILE_FEED_STANDARD", creative_id: "4001", page_id: "6001" })).rejects.toThrow(/creative_id/);
+    await expect(generatePreview()({ account_id: "act_123", ad_format: "MOBILE_FEED_STANDARD", creative_id: "1/../me" })).rejects.toThrow(/creative/);
+    expect(vi.mocked(fetch)).not.toHaveBeenCalled();
+  });
 });

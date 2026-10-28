@@ -855,6 +855,17 @@ export function registerAdSetTools(server: McpServer): void {
         end_time: z.string().optional().describe("ISO 8601 end time (required for lifetime_budget)"),
         promoted_object: z.record(z.string(), z.unknown()).optional().describe("Promoted object (e.g., { page_id: '123' } or { pixel_id: '456', custom_event_type: 'PURCHASE' })"),
         is_dynamic_creative: z.boolean().optional().describe("Dynamic creative: the ad set holds a single ad whose creative is a dynamic_creative feed (ads_create_ad_creative), and Meta mixes its images, videos and texts. Only such an ad set takes that creative, and it takes only one ad, which can be deleted only with the ad set."),
+        dsa_beneficiary: z.string().min(1).max(512).optional().describe("EU Digital Services Act: who the ad benefits, shown in the ad's transparency information. Meta otherwise uses the account's default"),
+        dsa_payor: z.string().min(1).max(512).optional().describe("EU Digital Services Act: who pays for the ad"),
+        attribution_spec: z.array(z.object({
+          event_type: z.enum(["CLICK_THROUGH", "VIEW_THROUGH", "ENGAGED_VIDEO_VIEW"]),
+          window_days: z.number().int().min(1).max(28),
+        })).min(1).max(3).optional().describe("Conversion attribution windows, e.g. [{ event_type: CLICK_THROUGH, window_days: 7 }, { event_type: VIEW_THROUGH, window_days: 1 }]. For conversion goals"),
+        frequency_control_specs: z.array(z.object({
+          event: z.literal("IMPRESSIONS"),
+          interval_days: z.number().int().min(1).max(90),
+          max_frequency: z.number().int().min(1).max(90),
+        })).min(1).max(1).optional().describe("Frequency cap: at most max_frequency impressions per person every interval_days. For reach goals"),
       },
       annotations: { ...CREATE },
     },
@@ -862,6 +873,7 @@ export function registerAdSetTools(server: McpServer): void {
       account_id, campaign_id, name, destination_type, status, daily_budget, lifetime_budget,
       optimization_goal, billing_event, bid_amount, bid_strategy, targeting,
       start_time, end_time, promoted_object, is_dynamic_creative,
+      dsa_beneficiary, dsa_payor, attribution_spec, frequency_control_specs,
     }) => {
       const accountPath = normalizeAccountId(account_id);
       const campaignIdValidated = validateMetaId(campaign_id, "campaign");
@@ -884,6 +896,10 @@ export function registerAdSetTools(server: McpServer): void {
       if (end_time) body.end_time = end_time;
       if (promoted_object) body.promoted_object = JSON.stringify(promoted_object);
       if (is_dynamic_creative) body.is_dynamic_creative = true;
+      if (dsa_beneficiary) body.dsa_beneficiary = dsa_beneficiary;
+      if (dsa_payor) body.dsa_payor = dsa_payor;
+      if (attribution_spec) body.attribution_spec = JSON.stringify(attribution_spec);
+      if (frequency_control_specs) body.frequency_control_specs = JSON.stringify(frequency_control_specs);
 
       const result = await metaApiClient.postForm<{ id: string }>(`/${accountPath}/adsets`, body);
       const amountLines = await statedAmounts(body, { accountId: accountPath });

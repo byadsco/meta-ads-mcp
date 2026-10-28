@@ -163,6 +163,30 @@ Each of these was accepted as a creative and as a paused ad.
   - `creative_asset_groups_spec.groups` on `POST /act_{id}/ads`, next to an existing `creative_id`. Each group has `images`, `videos`, `texts: [{ text, text_type }]` (`primary_text`, `headline`, `description`) and `call_to_action`.
   - Accepted on an `OUTCOME_SALES` campaign with a pixel; one group is read back. It was rejected on traffic (`subcode 3858343`, see above).
 
+## Campaign and ad set fields, previews, other creative fields (measured 2026-10-27)
+
+- **Campaign `spend_cap`.**
+  - It is in the currency's minor unit, like the budgets, unlike the account cap, which is written in whole currency.
+  - On a USD account, `5000` is refused as under the minimum (subcode 2446307, "at least $100.00 for this currency"), and `10000` is accepted and read back as `10000`.
+- **Special ad categories.**
+  - As text, `"HOUSING,EMPLOYMENT"` is read back as both and `"NONE"` as `[]`.
+  - An empty list sent as text arrives empty, and Meta answers "The parameter special_ad_categories is required".
+  - A JSON list is taken, empty or not: `[]`, `["HOUSING"]`.
+  - `special_ad_category_country: ["CO"]` is read back.
+- **Campaign dates.** `start_time` and `stop_time` on `POST /act_{id}/campaigns` are accepted and not stored. The schedule lives on the ad sets.
+- **EU transparency (DSA).** An ad set targeting Spain is accepted without `dsa_beneficiary` and `dsa_payor`. With them, both are stored.
+- **Attribution.** `attribution_spec: [{ event_type: "CLICK_THROUGH", window_days: 7 }, { event_type: "VIEW_THROUGH", window_days: 1 }]`, on a conversions ad set with a pixel, is read back as sent.
+- **Frequency cap.**
+  - `frequency_control_specs: [{ event: "IMPRESSIONS", interval_days: 7, max_frequency: 2 }]`, on an `OUTCOME_AWARENESS` ad set optimizing for `REACH`, is read back with `type: "CAP"`.
+  - That ad set takes `destination_type` `WEBSITE`, `UNDEFINED` or `MESSENGER` (subcode 1815715 lists them).
+- **Previews.**
+  - `GET /act_{id}/generatepreviews` with a `creative` spec, and `GET /{creative_id}/previews`, both render dynamic creative, placement versions, carousels and site links.
+  - The second also takes `ad_format`, e.g. `INSTAGRAM_STORY`.
+- **Other creative fields.** `applink_treatment: "web_only"` on `POST /act_{id}/adcreatives` is accepted and read back.
+- **Not reachable from this app yet.**
+  - Catalog ads fail with "application has not been approved" until the app has `catalog_management`.
+  - Instant Experiences (`/{page_id}/canvases`) answer only to a Page token, and the test Page had none.
+
 ## Lead forms
 
 - `GET` and `POST /{page_id}/leadgen_forms` answer only to a Page token: a user token gets `(#190) This method must be called with a Page Access Token`.

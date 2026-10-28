@@ -9,6 +9,21 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
+- **Campaign and ad set fields Ads Manager has and the tools lacked.** Each was measured live on v26.0.
+  - `ads_create_campaign` takes:
+    - `spend_cap`, in the same minor unit as the budgets. Meta refuses a cap under about USD 100 (subcode 2446307). It is not the standard unit of the account cap in `ads_update_spend_cap`, and the result states the amount in the account currency.
+    - `special_ad_category_country`, the countries a special ad category applies to.
+  - `ads_create_ad_set` takes:
+    - `dsa_beneficiary` and `dsa_payor`, the EU Digital Services Act names. Meta otherwise uses the account's defaults; an ad set for Spain was accepted without them.
+    - `attribution_spec`: click, view and engaged-video-view windows.
+    - `frequency_control_specs`: at most N impressions per person every D days, on reach ad sets.
+- **`ads_generate_preview` previews any creative that exists**, by `creative_id`, whatever its layout: dynamic creative, placement and language versions, carousels, site links.
+- **`advanced_creative_fields` in `ads_create_ad_creative`.** Creative fields the tool does not model are sent as they are, from an allowlist of top-level fields: `applink_treatment`, `branded_content`, `facebook_branded_content`, `instagram_branded_content`, `image_crops`, `interactive_components_spec`, `portrait_customizations`, `product_set_id`, `template_url_spec` and `categorization_criteria`. The tool refuses any other key, including the fields it builds itself, and anything over 16 KB in all, before calling Meta. `applink_treatment: "web_only"` was accepted and read back.
+- **Not in this release.**
+  - Catalog ads: Meta refuses them until the app is approved for `catalog_management`; they come with the catalog tools.
+  - Instant Experiences: making one needs a Page token and the test Page has none to attach.
+  - Campaign `start_time` and `stop_time`: Meta ignores them; the dates belong on the ad sets.
+
 - **Business Manager access: four tools to see and change who can use each ad account, Page and pixel** (145 → 149 tools). Measured against the live API:
   - `ads_get_business_users` lists a Business Manager's people (with email and role) and its system users, with the business-scoped `user_id` the other tools take. Meta lists only the people it shows this app: until the app has Advanced Access to `business_management` it returns just the people with a role on the app, and the reply says how many are missing.
   - `ads_get_asset_users` lists who has access to an ad account, Page or pixel through a Business Manager, with the role their tasks amount to and the exact tasks.
@@ -123,6 +138,7 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Fixed
 
+- **`ads_create_campaign` with `special_ad_categories: []` failed** with "special_ad_categories is required": the list went out as empty text. The categories now go as a JSON list, and `NONE` as an empty one.
 - **`ads_get_lead_forms` and `ads_create_lead_form` failed against Meta: forms answer only to a Page token (#190).** Both now get one with the person's token for that call only, as route B of `ads_update_ad_content` does. It is never logged, returned or stored, and the person has to manage the Page (`pages_manage_ads`).
   - `ads_get_lead_forms` takes only the form's own fields, so no expansion (`page{access_token}`) can reach the Page's token.
   - Whatever a Page-token call returns or throws is cleaned of that token wherever it appears, and of any credential-named field. The cleaning keeps cycles and handles any depth.

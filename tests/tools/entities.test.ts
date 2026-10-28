@@ -76,4 +76,16 @@ describe("ads_update_entity: budget stated in the account currency", () => {
 
     expect(fetchCallSummary()).toEqual(["POST /2001"]);
   });
+
+  // The generic updater cannot tell a campaign's cap (minor unit) from an ad
+  // account's (whole currency) when it is handed an act_ id, so it states
+  // neither: a wrong line would be off by a factor of 100.
+  it("never states a spend_cap, whose unit depends on what the id turns out to be", async () => {
+    stubWriteAndCurrencyLookup({ write: { success: true }, entity: { account_id: "123" }, account: { currency: "USD" } });
+
+    const text = await update("campaign", { spend_cap: 10000 });
+
+    expect(text).not.toMatch(/^Spend cap/m);
+    expect(text).not.toContain("USD 100.00");
+  });
 });
