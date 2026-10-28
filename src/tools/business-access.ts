@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { McpError, ErrorCode } from "@modelcontextprotocol/sdk/types.js";
 import { metaApiClient } from "../meta/client.js";
+import { wasRefused } from "../meta/errors.js";
 import type { AssignedUser, Business, BusinessUser, MetaApiResponse, SystemUser } from "../meta/types/index.js";
 import { normalizeAccountId } from "../utils/format.js";
 import { ADVERTISER_CONTENT_CLOSE, ADVERTISER_CONTENT_OPEN, singleLine } from "../utils/single-line.js";
@@ -66,6 +67,36 @@ function assetPath(type: AssetType, id: string): string {
   return type === "ad_account" ? `/${normalizeAccountId(id)}` : `/${numericId(id, `${type} id`)}`;
 }
 
+// Page and pixel ids look alike and share the /assigned_users edge, so the
+// asset is first read with fields only its own kind has. Meta refuses a field
+// a node lacks (measured live), so an id of the other kind is never written to.
+// An act_ id names only an ad account and needs no check.
+const KIND_FIELDS: Partial<Record<AssetType, string>> = {
+  page: "id,category,fan_count",
+  pixel: "id,owner_business,last_fired_time",
+};
+
+async function checkAssetKind(type: AssetType, path: string): Promise<void> {
+  const fields = KIND_FIELDS[type];
+  if (!fields) return;
+  let node: { id?: string };
+  try {
+    node = await metaApiClient.get<{ id?: string }>(path, { fields });
+  } catch (err) {
+    if (!(err instanceof McpError && err.code === ErrorCode.InvalidParams)) throw err;
+    throw new McpError(
+      ErrorCode.InvalidParams,
+      `Meta would not read ${path.slice(1)} as a ${ASSET_LABEL[type]} (${singleLine(err.message, 200)}). Check asset_type and asset_id.`,
+    );
+  }
+  if (node.id !== path.slice(1)) {
+    throw new McpError(
+      ErrorCode.InvalidParams,
+      `Meta answered for another object than ${ASSET_LABEL[type]} ${path.slice(1)}. Check asset_type and asset_id.`,
+    );
+  }
+}
+
 interface ListRead<T> {
   items: T[];
   /** True only when Meta ended the list itself: anything else proves nobody's absence. */
@@ -127,6 +158,35 @@ async function assignedUsers(path: string, business: string): Promise<{ users: A
     MAX_USERS,
   );
   return { users: items, complete };
+}
+
+type Seen = { state: "present"; tasks?: string[] } | { state: "absent" } | { state: "unknown"; why: string };
+
+/** What Meta holds for one user on an asset. Only a list read to the end shows an absence. */
+async function observe(path: string, business: string, user: string): Promise<Seen> {
+  try {
+    const { users, complete } = await assignedUsers(path, business);
+    const found = users.find((u) => u.id === user);
+    if (found) return { state: "present", tasks: found.tasks };
+    return complete ? { state: "absent" } : { state: "unknown", why: "Meta's list of users on this asset could not be read to the end" };
+  } catch {
+    return { state: "unknown", why: "the read-back failed" };
+  }
+}
+
+/** A write whose answer never came back may still have gone through: say so, with what Meta shows now. */
+async function lostAnswer(err: unknown, what: string, type: AssetType, path: string, business: string, user: string): Promise<Error> {
+  const seen = await observe(path, business, user);
+  let now: string;
+  if (seen.state === "present") {
+    now = `Meta now shows user ${user} with role ${roleOf(type, seen.tasks)}, tasks ${taskList(seen.tasks)} (read back from Meta).`;
+  } else if (seen.state === "absent") {
+    now = `Meta now lists no access for user ${user} on this asset (read back from Meta).`;
+  } else {
+    now = `What Meta now holds could not be confirmed: ${seen.why}. Check with ads_get_asset_users.`;
+  }
+  const reason = singleLine(err instanceof Error ? err.message : String(err), 200);
+  return new Error(`Meta's answer to ${what} was lost (${reason}), so the change may or may not have been applied. ${now}`);
 }
 
 function roleOf(type: AssetType, tasks: readonly string[] = []): string {
@@ -225,6 +285,7 @@ export function registerBusinessAccessTools(server: McpServer): void {
     async ({ asset_type, asset_id, business_id }) => {
       const path = assetPath(asset_type, asset_id);
       const business = await resolveBusinessId(business_id);
+      await checkAssetKind(asset_type, path);
       const { users, complete } = await assignedUsers(path, business);
       const label = `${ASSET_LABEL[asset_type]} ${path.slice(1)}`;
       let header: string;
@@ -274,29 +335,32 @@ export function registerBusinessAccessTools(server: McpServer): void {
         );
       }
       const business = await resolveBusinessId(business_id);
+      await checkAssetKind(asset_type, path);
       const label = `${ASSET_LABEL[asset_type]} ${path.slice(1)}`;
+      const what = `giving user ${user} the ${role} role on ${label}`;
 
-      const response = await metaApiClient.postForm<{ success?: boolean }>(`${path}/assigned_users`, {
-        user,
-        tasks: JSON.stringify(tasks),
-      });
+      let response: { success?: boolean } | undefined;
+      try {
+        response = await metaApiClient.postForm<{ success?: boolean }>(`${path}/assigned_users`, {
+          user,
+          tasks: JSON.stringify(tasks),
+        });
+      } catch (err) {
+        if (wasRefused(err)) throw err;
+        throw await lostAnswer(err, what, asset_type, path, business, user);
+      }
       if (response?.success !== true) {
-        throw new Error(`Meta did not confirm giving user ${user} the ${role} role on ${label}. Response: ${JSON.stringify(response)}`);
+        throw new Error(`Meta did not confirm ${what}. Response: ${JSON.stringify(response)}`);
       }
 
       const lines = [`Meta accepted the ${role} role (${tasks.join(", ")}) for user ${user} on ${label}.`];
-      try {
-        const { users, complete } = await assignedUsers(path, business);
-        const now = users.find((u) => u.id === user);
-        if (now) {
-          lines.push(`User ${user} now holds role ${roleOf(asset_type, now.tasks)}, tasks ${taskList(now.tasks)} (read back from Meta).`);
-        } else if (complete) {
-          lines.push(`User ${user} is not listed in Meta's read-back for Business Manager ${business}; check with ads_get_asset_users.`);
-        } else {
-          lines.push("The change was accepted, but it could not be confirmed: Meta's list of users on this asset could not be read to the end.");
-        }
-      } catch {
-        lines.push("The change was accepted, but what Meta now holds could not be confirmed: the read-back failed. Check with ads_get_asset_users.");
+      const seen = await observe(path, business, user);
+      if (seen.state === "present") {
+        lines.push(`User ${user} now holds role ${roleOf(asset_type, seen.tasks)}, tasks ${taskList(seen.tasks)} (read back from Meta).`);
+      } else if (seen.state === "absent") {
+        lines.push(`User ${user} is not listed in Meta's read-back for Business Manager ${business}; check with ads_get_asset_users.`);
+      } else {
+        lines.push(`The change was accepted, but it could not be confirmed: ${seen.why}. Check with ads_get_asset_users.`);
       }
       return { content: [{ type: "text", text: lines.join("\n") }] };
     },
@@ -318,26 +382,29 @@ export function registerBusinessAccessTools(server: McpServer): void {
       const path = assetPath(asset_type, asset_id);
       const user = numericId(user_id, "user_id");
       const business = await resolveBusinessId(business_id);
+      await checkAssetKind(asset_type, path);
       const label = `${ASSET_LABEL[asset_type]} ${path.slice(1)}`;
+      const what = `removing user ${user} from ${label}`;
 
-      const response = await metaApiClient.delete<{ success?: boolean }>(`${path}/assigned_users`, { user });
+      let response: { success?: boolean } | undefined;
+      try {
+        response = await metaApiClient.delete<{ success?: boolean }>(`${path}/assigned_users`, { user });
+      } catch (err) {
+        if (wasRefused(err)) throw err;
+        throw await lostAnswer(err, what, asset_type, path, business, user);
+      }
       if (response?.success !== true) {
-        throw new Error(`Meta did not confirm removing user ${user} from ${label}. Response: ${JSON.stringify(response)}`);
+        throw new Error(`Meta did not confirm ${what}. Response: ${JSON.stringify(response)}`);
       }
 
-      const lines = [`Meta accepted removing user ${user} from ${label}.`];
-      try {
-        const { users, complete } = await assignedUsers(path, business);
-        const still = users.find((u) => u.id === user);
-        if (still) {
-          lines.push(`Meta still lists user ${user} with tasks ${taskList(still.tasks)}. Its reads can lag behind a write: check again with ads_get_asset_users.`);
-        } else if (complete) {
-          lines.push(`User ${user} no longer has access (read back from Meta).`);
-        } else {
-          lines.push("The removal was accepted, but it could not be confirmed: Meta's list of users on this asset could not be read to the end.");
-        }
-      } catch {
-        lines.push("The removal was accepted, but what Meta now holds could not be confirmed: the read-back failed. Check with ads_get_asset_users.");
+      const lines = [`Meta accepted ${what}.`];
+      const seen = await observe(path, business, user);
+      if (seen.state === "present") {
+        lines.push(`Meta still lists user ${user} with tasks ${taskList(seen.tasks)}. Its reads can lag behind a write: check again with ads_get_asset_users.`);
+      } else if (seen.state === "absent") {
+        lines.push(`User ${user} no longer has access (read back from Meta).`);
+      } else {
+        lines.push(`The removal was accepted, but it could not be confirmed: ${seen.why}. Check with ads_get_asset_users.`);
       }
       return { content: [{ type: "text", text: lines.join("\n") }] };
     },
