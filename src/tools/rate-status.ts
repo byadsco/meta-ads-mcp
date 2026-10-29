@@ -1,5 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { metaApiClient } from "../meta/client.js";
+import { getAccessTokenHash } from "../auth/token-store.js";
 import { READ } from "./_register.js";
 
 /**
@@ -12,19 +13,20 @@ export function registerRateStatusTools(server: McpServer): void {
     "ads_rate_status",
     {
       description:
-        "Show the current Meta API rate-limit usage across tokens, accounts, and use-case types, plus any open circuits and the write-pacer state. Does NOT call Meta — returns in-process state.",
+        "Show the Meta API rate-limit usage of the token in use, across its accounts and use-case types, plus its open circuits and write-pacer state. Does NOT call Meta — returns in-process state.",
       inputSchema: {},
       annotations: { ...READ },
     },
     async () => {
-      const { usage, circuits, writePacer } = metaApiClient.getUsageSnapshot();
+      // The process serves every tenant; each sees only its own token's state.
+      const { usage, circuits, writePacer } = metaApiClient.getUsageSnapshotFor(getAccessTokenHash());
 
       if (usage.length === 0 && circuits.length === 0 && writePacer.length === 0) {
         return {
           content: [
             {
               type: "text",
-              text: "No Meta API usage recorded yet in this process.",
+              text: "No Meta API usage recorded yet for the token in use.",
             },
           ],
         };

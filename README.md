@@ -630,19 +630,19 @@ This server is designed to keep your app and your clients' ad accounts clear of 
 
 ### Observability
 
-Call `ads_rate_status` at any time to see usage, open circuits and the write-pacer state — it returns in-process state and does not call Meta. Sample JSON output (the second `text` block of the MCP response):
+Call `ads_rate_status` at any time to see the usage, open circuits and write-pacer state of the token in use — it returns in-process state and does not call Meta. One server process serves every tenant, and each sees only its own token's state. Sample JSON output (the second `text` block of the MCP response):
 
 ```json
 {
   "usage": [
     { "kind": "app",       "key": "app:9c3f…",                 "callCount": 47, "cpuTime": 31, "totalTime": 22, "estimatedTimeToRegainAccessMs": 0,        "adsApiAccessTier": "standard_access" },
-    { "kind": "buc",       "key": "buc:9c3f…:act_1234567890",  "callCount": 71, "cpuTime": 64, "totalTime": 58, "estimatedTimeToRegainAccessMs": 0,        "adsApiAccessTier": "standard_access" },
-    { "kind": "insights",  "key": "insights:9c3f…:act_1234567890", "callCount": 18, "cpuTime": 12, "totalTime": 9, "estimatedTimeToRegainAccessMs": 0,    "adsApiAccessTier": "standard_access" },
-    { "kind": "acc",       "key": "acc:act_1234567890",        "callCount": 33, "cpuTime": 0,  "totalTime": 0,  "estimatedTimeToRegainAccessMs": 0,        "adsApiAccessTier": null },
-    { "kind": "local_retry","key": "local_retry:9c3f…:act_1234567890:CUSTOM_AUDIENCE", "callCount": 0, "cpuTime": 0, "totalTime": 0, "estimatedTimeToRegainAccessMs": 184000, "adsApiAccessTier": null }
+    { "kind": "buc",       "key": "buc:9c3f…:1234567890:ads_management",  "callCount": 71, "cpuTime": 64, "totalTime": 58, "estimatedTimeToRegainAccessMs": 0,        "adsApiAccessTier": "standard_access" },
+    { "kind": "insights",  "key": "insights:9c3f…:acc:act_1234567890", "callCount": 18, "cpuTime": 12, "totalTime": 9, "estimatedTimeToRegainAccessMs": 0,    "adsApiAccessTier": "standard_access" },
+    { "kind": "acc",       "key": "acc:9c3f…:act_1234567890",  "callCount": 33, "cpuTime": 0,  "totalTime": 0,  "estimatedTimeToRegainAccessMs": 0,        "adsApiAccessTier": null },
+    { "kind": "local_retry","key": "local_retry:9c3f…:act_1234567890:custom_audience", "callCount": 0, "cpuTime": 0, "totalTime": 0, "estimatedTimeToRegainAccessMs": 184000, "adsApiAccessTier": null }
   ],
   "circuits": [
-    { "key": "9c3f…:act_1234567890", "reason": "repeated_throttle", "openUntil": 1716482700000, "tripCount": 1, "lastError": "User request limit reached (4)" }
+    { "key": "9c3f…:act_1234567890:ads_management", "reason": "repeated_throttle", "openUntil": 1716482700000, "tripCount": 1, "lastError": "User request limit reached (4)" }
   ],
   "writePacer": [
     { "key": "9c3f…:act_1234567890", "tokens": 7, "capacity": 60, "rateRps": 0.5, "tier": "standard_access" }
@@ -658,6 +658,7 @@ Field reference:
 - `adsApiAccessTier` — `development_access` (no IDs allowed in some endpoints, harsher quotas) or `standard_access`.
 - `circuits[]` — open circuits blocking calls; `reason` is one of `abuse_signal`, `retry_after_hint`, `repeated_throttle`, `temporary_block`.
 - `writePacer[]` — token-bucket state for `POST`/`DELETE` Ads Management calls; `tokens` available, `capacity`, `rateRps` refill rate.
+- `key` — starts with the kind (usage buckets only), then the token's hash (`9c3f…`), then the account, business or use-case type the bucket covers. Only keys with the hash of the token in use are shown.
 
 Structured logs fire on every Meta error (`event=meta_error`), abuse signal (`event=META_ABUSE_SIGNAL`, `level=FATAL`), circuit change (`event=meta_circuit_open`) and periodic usage snapshot (`event=meta_rate_usage`).
 

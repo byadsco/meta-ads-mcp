@@ -7,6 +7,10 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Security
+
+- **`ads_rate_status` showed every tenant's state.** One server process serves every tenant, and the tool returned the whole process's rate-limit usage, open circuits and write-pacer buckets. A tenant could see other tenants' ad account and business ids and the last error text of their circuits. It now shows only the state of the token in use.
+
 ### Added
 
 - **Three custom audience tools of Meta's official Ads MCP server, under their official names** (159 → 162 tools). Each was measured against the live API first.
