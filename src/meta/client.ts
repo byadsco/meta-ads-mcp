@@ -212,14 +212,26 @@ export class MetaApiClient {
     return body as T;
   }
 
-  /**
-   * Public snapshot for the `ads_rate_status` tool.
-   */
+  /** The whole process's state, every tenant's: for tests and the logs. */
   getUsageSnapshot() {
     return {
       usage: this.rateLimiter.snapshot(),
       circuits: this.circuitBreaker.snapshot(),
       writePacer: this.writePacer.snapshot(),
+    };
+  }
+
+  /**
+   * One token's state, for the `ads_rate_status` tool. Every key carries the
+   * token hash in a fixed position: `kind:token:…` for usage buckets,
+   * `token:…` for circuits and write-pacer buckets.
+   */
+  getUsageSnapshotFor(tokenHash: string) {
+    const { usage, circuits, writePacer } = this.getUsageSnapshot();
+    return {
+      usage: usage.filter((b) => b.key.split(":")[1] === tokenHash),
+      circuits: circuits.filter((c) => c.key.split(":")[0] === tokenHash),
+      writePacer: writePacer.filter((w) => w.key.split(":")[0] === tokenHash),
     };
   }
 

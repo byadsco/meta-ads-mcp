@@ -34,7 +34,7 @@ Confirm before any of them, and name the object and the effect in the advertiser
 
 ## Rate limits and quota
 
-The server paces writes against Meta's Ads Management quota and opens a circuit when an account is being throttled. `ads_rate_status` shows usage, open circuits and pacer state.
+The server paces writes against Meta's Ads Management quota and opens a circuit when an account is being throttled. `ads_rate_status` shows usage, open circuits and pacer state for the token in use.
 
 When a call is refused for quota, wait. Retrying in a loop makes the throttle worse and can get the whole account limited. Meta's quota is per account and recovers over an hour.
 

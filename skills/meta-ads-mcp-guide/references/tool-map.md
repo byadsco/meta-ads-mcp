@@ -171,7 +171,7 @@ A ⚠️ marks a tool that changes live data, spends money or touches stored cre
 - `ads_get_opportunity_score` — Meta's opportunity score and what it suggests fixing.
 - `ads_get_dataset_quality` — Signal quality for a dataset: match rate, deduplication, freshness.
 - `ads_get_errors` — The ads currently disapproved or flagged with issues.
-- `ads_rate_status` — Live quota usage, open circuits and write-pacer state for this server.
+- `ads_rate_status` — Live quota usage, open circuits and write-pacer state for the token in use.
 - `ads_get_help_article` — Search Meta Business Help Center articles.
 
 ## Agency macros

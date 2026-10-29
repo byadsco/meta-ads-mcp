@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { MetaApiClient } from "../../src/meta/client.js";
 import { setupTestToken, cleanupTestToken, mockFetchResponse } from "../setup.js";
 import { tokenManager } from "../../src/auth/token-manager.js";
+import { hashToken, requestContext } from "../../src/auth/token-store.js";
 import { logger } from "../../src/utils/logger.js";
 
 describe("MetaApiClient", () => {
@@ -396,6 +397,50 @@ describe("MetaApiClient", () => {
 
       expect(String(error)).toContain("HTTP 400");
       expect(String(error)).not.toContain("crm-person-42");
+    });
+  });
+
+  // The process holds every tenant's state; ads_rate_status shows one token's.
+  describe("one token's usage snapshot", () => {
+    const headers = (business: string) => ({
+      "x-app-usage": JSON.stringify({ call_count: 10 }),
+      "x-business-use-case-usage": JSON.stringify({ [business]: [{ type: "ads_management", call_count: 20 }] }),
+      "x-fb-ads-insights-throttle": JSON.stringify({ app_id_util_pct: 30, acc_id_util_pct: 31 }),
+      "x-ad-account-usage": JSON.stringify({ acc_id_util_pct: 40 }),
+      "x-fb-ads-insights-reach-throttle": JSON.stringify({ call_count: 50 }),
+    });
+    const abuse = () => mockFetchResponse({ error: { message: "Inconsistent volume", type: "OAuthException", code: 613, error_subcode: 1996 } }, { status: 400 });
+
+    async function use(token: string, account: string, business: string) {
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockFetchResponse({ id: "1" }, { headers: headers(business) })));
+      await requestContext.run({ accessToken: token }, () => client.postForm(`/${account}/campaigns`, { name: "x" }));
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(abuse()));
+      await requestContext.run({ accessToken: token }, () => client.postForm(`/${account}/campaigns`, { name: "x" })).catch(() => undefined);
+    }
+
+    it("keeps every bucket, circuit and pacer of the token, and none of another's", async () => {
+      await use("token-a", "act_111111", "1111");
+      await use("token-b", "act_999999", "9999");
+
+      const mine = client.getUsageSnapshotFor(hashToken("token-a"));
+
+      expect(new Set(mine.usage.map((b) => b.kind))).toEqual(new Set(["app", "buc", "insights", "acc", "reach", "local_retry"]));
+      expect(mine.usage.filter((b) => b.kind === "insights")).toHaveLength(2);
+      expect(mine.circuits).toHaveLength(1);
+      expect(mine.writePacer).toHaveLength(1);
+      // Keys only: a timestamp could contain any digits.
+      const keys = [...mine.usage, ...mine.circuits, ...mine.writePacer].map((entry) => entry.key).join(" ");
+      expect(keys).toContain("act_111111");
+      for (const other of [hashToken("token-b"), "act_999999", ":9999:"]) expect(keys).not.toContain(other);
+      expect(client.getUsageSnapshot().circuits).toHaveLength(2);
+    });
+
+    it("matches the token's hash only in its own place in the key", async () => {
+      await use("token-b", "act_999999", "9999");
+
+      for (const notAHash of ["app", "buc", "act_999999", "9999", "ads_management"]) {
+        expect(client.getUsageSnapshotFor(notAHash)).toEqual({ usage: [], circuits: [], writePacer: [] });
+      }
     });
   });
 
