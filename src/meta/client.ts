@@ -9,7 +9,7 @@ import {
   isMetaApiError,
   type MetaErrorClassification,
 } from "./errors.js";
-import type { MetaApiResponse } from "./types/common.js";
+import type { MetaApiError, MetaApiResponse } from "./types/common.js";
 import { collectAllPages } from "./paginator.js";
 import { assertMetaApiVersion, resolveMetaApiVersion } from "./api-version.js";
 import { scrubCredentialsDeep, scrubErrorCredentials } from "../utils/scrub-credentials.js";
@@ -39,6 +39,28 @@ interface RequestScope {
   // retried, it is not sent at all if pacing would hold it past this many
   // milliseconds, and it gives up on an answer that takes longer.
   timeoutMs?: number;
+  // Sent once. A retried write whose first answer was lost can come back
+  // refused, which would read as "nothing was written" when it may have been.
+  noRetry?: boolean;
+  // The request carries personal data, which Meta's error text can quote:
+  // only Meta's code and subcode are logged and returned.
+  withholdMessage?: boolean;
+}
+
+// An error whose text was written here, with nothing of the request or the
+// answer in it.
+class WithheldError extends Error {}
+
+// Keeps only what cannot quote the request: Meta's code and subcode.
+function withheld(error: MetaApiError): MetaApiError {
+  const code = Number.isInteger(error.code) ? error.code : 0;
+  const subcode = Number.isInteger(error.error_subcode) ? error.error_subcode : undefined;
+  return {
+    code,
+    error_subcode: subcode,
+    type: "",
+    message: `code ${code}${subcode !== undefined ? `, subcode ${subcode}` : ""}; Meta's text is withheld because the request carried personal data`,
+  };
 }
 
 // Rejects with `late()` once `until` passes, unless `work` settles first.
@@ -287,7 +309,7 @@ export class MetaApiClient {
         /\/copies$/.test(path) ||
         /\/(message_templates|flows|message_qrdls|request_code|leadgen_forms|ad_studies)$/.test(path));
     const canRetryTransport = !isCreatingRequest;
-    const maxRetries = endBy === undefined ? this.maxRetries : 0;
+    const maxRetries = endBy === undefined && !scope?.noRetry ? this.maxRetries : 0;
     const timeout = endBy === undefined ? this.timeout : Math.max(1, endBy - Date.now());
 
     let lastError: Error | undefined;
@@ -315,7 +337,8 @@ export class MetaApiClient {
         this.rateLimiter.updateFromHeaders(response.headers, context);
         this.maybeUpdatePacerTierFromHeaders(response.headers, tokenHash, accountId);
         this.maybeLogUsage();
-        this.maybeLogVersionWarning(response.headers, token);
+        // Header text is not logged for a call that carries personal data.
+        if (!scope?.withholdMessage) this.maybeLogVersionWarning(response.headers, token);
 
         // A bounded call's limit covers reading the answer too, and running
         // out of it cancels the transfer.
@@ -332,7 +355,7 @@ export class MetaApiClient {
         }
 
         if (isMetaApiError(body)) {
-          const metaError = withoutToken(body.error, token);
+          const metaError = scope?.withholdMessage ? withheld(body.error) : withoutToken(body.error, token);
           const classification = classifyMetaError(metaError);
           this.logMetaError(metaError, classification, context, path);
 
@@ -361,9 +384,9 @@ export class MetaApiClient {
         }
 
         if (!response.ok) {
-          lastError = new Error(
-            `HTTP ${response.status}: ${JSON.stringify(withoutToken(body, token))}`,
-          );
+          lastError = scope?.withholdMessage
+            ? new WithheldError(`HTTP ${response.status} (the answer is withheld: the request carried personal data)`)
+            : new Error(`HTTP ${response.status}: ${JSON.stringify(withoutToken(body, token))}`);
           if (response.status >= 500 && canRetryTransport && attempt < maxRetries) {
             await this.backoff(attempt);
             continue;
@@ -375,6 +398,18 @@ export class MetaApiClient {
       } catch (error) {
         if (error instanceof Error && error.name === "AbortError") {
           lastError = new Error(`Request timeout after ${timeout}ms`);
+          if (canRetryTransport && attempt < maxRetries) {
+            await this.backoff(attempt);
+            continue;
+          }
+          throw lastError;
+        }
+
+        // Anything not written here may quote the request or the answer: the
+        // JSON parser's message quotes the body it could not read.
+        if (scope?.withholdMessage && !(error instanceof McpError) && !(error instanceof WithheldError)) {
+          const kind = error instanceof Error && /^[A-Za-z]{1,40}$/.test(error.name) ? error.name : "Error";
+          lastError = new WithheldError(`${kind} on ${method} ${path}; its text is withheld because the request carried personal data`);
           if (canRetryTransport && attempt < maxRetries) {
             await this.backoff(attempt);
             continue;

@@ -63,7 +63,7 @@ describe("RateLimiter", () => {
       limiter.updateFromHeaders(
         new Headers({
           "x-business-use-case-usage": JSON.stringify({
-            biz1: [
+            "1001": [
               {
                 type: "ads_insights",
                 call_count: 99,
@@ -120,7 +120,7 @@ describe("RateLimiter", () => {
       limiter.updateFromHeaders(
         new Headers({
           "x-business-use-case-usage": JSON.stringify({
-            biz_a: [
+            "1002": [
               {
                 type: "ads_insights",
                 call_count: 40,
@@ -128,7 +128,7 @@ describe("RateLimiter", () => {
                 total_time: 10,
               },
             ],
-            biz_b: [
+            "1003": [
               {
                 type: "ads_management",
                 call_count: 92,
@@ -166,7 +166,7 @@ describe("RateLimiter", () => {
             total_time: 0,
           }),
           "x-business-use-case-usage": JSON.stringify({
-            biz: [{ call_count: 80, total_cputime: 0, total_time: 0 }],
+            "1004": [{ call_count: 80, total_cputime: 0, total_time: 0 }],
           }),
         }),
         ctx,
@@ -227,7 +227,7 @@ describe("RateLimiter", () => {
       limiter.updateFromHeaders(
         new Headers({
           "x-business-use-case-usage": JSON.stringify({
-            biz: [
+            "1005": [
               {
                 type: "ads_management",
                 call_count: 10,
@@ -245,6 +245,36 @@ describe("RateLimiter", () => {
       expect(snap).toHaveLength(1);
       expect(snap[0].adsApiAccessTier).toBe("development_access");
       expect(snap[0].estimatedTimeToRegainAccessMs).toBe(120_000);
+    });
+
+    // What is kept is shown by ads_rate_status and logged: numbers and
+    // id-shaped keys only.
+    it("keeps only numbers and id-shaped keys from the usage headers", () => {
+      const limiter = new RateLimiter();
+      limiter.updateFromHeaders(
+        new Headers({
+          "x-app-usage": JSON.stringify({ call_count: "crm-person-42", total_cputime: 5 }),
+          "x-business-use-case-usage": JSON.stringify({
+            "777": [{ type: "crm-person-42 here", call_count: 3 }],
+            "crm-person-42": [{ type: "ads_management", call_count: 4 }],
+          }),
+        }),
+        { tokenHash: "h", accountId: "act_1" },
+      );
+      const snapshot = limiter.snapshot();
+      expect(JSON.stringify(snapshot)).not.toContain("crm-person-42");
+      expect(snapshot.find((b) => b.kind === "app")?.callCount).toBe(0);
+      expect(snapshot.find((b) => b.kind === "app")?.cpuTime).toBe(5);
+    });
+
+    // The tier is logged, so only Meta's own values are kept.
+    it("keeps only a tier Meta defines", () => {
+      const limiter = new RateLimiter();
+      limiter.updateFromHeaders(
+        new Headers({ "x-ad-account-usage": JSON.stringify({ acc_id_util_pct: 1, ads_api_access_tier: "crm-person-42" }) }),
+        { tokenHash: "h", accountId: "act_1" },
+      );
+      expect(limiter.snapshot()[0].adsApiAccessTier).toBeUndefined();
     });
   });
 });

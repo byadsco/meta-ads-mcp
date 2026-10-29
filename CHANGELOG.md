@@ -9,6 +9,15 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
+- **Three custom audience tools of Meta's official Ads MCP server, under their official names** (159 → 162 tools). Each was measured against the live API first.
+  - `ads_update_custom_audience` ⚠️ renames an audience, changes its description, or replaces the rule of a website, app or engagement audience. A rule sent to a customer list is refused before writing: Meta answers success to it although a list has no events to match (measured). The change counts as made only when Meta answers `success: true`; it is sent once, and an answer that does not say so is reported as uncertain.
+  - `ads_update_custom_audience_users` ⚠️ adds people to a customer list or removes them.
+    - Each value is normalized and SHA-256 hashed on this server before anything reaches Meta: emails, phones with their country code, names, birth date, city, state, zip, country and gender. A value already hashed is kept as it is; the external id and the mobile advertiser id go unhashed, as Meta asks.
+    - Names keep the letters of any script with their marks. Countries must be ISO 3166 codes. With country US, a ZIP code keeps its first five digits and a state becomes its two-letter code, as Meta asks. A mobile advertiser id must be an IDFA or AAID (a UUID).
+    - Values are never logged or returned. A row that cannot be used is left out and reported by its number and field only; when no row can be used, nothing is sent. Meta's error text could quote what was sent, so neither the log nor the answer carries it: only Meta's code and subcode.
+    - The hashes go in the form body, never in a URL. Removal is a `POST` with `method=DELETE`. The request is sent once, so an answer lost on the way is reported as uncertain rather than hidden behind a retry, and so is an answer that does not say how many rows Meta received.
+    - Only customer lists take people: Meta accepts them into a website audience without complaint (measured), so the tool refuses any other kind before sending.
+  - `ads_get_custom_audience_adsets` lists the ad sets of an account that include or exclude an audience. An audience has no ad sets edge and Meta does not filter ad sets by audience (both measured), so the tool reads the account's ad sets with their targeting, up to 4,000, and says when it could not read them all. Ad set names come inside the untrusted-content fence.
 - **Two experiment tools of Meta's official Ads MCP server, under their official names** (157 → 159 tools).
   - `ads_experiment_check_eligibility` checks a planned A/B test or lift study before it is created. It reads only:
     - the account's Business Manager;
@@ -181,6 +190,7 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   with `advantage_creative`, and multi-advertiser ads with
   `multi_advertiser_ads`. `standard_enhancements` is refused locally; Meta
   rejects it in any form since v22.0.
+- **Meta's usage headers keep only numbers and ids.** The rate limiter stores a usage value only when it is a finite number, a business id only when it is numeric, a use-case type only when it is a lowercase name, and an access tier only when it is `development_access` or `standard_access`. Anything else is dropped, so nothing else from a header reaches the log or `ads_rate_status`.
 
 ### Fixed
 

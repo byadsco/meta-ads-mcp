@@ -41,13 +41,15 @@ This server also has tools the official one lacks, among them WhatsApp Business,
 | `ads_boost_ig_post` | `ads_boost_ig_post` | same name |
 | `ads_get_ad_account_custom_audiences` | `ads_get_custom_audiences` | equivalent |
 | `ads_get_custom_audience` | `ads_get_audience_details` | equivalent |
-| `ads_get_custom_audience_adsets` | — | pending (5c) |
+| `ads_get_custom_audience_adsets` | `ads_get_custom_audience_adsets` | same name |
 | `ads_create_custom_audience` | `ads_create_custom_audience` | same name |
-| `ads_update_custom_audience` | — | pending (5c) |
-| `ads_update_custom_audience_users` | — | pending (5c) |
+| `ads_update_custom_audience` | `ads_update_custom_audience` | same name |
+| `ads_update_custom_audience_users` | `ads_update_custom_audience_users` | same name |
 | `ads_delete_custom_audience` | `ads_delete_custom_audience` | same name |
 
 `ads_get_ig_accounts` lists the Instagram accounts linked to an ad account; `ads_get_instagram_account` finds the one linked to a Page.
+
+`ads_update_custom_audience` does not set ad labels: Meta accepts `adlabels` on an audience but cannot read them back (measured on v26.0), so a change could not be confirmed. `ads_get_custom_audience_adsets` reads the account's ad sets with their targeting, because an audience has no ad sets edge and Meta does not filter ad sets by audience (both measured).
 
 ## Comprehensive reporting
 

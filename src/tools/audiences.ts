@@ -1,8 +1,12 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { metaApiClient } from "../meta/client.js";
-import { normalizeAccountId, validateMetaId } from "../utils/format.js";
+import { normalizeAccountId, validateMetaId, validateNumericId } from "../utils/format.js";
 import { buildFieldsParam } from "../utils/validation.js";
+import { wasRefused } from "../meta/errors.js";
+import { readList, scrubbed } from "../meta/read-list.js";
+import { buildCustomerPayload } from "../meta/customer-data.js";
+import { ADVERTISER_CONTENT_CLOSE, ADVERTISER_CONTENT_OPEN, singleLine } from "../utils/single-line.js";
 import { AUDIENCE_DEFAULT_FIELDS } from "../meta/types/audience.js";
 import type { CustomAudience, MetaApiResponse } from "../meta/types/index.js";
 import { READ, CREATE, UPDATE, DELETE, WRITE_WARNING } from "./_register.js";
@@ -373,4 +377,213 @@ export function registerAudienceTools(server: McpServer): void {
       };
     },
   );
+
+  // ─── Update an audience (official name) ───────────────────────
+  server.registerTool(
+    "ads_update_custom_audience",
+    {
+      description:
+        `${WRITE_WARNING}Rename a custom audience, change its description, or replace the rule of a website, app or engagement audience ` +
+        "(the same JSON shape ads_create_custom_audience takes). Customer lists change their members with ads_update_custom_audience_users instead.",
+      inputSchema: {
+        audience_id: z.string().describe("Custom audience ID"),
+        name: z.string().min(1).max(200).optional(),
+        description: z.string().max(1000).optional(),
+        rule: z.record(z.string(), z.unknown()).optional().describe("New rule, replacing the current one"),
+      },
+      annotations: { ...UPDATE },
+    },
+    async ({ audience_id, name, description, rule }) => {
+      const id = validateNumericId(audience_id, "audience_id");
+      if (name === undefined && description === undefined && rule === undefined) {
+        throw new Error("Nothing to change: give name, description or rule.");
+      }
+      const audience = await metaApiClient.get<{ subtype?: string }>(`/${id}`, { fields: "id,name,subtype" });
+      if (rule !== undefined && (audience.subtype === "CUSTOM" || audience.subtype === "LOOKALIKE")) {
+        // Measured: Meta answers success to a rule on a customer list.
+        throw new Error(`A rule applies to website, app and engagement audiences; audience ${id} is ${singleLine(audience.subtype, 30)}.`);
+      }
+      const body: Record<string, string> = {};
+      if (name !== undefined) body.name = name;
+      if (description !== undefined) body.description = description;
+      if (rule !== undefined) body.rule = JSON.stringify(rule);
+      const unconfirmed = (reason: string) =>
+        new Error(`Meta did not confirm the change to audience ${id} (${reason}): it may or may not have gone through. Read it with ads_get_audience_details.`);
+      let answer: { success?: unknown };
+      try {
+        answer = await metaApiClient.postForm<{ success?: unknown }>(`/${id}`, body, { noRetry: true });
+      } catch (err) {
+        if (wasRefused(err)) throw err;
+        throw unconfirmed(why(err));
+      }
+      if (answer?.success === false) throw new Error(`Meta answered that the change to audience ${id} was not applied.`);
+      if (answer?.success !== true) throw unconfirmed("its answer did not say success");
+      const updated = `Audience ${id} updated${rule !== undefined ? ", rule replaced" : ""}.`;
+      let after: { name?: string; description?: string };
+      try {
+        after = scrubbed(await metaApiClient.get<{ name?: string; description?: string }>(`/${id}`, { fields: "name,description" }));
+      } catch (err) {
+        return { content: [{ type: "text", text: `${updated} It could not be read back (${why(err)}); ads_get_audience_details shows it.` }] };
+      }
+      return {
+        content: [{
+          type: "text",
+          text: [
+            updated,
+            ...fence([`Name: ${singleLine(after.name, 200) || "(unnamed)"}`, ...(after.description ? [`Description: ${singleLine(after.description, 400)}`] : [])]),
+          ].join("\n"),
+        }],
+      };
+    },
+  );
+
+  // ─── Ad sets using an audience (official name) ────────────────
+  server.registerTool(
+    "ads_get_custom_audience_adsets",
+    {
+      description:
+        "List the ad sets of an ad account that target a custom audience, and whether each includes or excludes it. " +
+        `Meta has no list for this (measured), so the account's ad sets are read with their targeting, up to ${AUDIENCE_ADSETS_SCAN}; deleted ones are left out as Meta does. ` +
+        "The account is the audience's own unless account_id says otherwise (a shared audience is used in other accounts too). Ad set names come inside an untrusted-content fence.",
+      inputSchema: {
+        audience_id: z.string().describe("Custom audience ID"),
+        account_id: z.string().optional().describe("Ad account whose ad sets to read; by default the audience's own"),
+        limit: z.number().int().min(1).max(200).default(50).describe("Most ad sets to list"),
+      },
+      annotations: { ...READ },
+    },
+    async ({ audience_id, account_id, limit }) => {
+      const id = validateNumericId(audience_id, "audience_id");
+      let account: string;
+      if (account_id !== undefined) {
+        account = normalizeAccountId(account_id);
+      } else {
+        const owner = await metaApiClient.get<{ account_id?: string }>(`/${id}`, { fields: "id,account_id" });
+        if (!owner.account_id || !/^(act_)?\d{1,30}$/.test(owner.account_id)) {
+          throw new Error(`Meta did not say which ad account audience ${id} belongs to; pass account_id.`);
+        }
+        account = normalizeAccountId(owner.account_id);
+      }
+
+      const { items, complete } = await readList<{
+        id?: string; name?: string; campaign_id?: string; effective_status?: string;
+        targeting?: { custom_audiences?: Array<{ id?: string }>; excluded_custom_audiences?: Array<{ id?: string }> };
+      }>(
+        `/${account}/adsets`,
+        { fields: "id,name,campaign_id,effective_status,targeting{custom_audiences,excluded_custom_audiences}", limit: 200 },
+        AUDIENCE_ADSETS_SCAN,
+      );
+      const using = items
+        .map((a) => ({
+          adset: a,
+          use: (a.targeting?.custom_audiences ?? []).some((c) => c.id === id)
+            ? "includes"
+            : (a.targeting?.excluded_custom_audiences ?? []).some((c) => c.id === id) ? "excludes" : undefined,
+        }))
+        .filter((u): u is { adset: typeof u.adset; use: "includes" | "excludes" } => u.use !== undefined);
+      const shown = using.slice(0, limit);
+      const includes = using.filter((u) => u.use === "includes").length;
+      const lines = [
+        `${using.length} ad set${using.length === 1 ? "" : "s"} of ${account} use audience ${id}: ${includes} include${includes === 1 ? "s" : ""} it, ` +
+          `${using.length - includes} exclude${using.length - includes === 1 ? "s" : ""} it (${items.length} ad sets read).`,
+        ...(using.length > limit ? [`${using.length - limit} more not listed; raise limit to see them.`] : []),
+        ...(complete ? [] : ["The account's ad sets could not all be read, so more may use it."]),
+        ...(shown.length
+          ? fence(shown.map(({ adset, use }) =>
+            `• ${singleLine(adset.name, 100) || "(unnamed)"} — ad_set_id ${singleLine(adset.id, 30)} — ${singleLine(adset.effective_status, 30) || "status unknown"}` +
+            ` — campaign_id ${singleLine(adset.campaign_id, 30)} — ${use}`))
+          : []),
+      ];
+      return { content: [{ type: "text", text: lines.join("\n") }] };
+    },
+  );
+
+  // ─── Add or remove customer-list users (official name) ───────
+  server.registerTool(
+    "ads_update_custom_audience_users",
+    {
+      description:
+        `${WRITE_WARNING}Add people to a customer-list audience, or remove them, from their email, phone, name, birth date, location, gender, ` +
+        "external id or mobile advertiser id. Each value is normalized and SHA-256 hashed on this server, the way Meta's customer-file guide " +
+        "asks, before anything reaches Meta; values that already are SHA-256 hashes are kept as they are, which is the safest way to send them. " +
+        "Values are never logged or returned: a row that cannot be used is reported by its number and field only. " +
+        "Phones need their country code; with country US, a ZIP code keeps its first five digits and a state becomes its two-letter code. " +
+        `Up to ${MAX_USERS} rows per call. Only for customer-list (CUSTOM) audiences.`,
+      inputSchema: {
+        audience_id: z.string().describe("Customer-list audience ID"),
+        action: z.enum(["add", "remove"]),
+        users: z
+          .array(z.object({
+            email: z.string().max(320).optional(),
+            phone: z.string().max(64).optional(),
+            first_name: z.string().max(100).optional(),
+            last_name: z.string().max(100).optional(),
+            first_initial: z.string().max(64).optional(),
+            gender: z.string().max(64).optional().describe("m or f"),
+            birth_year: z.string().max(64).optional(),
+            birth_month: z.string().max(64).optional(),
+            birth_day: z.string().max(64).optional(),
+            city: z.string().max(100).optional(),
+            state: z.string().max(100).optional().describe("A US state as its name or two-letter code, with country US"),
+            zip: z.string().max(64).optional(),
+            country: z.string().max(64).optional().describe("Two-letter ISO 3166 code"),
+            external_id: z.string().max(256).optional().describe("The advertiser's own id for the person; sent unhashed, as Meta asks"),
+            mobile_advertiser_id: z.string().max(64).optional().describe("Device advertising id; sent unhashed, as Meta asks"),
+          }))
+          .min(1)
+          .max(MAX_USERS),
+      },
+      annotations: { ...DELETE },
+    },
+    async ({ audience_id, action, users }) => {
+      const id = validateNumericId(audience_id, "audience_id");
+      const audience = await metaApiClient.get<{ subtype?: string }>(`/${id}`, { fields: "id,subtype" });
+      if (audience.subtype !== "CUSTOM") {
+        // Measured: Meta accepts users into a website audience without complaint.
+        throw new Error(`Audience ${id} is not a customer list (it is ${singleLine(audience.subtype, 30) || "of unknown type"}); people are added only to customer-list audiences.`);
+      }
+      const { schema, data, rejected } = buildCustomerPayload(users);
+      const rejectedLines = rejected.slice(0, MAX_REJECTED_SHOWN).map((r) => `row ${r.row}: ${r.reason}`);
+      const moreRejected = rejected.length > MAX_REJECTED_SHOWN ? [`and ${rejected.length - MAX_REJECTED_SHOWN} more rows`] : [];
+      if (data.length === 0) throw new Error(`No row could be used: ${[...rejectedLines, ...moreRejected].join("; ")}.`);
+
+      // The hashes go in the form body, never in a URL; removal is a POST
+      // with method=DELETE, which Meta takes (measured). Meta's error text
+      // could quote what was sent, so only its code comes back.
+      const body: Record<string, string> = { payload: JSON.stringify({ schema, data }) };
+      if (action === "remove") body.method = "DELETE";
+      const what = action === "add" ? "addition" : "removal";
+      const unconfirmed = (reason: string) => new Error(`Meta did not confirm the ${what} (${reason}): it may or may not have been applied.`);
+      let result: unknown;
+      try {
+        result = await metaApiClient.postForm<unknown>(`/${id}/users`, body, { noRetry: true, withholdMessage: true });
+      } catch (err) {
+        if (wasRefused(err)) throw new Error(`Meta refused the ${what} (${why(err)}).`);
+        throw unconfirmed(why(err));
+      }
+      const answer = result && typeof result === "object" ? (result as { num_received?: unknown; num_invalid_entries?: unknown }) : {};
+      if (typeof answer.num_received !== "number") throw unconfirmed("its answer did not say how many rows it received");
+      const received = answer.num_received;
+      const invalid = typeof answer.num_invalid_entries === "number" ? answer.num_invalid_entries : undefined;
+      const lines = [
+        `Sent ${data.length} row${data.length === 1 ? "" : "s"} to ${action === "add" ? "add to" : "remove from"} audience ${id} (fields ${schema.join(", ")}): ` +
+          `Meta received ${received}, and could not use ${invalid ?? "?"}.`,
+        ...(rejected.length
+          ? [`${rejected.length} row${rejected.length === 1 ? " was" : "s were"} not sent: ${[...rejectedLines, ...moreRejected].join("; ")}.`]
+          : []),
+        "Meta updates the audience's size over the next hours.",
+      ];
+      return { content: [{ type: "text", text: lines.join("\n") }] };
+    },
+  );
 }
+
+// Ad sets read per call to ads_get_custom_audience_adsets.
+const AUDIENCE_ADSETS_SCAN = 4000;
+// Meta takes up to 10,000 rows per request to /{audience_id}/users.
+const MAX_USERS = 10_000;
+const MAX_REJECTED_SHOWN = 20;
+const fence = (lines: string[]) => [ADVERTISER_CONTENT_OPEN, ...lines, ADVERTISER_CONTENT_CLOSE];
+// Meta's error can quote the hashed entries it rejected; those stay out.
+const why = (err: unknown) =>
+  singleLine((err instanceof Error ? err.message : String(err)).replace(/\b[0-9a-f]{64}\b/gi, "[hash]"), 240);
