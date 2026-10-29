@@ -318,6 +318,87 @@ describe("MetaApiClient", () => {
     });
   });
 
+  describe("calls sent once (noRetry)", () => {
+    it("sends the call once, even on a transient error", async () => {
+      const retryClient = new MetaApiClient({ maxRetries: 3, timeout: 5000 });
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockFetchResponse({ error: { message: "Server error", type: "API_ERROR", code: 1 } })));
+
+      await expect(retryClient.postForm("/8001/users", { payload: "{}" }, { noRetry: true })).rejects.toThrow();
+      expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // A request that carries personal data: Meta's error text can quote what was
+  // sent, so neither the log nor the error carries it.
+  describe("calls whose error text is withheld (withholdMessage)", () => {
+    const quoting = () => mockFetchResponse({
+      error: {
+        message: "Invalid EXTERN_ID: crm-person-42", type: "OAuthException", code: 100, error_subcode: 1870034,
+        error_user_title: "Bad crm-person-42", error_user_msg: "Entry crm-person-42 is invalid", fbtrace_id: "crm-person-42",
+      },
+    }, { status: 400 });
+
+    it("returns Meta's code and subcode without its text", async () => {
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(quoting()));
+
+      const error = await client.postForm("/8001/users", { payload: "{}" }, { withholdMessage: true }).catch((e: Error) => e);
+
+      expect(String(error)).toContain("code 100");
+      expect(String(error)).toContain("1870034");
+      expect(String(error)).not.toContain("crm-person-42");
+    });
+
+    it("logs Meta's code without its text", async () => {
+      const spies = (["warn", "error", "fatal", "info"] as const).map((level) => vi.spyOn(logger, level));
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(quoting()));
+
+      await client.postForm("/8001/users", { payload: "{}" }, { withholdMessage: true }).catch(() => undefined);
+
+      const logged = JSON.stringify(spies.flatMap((s) => s.mock.calls));
+      expect(logged).toContain("1870034");
+      expect(logged).not.toContain("crm-person-42");
+    });
+
+    it("does not copy Meta's version notice into the log", async () => {
+      const warn = vi.spyOn(logger, "warn");
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockFetchResponse({ num_received: 1 }, {
+        headers: { "X-Ad-Api-Version-Warning": "auto-upgraded; entry crm-person-42" },
+      })));
+
+      await client.postForm("/8001/users", { payload: "{}" }, { withholdMessage: true });
+
+      expect(JSON.stringify(warn.mock.calls)).not.toContain("crm-person-42");
+    });
+
+    // The JSON parser's message quotes the start of the body it could not read.
+    it("withholds an answer that is not JSON", async () => {
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("crm-person-42 is invalid", { status: 400 })));
+
+      const error = await client.postForm("/8001/users", { payload: "{}" }, { withholdMessage: true }).catch((e: Error) => e);
+
+      expect(String(error)).toContain("withheld");
+      expect(String(error)).not.toContain("crm-person-42");
+    });
+
+    it("withholds a transport error's text", async () => {
+      vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("socket closed while sending crm-person-42")));
+
+      const error = await client.postForm("/8001/users", { payload: "{}" }, { withholdMessage: true }).catch((e: Error) => e);
+
+      expect(String(error)).toContain("TypeError");
+      expect(String(error)).not.toContain("crm-person-42");
+    });
+
+    it("withholds the body of an answer that is not a Meta error", async () => {
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockFetchResponse({ detail: "crm-person-42" }, { status: 400 })));
+
+      const error = await client.postForm("/8001/users", { payload: "{}" }, { withholdMessage: true }).catch((e: Error) => e);
+
+      expect(String(error)).toContain("HTTP 400");
+      expect(String(error)).not.toContain("crm-person-42");
+    });
+  });
+
   describe("bounded calls (timeoutMs)", () => {
     it("never retries a bounded call, even on a transient error", async () => {
       const retryClient = new MetaApiClient({ maxRetries: 3, timeout: 5000 });

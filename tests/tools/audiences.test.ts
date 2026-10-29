@@ -39,10 +39,10 @@ describe("registerAudienceTools", () => {
     vi.restoreAllMocks();
   });
 
-  it("registers exactly 8 tools", () => {
+  it("registers exactly 11 tools", () => {
     const server = createMockMcpServer();
     registerAudienceTools(server as never);
-    expect(server.registerTool).toHaveBeenCalledTimes(8);
+    expect(server.registerTool).toHaveBeenCalledTimes(11);
   });
 
   it("registers tools with expected names", () => {
@@ -59,6 +59,9 @@ describe("registerAudienceTools", () => {
       "ads_unshare_custom_audience",
       "ads_get_audience_shared_accounts",
       "ads_delete_custom_audience",
+      "ads_update_custom_audience",
+      "ads_get_custom_audience_adsets",
+      "ads_update_custom_audience_users",
     ]);
   });
 

@@ -26,6 +26,12 @@ export interface UsageBucket {
   updatedAt: number;
 }
 
+// What the headers carry is logged and shown by ads_rate_status, so only
+// numbers, id-shaped keys and Meta's own tier values are kept.
+const num = (value: unknown): number => (typeof value === "number" && Number.isFinite(value) ? value : 0);
+const knownTier = (tier: unknown): "development_access" | "standard_access" | undefined =>
+  tier === "development_access" || tier === "standard_access" ? tier : undefined;
+
 interface BucUsageEntry {
   type?: string;
   call_count?: number;
@@ -82,9 +88,9 @@ export class RateLimiter {
         this.writeBucket({
           kind: "app",
           key: bucketKey("app", context.tokenHash),
-          callCount: parsed.call_count ?? 0,
-          cpuTime: parsed.total_cputime ?? 0,
-          totalTime: parsed.total_time ?? 0,
+          callCount: num(parsed.call_count),
+          cpuTime: num(parsed.total_cputime),
+          totalTime: num(parsed.total_time),
           estimatedTimeToRegainAccessMs: 0,
           updatedAt: now,
         });
@@ -97,17 +103,19 @@ export class RateLimiter {
       const parsed = safeParse<Record<string, BucUsageEntry[]>>(buc);
       if (parsed) {
         for (const [businessId, entries] of Object.entries(parsed)) {
+          if (!/^(act_)?\d{1,30}$/.test(businessId) || !Array.isArray(entries)) continue;
           for (const entry of entries) {
-            const type = entry.type ?? "unknown";
+            if (!entry || typeof entry !== "object") continue;
+            const type = typeof entry.type === "string" && /^[a-z_]{1,40}$/.test(entry.type) ? entry.type : "unknown";
             this.writeBucket({
               kind: "buc",
               key: bucketKey("buc", context.tokenHash, businessId, type),
-              callCount: entry.call_count ?? 0,
-              cpuTime: entry.total_cputime ?? 0,
-              totalTime: entry.total_time ?? 0,
+              callCount: num(entry.call_count),
+              cpuTime: num(entry.total_cputime),
+              totalTime: num(entry.total_time),
               estimatedTimeToRegainAccessMs:
-                (entry.estimated_time_to_regain_access ?? 0) * 60 * 1000,
-              adsApiAccessTier: entry.ads_api_access_tier,
+                num(entry.estimated_time_to_regain_access) * 60 * 1000,
+              adsApiAccessTier: knownTier(entry.ads_api_access_tier),
               updatedAt: now,
             });
           }
@@ -124,11 +132,11 @@ export class RateLimiter {
         this.writeBucket({
           kind: "insights",
           key: bucketKey("insights", context.tokenHash, "app"),
-          callCount: parsed.app_id_util_pct ?? 0,
+          callCount: num(parsed.app_id_util_pct),
           cpuTime: 0,
           totalTime: 0,
           estimatedTimeToRegainAccessMs: 0,
-          adsApiAccessTier: parsed.ads_api_access_tier,
+          adsApiAccessTier: knownTier(parsed.ads_api_access_tier),
           updatedAt: now,
         });
         // Account-scoped portion
@@ -141,11 +149,11 @@ export class RateLimiter {
               "acc",
               context.accountId,
             ),
-            callCount: parsed.acc_id_util_pct ?? 0,
+            callCount: num(parsed.acc_id_util_pct),
             cpuTime: 0,
             totalTime: 0,
             estimatedTimeToRegainAccessMs: 0,
-            adsApiAccessTier: parsed.ads_api_access_tier,
+            adsApiAccessTier: knownTier(parsed.ads_api_access_tier),
             updatedAt: now,
           });
         }
@@ -160,12 +168,12 @@ export class RateLimiter {
         this.writeBucket({
           kind: "acc",
           key: bucketKey("acc", context.tokenHash, context.accountId),
-          callCount: parsed.acc_id_util_pct ?? 0,
+          callCount: num(parsed.acc_id_util_pct),
           cpuTime: 0,
           totalTime: 0,
           estimatedTimeToRegainAccessMs:
-            (parsed.reset_time_duration ?? 0) * 1000,
-          adsApiAccessTier: parsed.ads_api_access_tier,
+            num(parsed.reset_time_duration) * 1000,
+          adsApiAccessTier: knownTier(parsed.ads_api_access_tier),
           updatedAt: now,
         });
       }
@@ -179,10 +187,10 @@ export class RateLimiter {
         this.writeBucket({
           kind: "reach",
           key: bucketKey("reach", context.tokenHash, context.accountId),
-          callCount: parsed.call_count ?? 0,
+          callCount: num(parsed.call_count),
           cpuTime: 0,
           totalTime: 0,
-          estimatedTimeToRegainAccessMs: (parsed.reset_time_duration ?? 0) * 1000,
+          estimatedTimeToRegainAccessMs: num(parsed.reset_time_duration) * 1000,
           updatedAt: now,
         });
       }

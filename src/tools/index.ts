@@ -71,7 +71,7 @@ export function registerAllTools(server: McpServer): void {
 
   // ─── Extended Features ──────────────────────────────────
   registerLeadTools(server);         // 4 tools — Lead forms & lead download
-  registerAudienceTools(server);     // 8 tools — Custom & lookalike audiences (+ share/unshare/get-shared-accounts)
+  registerAudienceTools(server);     // 11 tools — Custom & lookalike audiences (+ share/unshare/get-shared-accounts, update, customer-list users, ad sets using one)
   registerPreviewTools(server);      // 2 tools — Ad preview links
   registerPixelTools(server);        // 5 tools — Pixel & events manager
   registerCommentTools(server);      // 4 tools — Ad comment moderation
@@ -114,5 +114,5 @@ export function registerAllTools(server: McpServer): void {
   // ─── Token Management ────────────────────────────────────
   registerTokenTools(server);        // 4 tools — list / set-active / register / delete
 
-  // Total: 159 tools (79 renamed + 14 new in v3 + 3 audience-sharing + 1 invoices + 27 WhatsApp + 1 url-tags + 1 bulk video ads + 1 creative media + 9 Ad Library/Apify + 1 video media + 1 video analysis + 3 Gemini key mgmt + 1 ad dossier + 1 ad content editor + 2 social proof + 4 Business Manager access + 1 locale search + 7 official-parity tools + 2 experiment tools)
+  // Total: 162 tools (79 renamed + 14 new in v3 + 3 audience-sharing + 1 invoices + 27 WhatsApp + 1 url-tags + 1 bulk video ads + 1 creative media + 9 Ad Library/Apify + 1 video media + 1 video analysis + 3 Gemini key mgmt + 1 ad dossier + 1 ad content editor + 2 social proof + 4 Business Manager access + 1 locale search + 7 official-parity tools + 2 experiment tools + 3 audience tools)
 }

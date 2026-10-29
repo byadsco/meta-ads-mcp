@@ -17,7 +17,7 @@
 - [Who is this for?](#who-is-this-for)
 - [Aligned with Meta's official MCP](#aligned-with-metas-official-mcp)
 - [Features](#features)
-- [Tools (159 total)](#tools-159-total)
+- [Tools (162 total)](#tools-162-total)
 - [Quick start](#quick-start)
 - [Authentication — three modes](#authentication--three-modes)
 - [Setting up Sign in with Meta](#setting-up-sign-in-with-meta)
@@ -62,7 +62,7 @@ both servers.
 | | Meta's official MCP (`mcp.facebook.com/ads`) | This project |
 |---|---|---|
 | Auth model | Per-user OAuth in your AI client | **Multi-tenant**: agency operator handles N client accounts from one server |
-| Tool surface | 29 tools (campaigns, ads, catalogs, 5 insight views, opportunity_score, dataset, errors, help) | **159 tools** including the official 29-equivalent + audiences, lookalikes, lead forms, automated rules, A/B studies, async reports, billing invoices, custom conversions, asset uploads, comment moderation, cross-account macros, and full WhatsApp Business management (templates, phone numbers, flows, QR codes) |
+| Tool surface | 29 tools (campaigns, ads, catalogs, 5 insight views, opportunity_score, dataset, errors, help) | **162 tools** including the official 29-equivalent + audiences, lookalikes, lead forms, automated rules, A/B studies, async reports, billing invoices, custom conversions, asset uploads, comment moderation, cross-account macros, and full WhatsApp Business management (templates, phone numbers, flows, QR codes) |
 | Hosting | Hosted by Meta | Self-hosted on Cloud Run / your infra; tokens encrypted at rest in Firestore |
 | Cross-account | Per-user, single Meta login | Yes — `ads_portfolio_summary` aggregates across N accounts |
 | Token control | Lives in your AI client | Server-side System User token registry per agency operator |
@@ -78,7 +78,7 @@ When to use which:
 
 ## Features
 
-- **159 tools** covering campaign management, creatives, targeting, audiences, reporting, comments, billing, invoices, tokens, Instagram workflows, WhatsApp Business management, rate-limit observability, semantic insight views, diagnostics, help-center search, competitor research via the public Meta Ad Library (full ad cards with their images and videos), video analysis (keyframes or the MP4 itself for video-capable models), and agency-tier cross-account macros.
+- **162 tools** covering campaign management, creatives, targeting, audiences, reporting, comments, billing, invoices, tokens, Instagram workflows, WhatsApp Business management, rate-limit observability, semantic insight views, diagnostics, help-center search, competitor research via the public Meta Ad Library (full ad cards with their images and videos), video analysis (keyframes or the MP4 itself for video-capable models), and agency-tier cross-account macros.
 - **Aligned vocabulary** with Meta's official MCP server so agents transfer cleanly between both.
 - **Sign in with Meta (Facebook Login)** — replaces shared PINs. Each user lands their own long-lived (60-day) Meta token.
 - **System User token registry** — for tokens that don't expire, register them per user from the consent UI.
@@ -94,7 +94,7 @@ When to use which:
 - **Async reports with safe polling** — `ads_run_report_and_wait` one-shot with 5 s-min / 60 s-max backoff, proper `Job Failed` / `Job Skipped` handling.
 - **Retry logic** — exponential backoff on truly transient errors only (never on throttled requests).
 
-## Tools (159 total)
+## Tools (162 total)
 
 Ads tools use the `ads_*` naming convention, aligned with Meta's official MCP server; WhatsApp Business tools use `whatsapp_*`. Read tools declare `readOnlyHint: true`; mutating tools declare `destructiveHint` / `idempotentHint` and prefix descriptions with a `⚠️` warning.
 
@@ -115,7 +115,7 @@ Ads tools use the `ads_*` naming convention, aligned with Meta's official MCP se
 | Targeting | 8 | Interest / behavior / demographic / geo / locale search, audience estimation, targeting description |
 | Budget | 1 | Budget schedule management |
 | Leads | 4 | Lead forms and lead retrieval |
-| Audiences | 8 | Custom audiences, lookalikes, and cross-account sharing |
+| Audiences | 11 | Custom audiences, lookalikes, cross-account sharing, customer-list members (hashed on the server) and the ad sets that use an audience |
 | Previews | 2 | Ad previews before launch |
 | Pixels | 5 | Pixel details, events, custom conversions |
 | Comments | 4 | Ad comment moderation |
@@ -264,7 +264,7 @@ lines, so an analysis cannot forge the structure around it.
 
 ## Skills and MCP protocol surface
 
-An agent connecting to this server does not have to work out which of 159 tools
+An agent connecting to this server does not have to work out which of 162 tools
 answers a question. The server ships four **skills** and exposes them three
 ways.
 
@@ -278,7 +278,7 @@ them without any local installation:
 | `meta-ads://skills/meta-ads-video-analysis` | Which video delivery your model can ingest, how to read a hook and a retention curve |
 | `meta-ads://skills/meta-ads-competitor-research` | The Ad Library scrape-poll-read sequence, its cost, and how to read a scraped record |
 
-The guide carries three references of its own: a map of all 159 tools by intent
+The guide carries three references of its own: a map of all 162 tools by intent
 with the write tools marked, the call sequences for the recurring jobs, and a
 safety-and-costs page.
 
@@ -507,6 +507,9 @@ A typical agency workflow: build a CRM-derived seed audience, expand it into a l
 | `ads_unshare_custom_audience` | [src/tools/audiences.ts](src/tools/audiences.ts) | Revoke the share from one or more ad accounts. |
 | `ads_get_audience_shared_accounts` | [src/tools/audiences.ts](src/tools/audiences.ts) | List which ad accounts currently have shared access to an audience. |
 | `ads_delete_custom_audience` | [src/tools/audiences.ts](src/tools/audiences.ts) | Permanent delete; cannot be undone. |
+| `ads_update_custom_audience` | [src/tools/audiences.ts](src/tools/audiences.ts) | Rename, redescribe, or replace the rule of a website, app or engagement audience. |
+| `ads_update_custom_audience_users` | [src/tools/audiences.ts](src/tools/audiences.ts) | Add or remove customer-list members; values are normalized and SHA-256 hashed on the server. |
+| `ads_get_custom_audience_adsets` | [src/tools/audiences.ts](src/tools/audiences.ts) | Which ad sets of the account include or exclude an audience. |
 | `ads_estimate_audience_size` | [src/tools/targeting.ts](src/tools/targeting.ts) | Get reach estimate before pushing the audience to an ad set. |
 | `ads_update_ad_set` | [src/tools/adsets.ts](src/tools/adsets.ts) | **Apply** the audience by writing to `targeting.custom_audiences`. |
 
@@ -525,7 +528,7 @@ The MCP `tools/call` payload for an end-to-end run:
     } } }
 ```
 
-Returns an audience id (e.g. `23842000000000000`). Then upload hashed PII via the customer-list endpoint (separate flow — Meta requires SHA-256 of normalized email / phone), and build the lookalike:
+Returns an audience id (e.g. `23842000000000000`). Then add the customers with `ads_update_custom_audience_users`, which normalizes and SHA-256 hashes each value on the server before it reaches Meta, and build the lookalike:
 
 ```json
 { "jsonrpc": "2.0", "id": 2, "method": "tools/call",

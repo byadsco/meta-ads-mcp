@@ -1,6 +1,6 @@
 # Tool map
 
-Every tool this server registers, grouped by what you are trying to do. 159 in total; 90 are read-only.
+Every tool this server registers, grouped by what you are trying to do. 162 in total; 91 are read-only.
 
 A ⚠️ marks a tool that changes live data, spends money or touches stored credentials. Read the tool's own description before calling one: it carries the argument rules this map deliberately leaves out.
 
@@ -115,6 +115,9 @@ A ⚠️ marks a tool that changes live data, spends money or touches stored cre
 - `ads_unshare_custom_audience` ⚠️ — Stop sharing an audience with an account.
 - `ads_get_audience_shared_accounts` — Which accounts an audience is shared with.
 - `ads_delete_custom_audience` ⚠️ — Delete a custom or lookalike audience, and any ad sets stop using it.
+- `ads_update_custom_audience` ⚠️ — Rename an audience, change its description, or replace the rule of a website, app or engagement audience.
+- `ads_get_custom_audience_adsets` — Which ad sets of the account include or exclude an audience.
+- `ads_update_custom_audience_users` ⚠️ — Add people to a customer list or remove them; values are normalized and SHA-256 hashed on the server and never returned.
 
 ## Budget and billing
 

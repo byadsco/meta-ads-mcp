@@ -259,6 +259,24 @@ Measured with paused campaigns and ad sets, and studies scheduled a week ahead, 
   - Before the start, `cells: [{ id, treatment_percentage }, …, { name, treatment_percentage, adsets }]` changed the split to 34/33/33 and added a cell.
 - **Deleting.** `DELETE /{study_id}` on a study that has not started answers `{ success: true }`, and the study can no longer be read. Meta documents that the start and the split of a running study cannot change, and that its end can only move to a time in the future.
 
+## Custom audiences (measured 2026-10-28)
+
+Measured with a customer-list audience, a website audience and paused ad sets, all deleted afterwards. Only fictional people were sent (`@example.com` addresses, 555 numbers).
+
+- **Customer list.** `POST /act_{id}/customaudiences` with `subtype: CUSTOM` and `customer_file_source: USER_PROVIDED_ONLY` creates one.
+- **Changing an audience.** `POST /{audience_id}` with `name` or `description` answers `{ success: true }`. A new `rule` on a website audience is applied and reads back.
+- **What Meta does not check.**
+  - A `rule` sent to a customer list answers `{ success: true }`, though a list has no events to match.
+  - People sent to a website audience are accepted, with the same answer a customer list gets.
+- **Labels.** `adlabels` on an audience is accepted but cannot be read: "Tried accessing nonexisting field (adlabels)".
+- **Adding people.** `POST /{audience_id}/users` with `payload = { schema: [...], data: [[...], ...] }`, every value SHA-256 hashed after normalizing, answers `{ audience_id, session_id, num_received, num_invalid_entries, invalid_entry_samples }`. Several keys per row (`EMAIL`, `PHONE`, …) work, and so does a `session` for large uploads.
+- **Removing people.** The same payload, sent as `POST /{audience_id}/users` with `method=DELETE`, or as `DELETE` with the payload in the form body. Both answer like an addition.
+- **Ad sets using an audience.**
+  - `/{audience_id}/adsets` does not exist.
+  - `GET /act_{id}/adsets?fields=targeting{custom_audiences,excluded_custom_audiences}` gives each ad set's audiences as `{ id, name }`.
+  - Filtering ad sets on `targeting.custom_audiences` is refused: "Filtering field 'targeting.custom_audiences' is not supported".
+- **Deleting an audience in use.** Deleting an audience that a paused ad set targets succeeds.
+
 ## Lead forms
 
 - `GET` and `POST /{page_id}/leadgen_forms` answer only to a Page token: a user token gets `(#190) This method must be called with a Page Access Token`.
