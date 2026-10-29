@@ -847,7 +847,7 @@ Decrypt all tokens with the current key, set the new key, re-encrypt, deploy. Th
 For local dev / single-user, yes — set `META_ACCESS_TOKEN` and use `npm run dev:stdio`. For multi-tenant HTTP you really want Firestore (or any persistent store you wire in); the in-memory fallback exists only so dev environments don't die.
 
 **API key vs Meta OAuth — when do I use which?**
-OAuth is for human users with a browser (Claude Desktop, Claude Web, Cursor users). API key + `X-Meta-Token` header is for server-to-server agents that can't open a browser tab. They can coexist on the same deployment.
+OAuth is for human users with a browser (Claude Desktop, Claude Web, Cursor users). API key + `X-Meta-Token` header is for server-to-server agents that can't open a browser tab. They can coexist on the same deployment. An OAuth user who also sends `X-Meta-Token` has Meta calls made with that token, while the request keeps the user's identity: the token tools, Apify and Gemini keys stay the user's own.
 
 **How do I add a new tool?**
 Full walkthrough in [docs/adding-a-tool.md](docs/adding-a-tool.md). The short version: create a `register*Tools(server)` module under [src/tools/](src/tools/), call `server.registerTool(name, { description, inputSchema, annotations }, handler)` with the `ads_*` naming convention, and route every Graph API call through `metaApiClient` ([src/meta/client.ts](src/meta/client.ts)) — never `fetch` directly. The shared client is what gives every tool bucketed rate-limiting, circuit breaking, write pacing, multi-tenant token resolution, and Meta-error → `McpError` classification for free. The smallest end-to-end example in the codebase is [src/tools/budget.ts](src/tools/budget.ts):
