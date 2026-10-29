@@ -9,6 +9,13 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Security
 
+- **An OAuth code could be issued without signing in with Meta.**
+  - **The gap.** The SDK answers every path under `/authorize`, while the session check (Meta login and the email allowlist) matched only `/authorize` and `/authorize/`. A request to `/authorize//` reached the SDK unchecked and got a code naming no user. A request with that bearer then ran on the server's own Meta token (the registered tokens or `META_ACCESS_TOKEN`).
+  - **Now three checks close it:**
+    - any other path under `/authorize` answers 404;
+    - in multi-tenant mode the OAuth provider issues no code without a signed-in user (`access_denied`), exchanges no code or refresh token that names none, and accepts no access token that names none, so credentials issued that way earlier stop working;
+    - `/mcp` refuses an OAuth bearer that names no user instead of falling back to the server's token.
+- **The `X-Meta-Token` header dropped the OAuth user's identity.** A request carrying it kept only the token, so the token tools (`ads_list_tokens`, `ads_register_token`, `ads_set_active_token`) fell back to the process-wide token registry that every tenant shares. Any signed-in user could list its names, register a token under any name, and switch the active one, which is the token `MCP_API_KEY` callers use. The request now keeps the OAuth user's identity next to the header's token. An API-key caller has no OAuth identity and behaves as before.
 - **`ads_rate_status` showed every tenant's state.** One server process serves every tenant, and the tool returned the whole process's rate-limit usage, open circuits and write-pacer buckets. A tenant could see other tenants' ad account and business ids and the last error text of their circuits. It now shows only the state of the token in use.
 
 ### Added

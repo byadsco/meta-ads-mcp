@@ -7,6 +7,7 @@ import {
 } from "../../src/auth/oauth-provider.js";
 import type { OAuthClientInformationFull } from "@modelcontextprotocol/sdk/shared/auth.js";
 import {
+  AccessDeniedError,
   InvalidGrantError,
   InvalidTokenError,
 } from "@modelcontextprotocol/sdk/server/auth/errors.js";
@@ -40,6 +41,69 @@ describe("MetaAdsOAuthProvider", () => {
     if (original === undefined) delete process.env.OAUTH_SECRET;
     else process.env.OAUTH_SECRET = original;
     resetOAuthProviderForTests();
+  });
+
+  // In multi-tenant mode a code is only issued to a signed-in, allowed Meta
+  // user. Without one, the bearer would carry no tenant and fall back to the
+  // server's own token.
+  it("issues no code without a signed-in user when identity is required", async () => {
+    oauthProvider.configure({ requireIdentity: true, resolvePendingAuth: () => null });
+    const res = fakeRes();
+
+    await expect(oauthProvider.authorize(
+      fakeClient,
+      { codeChallenge: "ch", codeChallengeMethod: "S256", redirectUri: "https://example.com/cb", scopes: [] },
+      res,
+    )).rejects.toBeInstanceOf(AccessDeniedError);
+    expect(res.redirect).not.toHaveBeenCalled();
+  });
+
+  // A code, refresh token or access token issued without a user (before the
+  // fix) must not keep working once identity is required.
+  describe("credentials issued without a user, once identity is required", () => {
+    async function anonymousCode(): Promise<string> {
+      oauthProvider.configure({ requireIdentity: false, resolvePendingAuth: () => null });
+      const res = fakeRes();
+      await oauthProvider.authorize(
+        fakeClient,
+        { codeChallenge: "ch", codeChallengeMethod: "S256", redirectUri: "https://example.com/cb", scopes: [] },
+        res,
+      );
+      return new URL((res.redirect as never as ReturnType<typeof vi.fn>).mock.calls[0][1] as string).searchParams.get("code")!;
+    }
+
+    it("refuses to exchange a code", async () => {
+      const code = await anonymousCode();
+      oauthProvider.configure({ requireIdentity: true });
+      await expect(oauthProvider.exchangeAuthorizationCode(fakeClient, code)).rejects.toBeInstanceOf(InvalidGrantError);
+    });
+
+    it("refuses to refresh", async () => {
+      const tokens = await oauthProvider.exchangeAuthorizationCode(fakeClient, await anonymousCode());
+      oauthProvider.configure({ requireIdentity: true });
+      await expect(oauthProvider.exchangeRefreshToken(fakeClient, tokens.refresh_token!)).rejects.toBeInstanceOf(InvalidGrantError);
+    });
+
+    it("refuses an access token", async () => {
+      const tokens = await oauthProvider.exchangeAuthorizationCode(fakeClient, await anonymousCode());
+      oauthProvider.configure({ requireIdentity: true });
+      await expect(oauthProvider.verifyAccessToken(tokens.access_token)).rejects.toBeInstanceOf(InvalidTokenError);
+    });
+  });
+
+  it("still issues a code to a signed-in user when identity is required", async () => {
+    oauthProvider.configure({ requireIdentity: true, resolvePendingAuth: () => ({ fbUserId: "fb-1234" }) });
+    const res = fakeRes();
+
+    await oauthProvider.authorize(
+      fakeClient,
+      { codeChallenge: "ch", codeChallengeMethod: "S256", redirectUri: "https://example.com/cb", scopes: [] },
+      res,
+    );
+
+    const code = new URL((res.redirect as never as ReturnType<typeof vi.fn>).mock.calls[0][1] as string).searchParams.get("code");
+    const tokens = await oauthProvider.exchangeAuthorizationCode(fakeClient, code!);
+    expect(((await oauthProvider.verifyAccessToken(tokens.access_token)).extra as { fbUserId?: string }).fbUserId).toBe("fb-1234");
   });
 
   it("issues a code that can be exchanged for tokens including fb_user_id (and never the token name)", async () => {

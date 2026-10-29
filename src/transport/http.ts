@@ -326,22 +326,49 @@ function createCombinedAuthMiddleware(
   };
 }
 
-function buildMetaTokenMiddleware(
+/**
+ * The SDK answers every path under /authorize (`router.use`), while the
+ * session checks below match only /authorize and /authorize/. Anything else
+ * there, such as /authorize//, would reach the SDK without a signed-in user.
+ */
+export const onlyExactAuthorizePath: express.RequestHandler = (req, res, next) => {
+  if (req.path === "/") {
+    next();
+    return;
+  }
+  res.status(404).end();
+};
+
+export function buildMetaTokenMiddleware(
   serverUrl: URL,
   multiTenantEnabled: boolean,
 ): express.RequestHandler {
   return async (req, res, next) => {
-    const headerToken = req.headers["x-meta-token"];
-    if (typeof headerToken === "string" && headerToken) {
-      requestContext.run({ accessToken: headerToken }, () => next());
-      return;
-    }
-
     const auth = (req as express.Request & {
       auth?: { extra?: Record<string, unknown> };
     }).auth;
     const fbUserId =
       typeof auth?.extra?.fbUserId === "string" ? auth.extra.fbUserId : undefined;
+
+    // In multi-tenant mode an OAuth bearer names its user. One that does not
+    // must never run on the server's own token (the registry or
+    // META_ACCESS_TOKEN). API-key callers carry no OAuth auth at all.
+    if (multiTenantEnabled && auth && !fbUserId) {
+      res.status(401).json({
+        jsonrpc: "2.0",
+        error: { code: -32001, message: "This session names no Meta user. Please re-authenticate via /authorize." },
+        id: null,
+      });
+      return;
+    }
+
+    // The OAuth identity stays with a token from the header: without it the
+    // token tools fall back to the process-wide registry every tenant shares.
+    const headerToken = req.headers["x-meta-token"];
+    if (typeof headerToken === "string" && headerToken) {
+      requestContext.run({ accessToken: headerToken, ...(fbUserId ? { fbUserId } : {}) }, () => next());
+      return;
+    }
 
     if (multiTenantEnabled && fbUserId) {
       try {
@@ -401,141 +428,41 @@ function buildMetaTokenMiddleware(
   };
 }
 
-export async function startHttpTransport(
-  createServer: () => McpServer,
-  port: number,
-): Promise<void> {
-  const app = express();
-  const isProduction = process.env.NODE_ENV === "production";
-  const config = resolveSecurityConfig();
-
-  app.disable("x-powered-by");
-  app.set("trust proxy", 1);
-  // CORS: explicit allowlist instead of wildcard. The previous app.use(cors())
-  // set Access-Control-Allow-Origin: * on every response, which let any origin
-  // invoke /mcp with a stolen Bearer token. We only need cross-origin reads
-  // for Claude.ai (and any operator-configured peers); /authorize and /auth/*
-  // are top-level navigations that don't depend on CORS.
-  const corsAllowedOrigins = (process.env.CORS_ALLOWED_ORIGINS?.trim() || "https://claude.ai")
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
-  app.use(
-    cors({
-      origin: corsAllowedOrigins,
-      credentials: false,
-      methods: ["GET", "POST", "OPTIONS"],
-      allowedHeaders: [
-        "Content-Type",
-        "Authorization",
-        "X-API-Key",
-        "X-Meta-Token",
-        "Mcp-Session-Id",
-      ],
-      maxAge: 600,
-    }),
-  );
-  logger.info({ corsAllowedOrigins }, "CORS allowlist configured");
-  app.use(cookieParser());
-  app.use(express.json({ limit: "10mb" }));
-
-  app.use((_req, res, next) => {
-    res.setHeader("X-Content-Type-Options", "nosniff");
-    res.setHeader("X-Frame-Options", "DENY");
-    res.setHeader("Referrer-Policy", "no-referrer");
-    if (isProduction) {
-      res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
-    }
-    next();
-  });
-
-  if (isProduction) {
-    app.use((req, res, next) => {
-      if (req.header("x-forwarded-proto") !== "https") {
-        res.redirect(301, `https://${req.header("host")}${req.originalUrl}`);
-        return;
-      }
-      next();
-    });
-  }
-
-  const serverUrl = getServerUrl();
-
-  if (config.multiTenantEnabled) {
-    if (!isFirestoreEnabled()) {
-      if (process.env.NODE_ENV === "production") {
-        throw new Error(
-          "Multi-tenant Meta OAuth requires Firestore in production. Set FIRESTORE_PROJECT_ID or GOOGLE_CLOUD_PROJECT.",
-        );
-      }
-      logger.warn(
-        "Multi-tenant Meta OAuth enabled but Firestore is not configured (no FIRESTORE_PROJECT_ID/GOOGLE_CLOUD_PROJECT/FIRESTORE_EMULATOR_HOST). Falling back to in-memory stores — sessions and tokens will be lost on restart.",
-      );
-      oauthProvider.configure({
-        clientsStore: new InMemoryClientsStore(),
-        authCodesStore: new InMemoryAuthCodesStore(),
-        refreshJtiStore: new InMemoryJtiStore(),
-        resolvePendingAuth: () => pendingAuthStorage.getStore() ?? null,
-      });
-      configureSessionJtiStore(new InMemoryJtiStore());
-      configureMetaTokenRepo(new InMemoryMetaTokenRepo());
-    } else {
-      oauthProvider.configure({
-        clientsStore: new FirestoreClientsStore(),
-        authCodesStore: new FirestoreAuthCodesStore(),
-        refreshJtiStore: new FirestoreJtiStore("mcp_refresh_jti"),
-        resolvePendingAuth: () => pendingAuthStorage.getStore() ?? null,
-      });
-      configureSessionJtiStore(new FirestoreJtiStore("mcp_session_jti"));
-      configureMetaTokenRepo(new FirestoreMetaTokenRepo());
-    }
-  }
-
-  // Started before the port opens, so it gets startup CPU, and waited for a
-  // bounded time only: with min-instances at zero, a request that caused
-  // this cold start is waiting on listen, and every second here is a second
-  // added to it. On a warm node the probe answers in about a second. On a
-  // fresh node the first run of ffmpeg has taken more than 10 s even with
-  // CPU, most likely because Cloud Run streams image layers on demand and
-  // the first execution waits for the layer that holds it. For that case
-  // the probe itself gets 30 s and is left to finish in the background
-  // after listen; it settles the answer when it completes, and if it ends
-  // inconclusively, killed at its timeout, the first video call re-probes
-  // after the cooldown. The health check reads the settled answer and never
-  // spawns a process per request.
-  const STARTUP_PROBE_WAIT_MS = 10_000;
-  const ffmpegRuntime = getFfmpeg();
-  const startupProbe = ffmpegRuntime.isAvailable({ timeoutMs: STARTUP_VERSION_PROBE_TIMEOUT_MS });
-  const logProbeOutcome = (phase: "at startup" | "after listen"): void => {
-    const known = ffmpegRuntime.lastKnownAvailability();
-    if (known === undefined) {
-      logger.warn(
-        { timeout_ms: STARTUP_VERSION_PROBE_TIMEOUT_MS, phase },
-        "ffmpeg startup probe was inconclusive (killed on timeout, or the spawn was refused for want of a resource); it will be retried on the first use after a short cooldown",
-      );
-    } else {
-      logger.info(
-        { ffmpeg_available: known, phase },
-        known ? "ffmpeg detected; video keyframe extraction enabled" : "ffmpeg not found; video tools fall back to thumbnails",
+/**
+ * Multi-tenant OAuth: the stores, the signed-in user of the consent in
+ * progress, and the rule that no code or token is issued without one. One
+ * configure call serves both the Firestore and the in-memory stores.
+ */
+export function configureMultiTenantOAuth(): void {
+  const firestore = isFirestoreEnabled();
+  if (!firestore) {
+    if (process.env.NODE_ENV === "production") {
+      throw new Error(
+        "Multi-tenant Meta OAuth requires Firestore in production. Set FIRESTORE_PROJECT_ID or GOOGLE_CLOUD_PROJECT.",
       );
     }
-  };
-  const waited = await withDeadline(startupProbe, STARTUP_PROBE_WAIT_MS);
-  if (waited.settled) {
-    logProbeOutcome("at startup");
-  } else {
-    logger.info({ waited_ms: STARTUP_PROBE_WAIT_MS }, "ffmpeg startup probe still running; opening the port and letting it finish in the background");
-    void startupProbe.then(() => logProbeOutcome("after listen"));
+    logger.warn(
+      "Multi-tenant Meta OAuth enabled but Firestore is not configured (no FIRESTORE_PROJECT_ID/GOOGLE_CLOUD_PROJECT/FIRESTORE_EMULATOR_HOST). Falling back to in-memory stores — sessions and tokens will be lost on restart.",
+    );
   }
-  void sweepStaleVideoDirs().then((removed) => {
-    if (removed > 0) logger.info({ removed }, "Removed stale video scratch directories");
+  oauthProvider.configure({
+    clientsStore: firestore ? new FirestoreClientsStore() : new InMemoryClientsStore(),
+    authCodesStore: firestore ? new FirestoreAuthCodesStore() : new InMemoryAuthCodesStore(),
+    refreshJtiStore: firestore ? new FirestoreJtiStore("mcp_refresh_jti") : new InMemoryJtiStore(),
+    resolvePendingAuth: () => pendingAuthStorage.getStore() ?? null,
+    requireIdentity: true,
   });
+  configureSessionJtiStore(firestore ? new FirestoreJtiStore("mcp_session_jti") : new InMemoryJtiStore());
+  configureMetaTokenRepo(firestore ? new FirestoreMetaTokenRepo() : new InMemoryMetaTokenRepo());
+}
 
-  app.get("/health", (_req, res) => {
-    res.json(healthPayload({ ffmpeg: ffmpegRuntime.lastKnownAvailability() }));
-  });
-
-  if (config.multiTenantEnabled) {
+/**
+ * The OAuth authorization surface: in multi-tenant mode the consent page and
+ * its session checks, then the SDK's router (authorize, token, register,
+ * revoke, metadata). Order matters: Express runs them in registration order.
+ */
+export function mountAuthorization(app: express.Express, serverUrl: URL, multiTenantEnabled: boolean): void {
+  if (multiTenantEnabled) {
     // Registered BEFORE mountAuthRoutes on purpose: Express matches in
     // registration order, so a limiter added after the route handler would
     // never run. Each POST makes an outbound api.apify.com call, which without
@@ -555,6 +482,8 @@ export async function startHttpTransport(
       serverUrl,
       getClient: (id) => oauthProvider.clientsStore.getClient(id),
     });
+
+    app.use("/authorize", onlyExactAuthorizePath);
 
     app.get("/authorize", async (req, res) => {
       const query = req.query as Record<string, string>;
@@ -711,6 +640,115 @@ export async function startHttpTransport(
       resourceServerUrl: new URL("/mcp", serverUrl),
     }),
   );
+}
+
+export async function startHttpTransport(
+  createServer: () => McpServer,
+  port: number,
+): Promise<void> {
+  const app = express();
+  const isProduction = process.env.NODE_ENV === "production";
+  const config = resolveSecurityConfig();
+
+  app.disable("x-powered-by");
+  app.set("trust proxy", 1);
+  // CORS: explicit allowlist instead of wildcard. The previous app.use(cors())
+  // set Access-Control-Allow-Origin: * on every response, which let any origin
+  // invoke /mcp with a stolen Bearer token. We only need cross-origin reads
+  // for Claude.ai (and any operator-configured peers); /authorize and /auth/*
+  // are top-level navigations that don't depend on CORS.
+  const corsAllowedOrigins = (process.env.CORS_ALLOWED_ORIGINS?.trim() || "https://claude.ai")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  app.use(
+    cors({
+      origin: corsAllowedOrigins,
+      credentials: false,
+      methods: ["GET", "POST", "OPTIONS"],
+      allowedHeaders: [
+        "Content-Type",
+        "Authorization",
+        "X-API-Key",
+        "X-Meta-Token",
+        "Mcp-Session-Id",
+      ],
+      maxAge: 600,
+    }),
+  );
+  logger.info({ corsAllowedOrigins }, "CORS allowlist configured");
+  app.use(cookieParser());
+  app.use(express.json({ limit: "10mb" }));
+
+  app.use((_req, res, next) => {
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("X-Frame-Options", "DENY");
+    res.setHeader("Referrer-Policy", "no-referrer");
+    if (isProduction) {
+      res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+    }
+    next();
+  });
+
+  if (isProduction) {
+    app.use((req, res, next) => {
+      if (req.header("x-forwarded-proto") !== "https") {
+        res.redirect(301, `https://${req.header("host")}${req.originalUrl}`);
+        return;
+      }
+      next();
+    });
+  }
+
+  const serverUrl = getServerUrl();
+
+  if (config.multiTenantEnabled) configureMultiTenantOAuth();
+
+  // Started before the port opens, so it gets startup CPU, and waited for a
+  // bounded time only: with min-instances at zero, a request that caused
+  // this cold start is waiting on listen, and every second here is a second
+  // added to it. On a warm node the probe answers in about a second. On a
+  // fresh node the first run of ffmpeg has taken more than 10 s even with
+  // CPU, most likely because Cloud Run streams image layers on demand and
+  // the first execution waits for the layer that holds it. For that case
+  // the probe itself gets 30 s and is left to finish in the background
+  // after listen; it settles the answer when it completes, and if it ends
+  // inconclusively, killed at its timeout, the first video call re-probes
+  // after the cooldown. The health check reads the settled answer and never
+  // spawns a process per request.
+  const STARTUP_PROBE_WAIT_MS = 10_000;
+  const ffmpegRuntime = getFfmpeg();
+  const startupProbe = ffmpegRuntime.isAvailable({ timeoutMs: STARTUP_VERSION_PROBE_TIMEOUT_MS });
+  const logProbeOutcome = (phase: "at startup" | "after listen"): void => {
+    const known = ffmpegRuntime.lastKnownAvailability();
+    if (known === undefined) {
+      logger.warn(
+        { timeout_ms: STARTUP_VERSION_PROBE_TIMEOUT_MS, phase },
+        "ffmpeg startup probe was inconclusive (killed on timeout, or the spawn was refused for want of a resource); it will be retried on the first use after a short cooldown",
+      );
+    } else {
+      logger.info(
+        { ffmpeg_available: known, phase },
+        known ? "ffmpeg detected; video keyframe extraction enabled" : "ffmpeg not found; video tools fall back to thumbnails",
+      );
+    }
+  };
+  const waited = await withDeadline(startupProbe, STARTUP_PROBE_WAIT_MS);
+  if (waited.settled) {
+    logProbeOutcome("at startup");
+  } else {
+    logger.info({ waited_ms: STARTUP_PROBE_WAIT_MS }, "ffmpeg startup probe still running; opening the port and letting it finish in the background");
+    void startupProbe.then(() => logProbeOutcome("after listen"));
+  }
+  void sweepStaleVideoDirs().then((removed) => {
+    if (removed > 0) logger.info({ removed }, "Removed stale video scratch directories");
+  });
+
+  app.get("/health", (_req, res) => {
+    res.json(healthPayload({ ffmpeg: ffmpegRuntime.lastKnownAvailability() }));
+  });
+
+  mountAuthorization(app, serverUrl, config.multiTenantEnabled);
 
   const oauthBearerAuth = requireBearerAuth({ verifier: oauthProvider });
   const auth = createCombinedAuthMiddleware(oauthBearerAuth);

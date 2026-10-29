@@ -13,6 +13,7 @@ import type {
   OAuthTokenRevocationRequest,
 } from "@modelcontextprotocol/sdk/shared/auth.js";
 import {
+  AccessDeniedError,
   InvalidGrantError,
   InvalidTokenError,
 } from "@modelcontextprotocol/sdk/server/auth/errors.js";
@@ -66,17 +67,23 @@ export class MetaAdsOAuthProvider implements OAuthServerProvider {
   private authCodesImpl: AuthCodesStore = new InMemoryAuthCodesStore();
   private refreshJtiStoreImpl: JtiStore = new InMemoryJtiStore();
   private pendingAuthResolver: () => PendingAuthSession | null = () => null;
+  // Multi-tenant mode: a code goes only to a signed-in, allowed Meta user.
+  // A bearer without one names no tenant, and the /mcp middleware would
+  // otherwise run it on the server's own token.
+  private requireIdentity = false;
 
   configure(opts: {
     clientsStore?: OAuthRegisteredClientsStore;
     authCodesStore?: AuthCodesStore;
     refreshJtiStore?: JtiStore;
     resolvePendingAuth?: () => PendingAuthSession | null;
+    requireIdentity?: boolean;
   }): void {
     if (opts.clientsStore) this.clientsStoreImpl = opts.clientsStore;
     if (opts.authCodesStore) this.authCodesImpl = opts.authCodesStore;
     if (opts.refreshJtiStore) this.refreshJtiStoreImpl = opts.refreshJtiStore;
     if (opts.resolvePendingAuth) this.pendingAuthResolver = opts.resolvePendingAuth;
+    if (opts.requireIdentity !== undefined) this.requireIdentity = opts.requireIdentity;
   }
 
   get clientsStore(): OAuthRegisteredClientsStore {
@@ -88,8 +95,12 @@ export class MetaAdsOAuthProvider implements OAuthServerProvider {
     params: AuthorizationParams,
     res: Response,
   ): Promise<void> {
-    const code = crypto.randomBytes(32).toString("hex");
     const pending = this.pendingAuthResolver();
+    if (this.requireIdentity && !pending?.fbUserId) {
+      logger.warn({ clientId: client.client_id }, "Refused an authorization without a signed-in Meta user");
+      throw new AccessDeniedError("Sign in with Meta on /authorize first.");
+    }
+    const code = crypto.randomBytes(32).toString("hex");
 
     await this.authCodesImpl.set(code, {
       clientId: client.client_id,
@@ -254,6 +265,8 @@ export class MetaAdsOAuthProvider implements OAuthServerProvider {
     const extra: Record<string, unknown> = {};
     if (typeof payload.fb_user_id === "string") {
       extra.fbUserId = payload.fb_user_id;
+    } else if (this.requireIdentity) {
+      throw new InvalidTokenError("This token names no Meta user. Authorize again through /authorize.");
     }
 
     const authInfo: AuthInfo = {
@@ -298,6 +311,11 @@ export class MetaAdsOAuthProvider implements OAuthServerProvider {
     resource?: URL;
     fbUserId?: string;
   }): Promise<OAuthTokens> {
+    // Covers both grants: a code or refresh token issued without a user,
+    // before identity was required, earns nothing.
+    if (this.requireIdentity && !input.fbUserId) {
+      throw new InvalidGrantError("This grant names no Meta user. Authorize again through /authorize.");
+    }
     const secret = getJwtSecret();
     const now = Math.floor(Date.now() / 1000);
 
@@ -365,5 +383,6 @@ export function resetOAuthProviderForTests(): void {
     authCodesStore: new InMemoryAuthCodesStore(),
     refreshJtiStore: new InMemoryJtiStore(),
     resolvePendingAuth: () => null,
+    requireIdentity: false,
   });
 }
