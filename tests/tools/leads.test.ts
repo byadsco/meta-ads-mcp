@@ -13,10 +13,10 @@ describe("registerLeadTools", () => {
     vi.restoreAllMocks();
   });
 
-  it("registers exactly 4 tools", () => {
+  it("registers exactly 10 tools", () => {
     const server = createMockMcpServer();
     registerLeadTools(server as never);
-    expect(server.registerTool).toHaveBeenCalledTimes(4);
+    expect(server.registerTool).toHaveBeenCalledTimes(10);
   });
 
   it("registers tools with correct names", () => {
@@ -28,6 +28,12 @@ describe("registerLeadTools", () => {
       "ads_get_leads",
       "ads_get_ad_leads",
       "ads_create_lead_form",
+      "ads_get_lead_form_details",
+      "ads_update_lead_form",
+      "ads_get_lead_form_ads",
+      "ads_get_lead_setup",
+      "ads_create_test_lead",
+      "ads_delete_test_lead",
     ]);
   });
 

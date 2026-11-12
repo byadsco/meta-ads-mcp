@@ -95,6 +95,32 @@ Advantage+ AI features that rewrite copy or edit media stay off unless you list 
 
 A WhatsApp ad needs a WhatsApp number connected to the Page to deliver: Meta accepts the ad without one, so check the Page first. Lead forms are read and created with a Page token, so the person has to manage the Page.
 
+## Lead ads, end to end
+
+"Collect leads with a form for this offer." "Change the questions of our form." "Check our CRM gets the leads."
+
+1. **The form.** `ads_create_lead_form` on the Page.
+   - `is_optimized_for_quality: true` makes people review their answers before sending (higher intent).
+   - A consent checkbox goes in `custom_disclaimer.checkboxes`, unchecked by default. Leads carry the answer in `custom_disclaimer_responses`.
+   - `DATE_TIME` asks for an appointment, `PHONE_OTP` verifies the phone by code, `ID_*` asks for a national ID (one per form, and the ad must target that country only).
+   - The thank-you screen's `button_type` sends people to a website, a call, WhatsApp, Messenger, a download or a promo code; `VIEW_ON_FACEBOOK` with `gated_file_url` (PDF, JPEG or PNG) shares a gated file.
+   - **Conditional answers** (the city chosen sets the offices offered next): make the answer set once in Ads Manager with its CSV, read its `conditional_questions_group_id` with `ads_get_lead_form_details`, and pass it with `dependent_conditional_questions` on a CUSTOM question of any new form. Ads Manager's **conditional logic** (jumps, disqualifying answers, several endings) is not in Meta's API: build those forms in Ads Manager, then use them in ads from here.
+2. **The ad.**
+   - `ads_create_campaign` with `OUTCOME_LEADS`.
+   - `ads_create_ad_set` with `destination_type: ON_AD`, `optimization_goal: LEAD_GENERATION` and `promoted_object: { page_id }`.
+   - `ads_create_ad_creative` with `destination: { type: "lead_form", lead_form_id }`.
+   - `ads_create_ad`, paused. Check with `ads_get_lead_form_ads` that the ad uses the form.
+3. **Changing a form.** Meta does not let anyone edit or delete a form.
+   1. `ads_get_lead_form_details` returns it as `create_input`.
+   2. `ads_create_lead_form` with that input, changed.
+   3. `ads_get_lead_form_ads` lists the ads on the old form; `ads_update_ad_content` with `lead_form_id` and `allow_new_post: true` moves them (a new post: likes and comments start over).
+   4. `ads_update_lead_form` with `ARCHIVED` retires the old form. Meta still accepts new creatives on an archived form, so always point ads at an `ACTIVE` one.
+4. **The leads.** `ads_get_leads` with `since` / `until`, and the `after` cursor for more. It needs `leads_retrieval`.
+5. **A system that receives the leads** (CRM or backend, by webhook, with its own Meta app).
+   1. `ads_get_lead_setup` with that system's `app_id` and `user_id`: Lead Ads terms, and whether it may download leads, with Meta's reason and fix when it may not. Meta may answer that the access check is not available; then it tells nothing.
+   2. Meta does not let one app see another app's webhook, so `ads_create_test_lead` makes a test lead (Meta fills in placeholder answers); the system's owner looks for its id there.
+   3. `ads_delete_test_lead` removes it. A form holds one test lead at a time.
+
 ## Changing the copy of a live ad
 
 "Drop the second headline and add a primary text to these ads."

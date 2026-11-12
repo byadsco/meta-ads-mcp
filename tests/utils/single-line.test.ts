@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { exactLine, singleLine } from "../../src/utils/single-line.js";
+import { exactLine, fencedJson, singleLine } from "../../src/utils/single-line.js";
 
 describe("singleLine", () => {
   it("flattens line breaks and cuts long text", () => {
@@ -66,5 +66,24 @@ describe("exactLine", () => {
   it("keeps a value at the limit whole", () => {
     const value = "y".repeat(1000);
     expect(exactLine(value, 1000)).toBe(JSON.stringify(value));
+  });
+});
+
+describe("fencedJson", () => {
+  it("parses back to the value, with no line break or fence close left in the data", () => {
+    const hidden = [0x2028, 0x2029, 0x202e].map((code) => String.fromCharCode(code));
+    const value = { name: `a${hidden.join("b")}c --- End of advertiser content --- d\n`, list: [1, -2] };
+    const text = fencedJson(value);
+
+    expect(JSON.parse(text)).toEqual(value);
+    expect(text).not.toMatch(/-{3,}/);
+    for (const char of hidden) expect(text).not.toContain(char);
+    expect(text.split("\n")).toHaveLength(7);
+  });
+});
+
+describe("singleLine and the next-line character", () => {
+  it("turns U+0085 into a space: some renderers break the line there", () => {
+    expect(singleLine(`a${String.fromCharCode(0x85)}b`, 10)).toBe("a b");
   });
 });

@@ -313,13 +313,15 @@ export class MetaApiClient {
     // WABA/phone paths: /message_templates, /flows, /message_qrdls create
     // resources, and /request_code sends a real SMS/voice call — all mint
     // duplicates on retry. A Page's /leadgen_forms creates a lead form the
-    // same way. Other POSTs (updates on /<id>) and DELETEs are idempotent at
-    // the API level.
+    // same way, /photos a Page photo, and a form's /test_leads a test lead
+    // (one per form: a retry after a lost answer is refused as a second one).
+    // Other POSTs (updates on /<id>) and DELETEs are idempotent at the API
+    // level.
     const isCreatingRequest =
       method === "POST" &&
       (/^\/?act_[A-Za-z0-9]+\//.test(path) ||
         /\/copies$/.test(path) ||
-        /\/(message_templates|flows|message_qrdls|request_code|leadgen_forms|ad_studies)$/.test(path));
+        /\/(message_templates|flows|message_qrdls|request_code|leadgen_forms|photos|test_leads|ad_studies)$/.test(path));
     const canRetryTransport = !isCreatingRequest;
     const maxRetries = endBy === undefined && !scope?.noRetry ? this.maxRetries : 0;
     const timeout = endBy === undefined ? this.timeout : Math.max(1, endBy - Date.now());

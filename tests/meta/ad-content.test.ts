@@ -338,6 +338,38 @@ describe("planContentEdit — refusals", () => {
     expect(parse(copyOnly.body?.platform_customizations)).toEqual({ instagram: { image_hash: "ig1" } });
   });
 
+  it("points a lead ad at another form in the cloned spec, as a new post", () => {
+    const lead = singleImage({
+      object_story_spec: {
+        page_id: "6001",
+        link_data: { link: "http://fb.me/", image_hash: "h1", message: "Texto", call_to_action: { type: "SIGN_UP", value: { lead_gen_form_id: "111" } } },
+      },
+    });
+
+    expect(planContentEdit(lead, { lead_form_id: "222" }, false).reason_code).toBe("needs_new_post");
+    const plan = planContentEdit(lead, { lead_form_id: "222" }, true);
+
+    expect(plan.route).toBe("new_post");
+    expect(parse(plan.body?.object_story_spec).link_data.call_to_action).toEqual({ type: "SIGN_UP", value: { lead_gen_form_id: "222" } });
+    expect(plan.field_changes).toEqual([{ field: "lead_form_id", before: "111", after: "222" }]);
+    expect(planContentEdit(lead, { lead_form_id: "111" }, true).reason).toBe("nothing to change");
+  });
+
+  it("points a video lead ad at another form", () => {
+    const video: AdCreative = {
+      id: "1", name: "v",
+      object_story_spec: { page_id: "6001", video_data: { video_id: "8", image_hash: "t", message: "M", call_to_action: { type: "SIGN_UP", value: { lead_gen_form_id: "111" } } } },
+    };
+    const plan = planContentEdit(video, { lead_form_id: "222" }, true);
+    expect(parse(plan.body?.object_story_spec).video_data.call_to_action.value).toEqual({ lead_gen_form_id: "222" });
+  });
+
+  it("refuses a form for an ad that does not open one", () => {
+    const plan = planContentEdit(singleImage(), { lead_form_id: "222" }, true);
+    expect(plan.reason_code).toBe("not_lead_ad");
+    expect(plan.blocking).toBe(true);
+  });
+
   it("refuses to switch an image ad to video", () => {
     expect(planContentEdit(singleImage(), { video_id: "800" }, true).reason).toMatch(/image ad to video/);
   });
@@ -353,10 +385,11 @@ describe("planContentEdit — refusals", () => {
       planContentEdit(post, { headlines: { set: ["H"] } }, true),
       planContentEdit(multiText(), { headlines: { set: ["Nuevo"] } }, false),
       planContentEdit(singleImage(), { video_id: "800" }, true),
+      planContentEdit(singleImage(), { lead_form_id: "222" }, true),
     ].map((plan) => plan.reason_code);
     expect(codes).toEqual([
       "unsupported_creative", "url_tags_only", "nothing_to_change", "per_platform_media",
-      "promoted_post", "needs_new_post", "image_to_video",
+      "promoted_post", "needs_new_post", "image_to_video", "not_lead_ad",
     ]);
   });
 });
