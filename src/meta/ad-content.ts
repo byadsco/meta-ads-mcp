@@ -21,6 +21,7 @@ export interface ContentChanges {
   image_url?: string;
   video_id?: string;
   url_tags?: string;
+  lead_form_id?: string;
 }
 
 export interface Copy {
@@ -44,12 +45,12 @@ export interface PostEdit {
 }
 
 export interface FieldChange {
-  field: "link_url" | "call_to_action_type" | "image_hash" | "image_url" | "video_id" | "url_tags";
+  field: "link_url" | "call_to_action_type" | "image_hash" | "image_url" | "video_id" | "url_tags" | "lead_form_id";
   before?: string;
   after?: string;
 }
 
-const SHOWN_FIELDS: FieldChange["field"][] = ["link_url", "call_to_action_type", "image_hash", "image_url", "video_id", "url_tags"];
+const SHOWN_FIELDS: FieldChange["field"][] = ["link_url", "call_to_action_type", "image_hash", "image_url", "video_id", "url_tags", "lead_form_id"];
 
 // Why a plan has no route, as a code: the reason text stays in the summary.
 export type ReasonCode =
@@ -60,6 +61,7 @@ export type ReasonCode =
   | "promoted_post"
   | "needs_new_post"
   | "image_to_video"
+  | "not_lead_ad"
   | "post_edit_url_tags"
   | "post_edit_unsupported"
   | "post_edit_alone"
@@ -174,7 +176,7 @@ function applyChange(current: string[], change: TextChange | undefined, label: s
 const sameList = (a: string[], b: string[]) => a.length === b.length && a.every((text, i) => text === b[i]);
 
 function currentDestination(creative: AdCreative): {
-  link?: string; ctaType?: string; imageHash?: string; imageUrl?: string; videoId?: string;
+  link?: string; ctaType?: string; imageHash?: string; imageUrl?: string; videoId?: string; leadFormId?: string;
 } {
   const spec = asRecord(creative.object_story_spec);
   const linkData = asRecord(spec?.link_data);
@@ -189,6 +191,7 @@ function currentDestination(creative: AdCreative): {
     imageHash: pick(target?.image_hash),
     imageUrl: pick(linkData?.picture) ?? pick(videoData?.image_url),
     videoId: pick(videoData?.video_id),
+    leadFormId: pick(asRecord(cta?.value)?.lead_gen_form_id),
   };
 }
 
@@ -201,6 +204,7 @@ function shownFields(creative: AdCreative): Partial<Record<FieldChange["field"],
     image_url: now.imageUrl,
     video_id: now.videoId,
     url_tags: creative.url_tags || undefined,
+    lead_form_id: now.leadFormId,
   };
 }
 
@@ -266,6 +270,10 @@ function buildNewPostBody(creative: AdCreative, after: Copy, changes: ContentCha
     else holder.image_url = changes.image_url;
   }
   if (changes.video_id !== undefined && videoData) videoData.video_id = changes.video_id;
+  if (changes.lead_form_id !== undefined) {
+    const cta = asRecord(target.call_to_action) ?? {};
+    target.call_to_action = { ...cta, value: { ...(asRecord(cta.value) ?? {}), lead_gen_form_id: changes.lead_form_id } };
+  }
 
   const copyKeys = videoData
     ? { primary: "message", headlines: "title", descriptions: "link_description" }
@@ -315,6 +323,13 @@ export function planContentEdit(
   // Compared with what the creative has now, so repeating an applied change
   // (say, after a lost response) does not rebuild it and reset its post again.
   const current = currentDestination(creative);
+  if (changes.lead_form_id !== undefined && !current.leadFormId) {
+    return {
+      before, after,
+      reason: "the ad's button does not open a lead form, so it has no form to change; create a lead ad with ads_create_ad_creative (destination lead_form)",
+      reason_code: "not_lead_ad", blocking: true, warnings: [],
+    };
+  }
   // image_hash wins when both are given, so only the medium that would be
   // written is compared.
   const requested: Array<{ field: FieldChange["field"]; value: string | undefined; now: string | undefined }> = [
@@ -323,6 +338,7 @@ export function planContentEdit(
     { field: "image_hash", value: changes.image_hash, now: current.imageHash },
     { field: "image_url", value: changes.image_hash === undefined ? changes.image_url : undefined, now: current.imageUrl },
     { field: "video_id", value: changes.video_id, now: current.videoId },
+    { field: "lead_form_id", value: changes.lead_form_id, now: current.leadFormId },
   ];
   const field_changes: FieldChange[] = requested
     .filter((r) => r.value !== undefined && r.value !== r.now)
@@ -449,7 +465,7 @@ export function planContentEdit(
 
   if (!allowNewPost) {
     const needs = otherCopyChanged || otherChanged
-      ? "changing headlines, descriptions, link, button or media"
+      ? "changing headlines, descriptions, link, button, lead form or media"
       : "a single primary text";
     return {
       before,

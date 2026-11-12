@@ -253,6 +253,254 @@ describe("ads_update_ad_content", () => {
     expect(result.content[1].text).not.toContain("No existe");
   });
 
+  describe("lead_form_id", () => {
+    const LEAD_CREATIVE = {
+      id: "4001",
+      name: "Lead",
+      effective_object_story_id: "6001_777",
+      object_story_spec: {
+        page_id: "6001",
+        link_data: { link: "http://fb.me/", image_hash: "h1", message: "Texto", call_to_action: { type: "SIGN_UP", value: { lead_gen_form_id: "111" } } },
+      },
+    };
+
+    it("previews the ad on the new form when the form is active and on the ad's Page", async () => {
+      routeFetch({ 222: { id: "222", status: "ACTIVE", page_id: "6001" }, 3001: AD_3001, 4001: LEAD_CREATIVE });
+
+      const result = await tool().handler({ ad_ids: ["3001"], lead_form_id: "222", allow_new_post: true, dry_run: true }) as ToolResult;
+
+      expect(fetchCallSummary()[0]).toBe("GET /222");
+      const json = JSON.parse(result.content[1].text);
+      expect(json.plans[0].route).toBe("new_post");
+      expect(json.plans[0].changed_fields).toEqual(["lead_form_id"]);
+      expect(result.content[0].text).toContain('lead_form_id: "111" → "222"');
+    });
+
+    it("refuses an archived form before reading any ad: Meta would accept the creative anyway", async () => {
+      routeFetch({ 222: { id: "222", status: "ARCHIVED", page_id: "6001" } });
+
+      await expect(tool().handler({ ad_ids: ["3001"], lead_form_id: "222", allow_new_post: true, dry_run: true })).rejects.toThrow(/ARCHIVED/);
+      expect(fetchCallSummary()).toEqual(["GET /222"]);
+    });
+
+    it("refuses a form of another Page for that ad", async () => {
+      routeFetch({ 222: { id: "222", status: "ACTIVE", page_id: "9999" }, 3001: AD_3001, 4001: LEAD_CREATIVE });
+
+      const result = await tool().handler({ ad_ids: ["3001"], lead_form_id: "222", allow_new_post: true, dry_run: true }) as ToolResult;
+
+      expect(JSON.parse(result.content[1].text).planning_errors).toEqual([
+        { creative_id: "4001", ad_ids: ["3001"], code: "lead_form_other_page" },
+      ]);
+    });
+
+    it("checks the form again right before moving the ads, and moves none if it was archived meanwhile", async () => {
+      const ACTIVE_FORM = { id: "222", status: "ACTIVE", page_id: "6001" };
+      const args = { ad_ids: ["3001"], lead_form_id: "222", allow_new_post: true };
+      const plan_token = await approvedToken(args, { 222: ACTIVE_FORM, 3001: AD_3001, 4001: LEAD_CREATIVE });
+      let formReads = 0;
+      const objects: Record<string, unknown> = { 3001: AD_3001, 4001: LEAD_CREATIVE, adcreatives: { id: "5001" }, 5001: { success: true } };
+      vi.stubGlobal("fetch", vi.fn(async (input: string) => {
+        const id = new URL(input).pathname.split("/").pop() ?? "";
+        if (id === "222") return mockFetchResponse(++formReads === 1 ? ACTIVE_FORM : { ...ACTIVE_FORM, status: "ARCHIVED" });
+        return mockFetchResponse(objects[id] ?? {});
+      }));
+
+      const result = await tool().handler({ ...args, dry_run: false, plan_token }) as ToolResult;
+      const json = JSON.parse(result.content[1].text);
+
+      expect(json.updated).toEqual([]);
+      expect(json.failed).toEqual([{ ad_id: "3001", kind: "form_changed" }]);
+      expect(fetchCallSummary()).not.toContain("POST /3001");
+      expect(fetchCallSummary()).toContain("DELETE /5001");
+      expect(result.content[0].text).toMatch(/ARCHIVED/);
+    });
+
+    it("checks the form before each ad of a shared creative, and stops at the first one after it was archived", async () => {
+      const ACTIVE_FORM = { id: "222", status: "ACTIVE", page_id: "6001" };
+      const AD_3002 = { id: "3002", account_id: "123", creative: { id: "4001" } };
+      const args = { ad_ids: ["3001", "3002"], lead_form_id: "222", allow_new_post: true };
+      const plan_token = await approvedToken(args, { 222: ACTIVE_FORM, 3001: AD_3001, 3002: AD_3002, 4001: LEAD_CREATIVE });
+      let moved = false;
+      vi.stubGlobal("fetch", vi.fn(async (input: string, init?: RequestInit) => {
+        const id = new URL(input).pathname.split("/").pop() ?? "";
+        const method = init?.method ?? "GET";
+        if (id === "222") return mockFetchResponse(moved ? { ...ACTIVE_FORM, status: "ARCHIVED" } : ACTIVE_FORM);
+        if (id === "adcreatives") return mockFetchResponse({ id: "5001" });
+        if (method === "POST" && id === "3001") {
+          moved = true;
+          return mockFetchResponse({ success: true });
+        }
+        const objects: Record<string, unknown> = { 3001: AD_3001, 3002: AD_3002, 4001: LEAD_CREATIVE };
+        return mockFetchResponse(objects[id] ?? {});
+      }));
+
+      const result = await tool().handler({ ...args, dry_run: false, plan_token }) as ToolResult;
+      const json = JSON.parse(result.content[1].text);
+
+      expect(json.updated).toEqual([{ ad_id: "3001", old_creative_id: "4001", new_creative_id: "5001" }]);
+      // The check right after ad 3001 moved already sees the form archived.
+      expect(json.failed).toEqual([
+        { ad_id: "3001", kind: "form_changed_after_move", new_creative_id: "5001" },
+        { ad_id: "3002", kind: "form_changed", new_creative_id: "5001" },
+      ]);
+      expect(fetchCallSummary()).not.toContain("POST /3002");
+      // The replacement carries ad 3001 now, so it is kept.
+      expect(fetchCallSummary()).not.toContain("DELETE /5001");
+    });
+
+    it("keeps a replacement an ad was sent to, even when that move failed, if the form is archived before the next ad", async () => {
+      const ACTIVE_FORM = { id: "222", status: "ACTIVE", page_id: "6001" };
+      const AD_3002 = { id: "3002", account_id: "123", creative: { id: "4001" } };
+      const args = { ad_ids: ["3001", "3002"], lead_form_id: "222", allow_new_post: true };
+      const plan_token = await approvedToken(args, { 222: ACTIVE_FORM, 3001: AD_3001, 3002: AD_3002, 4001: LEAD_CREATIVE });
+      let sent = false;
+      vi.stubGlobal("fetch", vi.fn(async (input: string, init?: RequestInit) => {
+        const id = new URL(input).pathname.split("/").pop() ?? "";
+        const method = init?.method ?? "GET";
+        if (id === "222") return mockFetchResponse(sent ? { ...ACTIVE_FORM, status: "ARCHIVED" } : ACTIVE_FORM);
+        if (id === "adcreatives") return mockFetchResponse({ id: "5001" });
+        if (method === "POST" && id === "3001") {
+          sent = true;
+          return mockFetchResponse({ error: { code: 100, message: "Invalid parameter" } }, { status: 400 });
+        }
+        // The read back after the failed move cannot tell where the ad points.
+        if (id === "3001" && sent) return mockFetchResponse({ error: { code: 100, message: "Unsupported get request." } }, { status: 400 });
+        const objects: Record<string, unknown> = { 3001: AD_3001, 3002: AD_3002, 4001: LEAD_CREATIVE };
+        return mockFetchResponse(objects[id] ?? {});
+      }));
+
+      const result = await tool().handler({ ...args, dry_run: false, plan_token }) as ToolResult;
+      const json = JSON.parse(result.content[1].text);
+
+      expect(fetchCallSummary()).not.toContain("DELETE /5001");
+      expect(json.failed).toEqual([
+        { ad_id: "3001", kind: "repoint_failed", code: "repoint_refused", new_creative_id: "5001" },
+        { ad_id: "3002", kind: "form_changed", new_creative_id: "5001" },
+      ]);
+      expect(json.leftover_creatives).toEqual([]);
+    });
+
+    it("sends each checked move once: a retry after Meta's backoff would skip the form check", async () => {
+      const ACTIVE_FORM = { id: "222", status: "ACTIVE", page_id: "6001" };
+      const args = { ad_ids: ["3001"], lead_form_id: "222", allow_new_post: true };
+      const plan_token = await approvedToken(args, { 222: ACTIVE_FORM, 3001: AD_3001, 4001: LEAD_CREATIVE });
+      let posts = 0;
+      vi.stubGlobal("fetch", vi.fn(async (input: string, init?: RequestInit) => {
+        const id = new URL(input).pathname.split("/").pop() ?? "";
+        const method = init?.method ?? "GET";
+        // Archived as soon as the first move was tried.
+        if (id === "222") return mockFetchResponse(posts > 0 ? { ...ACTIVE_FORM, status: "ARCHIVED" } : ACTIVE_FORM);
+        if (id === "adcreatives") return mockFetchResponse({ id: "5001" });
+        if (method === "POST" && id === "3001") {
+          posts++;
+          // Code 2 is one the client otherwise retries.
+          return mockFetchResponse({ error: { code: 2, message: "Service temporarily unavailable" } }, { status: 400 });
+        }
+        const objects: Record<string, unknown> = { 3001: AD_3001, 4001: LEAD_CREATIVE };
+        return mockFetchResponse(objects[id] ?? {});
+      }));
+
+      const result = await tool().handler({ ...args, dry_run: false, plan_token }) as ToolResult;
+      const json = JSON.parse(result.content[1].text);
+
+      expect(posts).toBe(1);
+      expect(json.updated).toEqual([]);
+      expect(json.failed).toEqual([{ ad_id: "3001", kind: "repoint_failed", code: "repoint_refused", new_creative_id: "5001" }]);
+    });
+
+    it("reads the form again after each move and reports an ad that landed on a form archived meanwhile, stopping the rest", async () => {
+      const ACTIVE_FORM = { id: "222", status: "ACTIVE", page_id: "6001" };
+      const AD_3002 = { id: "3002", account_id: "123", creative: { id: "4001" } };
+      const args = { ad_ids: ["3001", "3002"], lead_form_id: "222", allow_new_post: true };
+      const plan_token = await approvedToken(args, { 222: ACTIVE_FORM, 3001: AD_3001, 3002: AD_3002, 4001: LEAD_CREATIVE });
+      let formReads = 0;
+      vi.stubGlobal("fetch", vi.fn(async (input: string, init?: RequestInit) => {
+        const id = new URL(input).pathname.split("/").pop() ?? "";
+        const method = init?.method ?? "GET";
+        // Read once for the plan and once before the first move; archived
+        // while that move waited to be sent.
+        if (id === "222") return mockFetchResponse(++formReads <= 2 ? ACTIVE_FORM : { ...ACTIVE_FORM, status: "ARCHIVED" });
+        if (id === "adcreatives") return mockFetchResponse({ id: "5001" });
+        if (method === "POST") return mockFetchResponse({ success: true });
+        const objects: Record<string, unknown> = { 3001: AD_3001, 3002: AD_3002, 4001: LEAD_CREATIVE };
+        return mockFetchResponse(objects[id] ?? {});
+      }));
+
+      const result = await tool().handler({ ...args, dry_run: false, plan_token }) as ToolResult;
+      const json = JSON.parse(result.content[1].text);
+
+      expect(json.updated).toEqual([{ ad_id: "3001", old_creative_id: "4001", new_creative_id: "5001" }]);
+      expect(json.failed).toEqual([
+        { ad_id: "3001", kind: "form_changed_after_move", new_creative_id: "5001" },
+        { ad_id: "3002", kind: "form_changed", new_creative_id: "5001" },
+      ]);
+      expect(fetchCallSummary()).not.toContain("POST /3002");
+      expect(result.content[0].text).toMatch(/3001.*ARCHIVED|ARCHIVED.*3001/s);
+    });
+
+    it("also marks the ads it already moved when the form reads archived before a later one", async () => {
+      const ACTIVE_FORM = { id: "222", status: "ACTIVE", page_id: "6001" };
+      const AD_3002 = { id: "3002", account_id: "123", creative: { id: "4001" } };
+      const AD_3003 = { id: "3003", account_id: "123", creative: { id: "4001" } };
+      const args = { ad_ids: ["3001", "3002", "3003"], lead_form_id: "222", allow_new_post: true };
+      const plan_token = await approvedToken(args, { 222: ACTIVE_FORM, 3001: AD_3001, 3002: AD_3002, 3003: AD_3003, 4001: LEAD_CREATIVE });
+      let formReads = 0;
+      vi.stubGlobal("fetch", vi.fn(async (input: string, init?: RequestInit) => {
+        const id = new URL(input).pathname.split("/").pop() ?? "";
+        const method = init?.method ?? "GET";
+        // Plan, before 3001, after 3001: active; before 3002: archived.
+        if (id === "222") return mockFetchResponse(++formReads <= 3 ? ACTIVE_FORM : { ...ACTIVE_FORM, status: "ARCHIVED" });
+        if (id === "adcreatives") return mockFetchResponse({ id: "5001" });
+        if (method === "POST") return mockFetchResponse({ success: true });
+        const objects: Record<string, unknown> = { 3001: AD_3001, 3002: AD_3002, 3003: AD_3003, 4001: LEAD_CREATIVE };
+        return mockFetchResponse(objects[id] ?? {});
+      }));
+
+      const result = await tool().handler({ ...args, dry_run: false, plan_token }) as ToolResult;
+      const json = JSON.parse(result.content[1].text);
+
+      expect(json.updated.map((u: { ad_id: string }) => u.ad_id)).toEqual(["3001"]);
+      expect(json.failed).toEqual([
+        { ad_id: "3002", kind: "form_changed", new_creative_id: "5001" },
+        { ad_id: "3003", kind: "form_changed", new_creative_id: "5001" },
+        { ad_id: "3001", kind: "form_changed_after_move", new_creative_id: "5001" },
+      ]);
+      expect(result.content[0].text).toMatch(/3001.*4001/s);
+    });
+
+    it("says a moved ad's form could not be confirmed, rather than that it changed, when the check after the move cannot read it", async () => {
+      const ACTIVE_FORM = { id: "222", status: "ACTIVE", page_id: "6001" };
+      const args = { ad_ids: ["3001"], lead_form_id: "222", allow_new_post: true };
+      const plan_token = await approvedToken(args, { 222: ACTIVE_FORM, 3001: AD_3001, 4001: LEAD_CREATIVE });
+      let formReads = 0;
+      vi.stubGlobal("fetch", vi.fn(async (input: string, init?: RequestInit) => {
+        const id = new URL(input).pathname.split("/").pop() ?? "";
+        const method = init?.method ?? "GET";
+        if (id === "222") {
+          return ++formReads <= 2
+            ? mockFetchResponse(ACTIVE_FORM)
+            : mockFetchResponse({ error: { code: 100, message: "Unsupported get request." } }, { status: 400 });
+        }
+        if (id === "adcreatives") return mockFetchResponse({ id: "5001" });
+        if (method === "POST") return mockFetchResponse({ success: true });
+        const objects: Record<string, unknown> = { 3001: AD_3001, 4001: LEAD_CREATIVE };
+        return mockFetchResponse(objects[id] ?? {});
+      }));
+
+      const result = await tool().handler({ ...args, dry_run: false, plan_token }) as ToolResult;
+      const json = JSON.parse(result.content[1].text);
+
+      expect(json.failed).toEqual([{ ad_id: "3001", kind: "form_unconfirmed_after_move", new_creative_id: "5001" }]);
+      expect(result.content[0].text).toMatch(/could not be confirmed/);
+    });
+
+    it("takes only a numeric form id", async () => {
+      vi.stubGlobal("fetch", vi.fn());
+      await expect(tool().handler({ ad_ids: ["3001"], lead_form_id: "1/../x", dry_run: true })).rejects.toThrow(/lead_form_id/);
+      expect(vi.mocked(fetch)).not.toHaveBeenCalled();
+    });
+  });
+
   it("changes nothing when another ad of the batch cannot even be read", async () => {
     const unreadable = { error: { code: 100, message: "Unsupported get request." } };
     const args = { ad_ids: ["3001", "3002"], primary_texts: { add: ["Tres"] } };

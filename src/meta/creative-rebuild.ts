@@ -109,7 +109,7 @@ export interface FailedAd {
   ad_id: string;
   error: string;
   new_creative_id?: string;
-  code?: "changed_meanwhile" | "repoint_refused";
+  code?: "changed_meanwhile" | "repoint_refused" | "stopped" | "stopped_after_move" | "unconfirmed_after_move";
 }
 
 export interface UpdatedAd {
@@ -187,15 +187,32 @@ async function readCreativeIdAfterFailedRepoint(adId: string): Promise<string | 
 // the plan was made: the replacement was built from the old one and would
 // undo their change. Meta has no conditional update, so this narrows the
 // window rather than closing it.
+/** Why a checked move stops; unconfirmed when the check could not read what it checks. */
+export interface CheckStop {
+  reason: string;
+  unconfirmed?: boolean;
+}
+
 export async function repointGroup(
   group: CreativeGroup,
   newCreativeId: string,
-  options: { verifyUnchanged?: boolean } = {},
-): Promise<{ updated: UpdatedAd[]; failed: FailedAd[]; warnings: string[] }> {
+  // check runs right before each ad moves and again once it moved: Meta has
+  // no atomic check, and the client may wait (rate limits) between the check
+  // and the send. A stop it returns ends the rest of the group; after a move,
+  // the ad is reported as having landed while it held, or as unconfirmed when
+  // the check could not read what it checks.
+  options: { verifyUnchanged?: boolean; check?: () => Promise<CheckStop | undefined> } = {},
+): Promise<{ updated: UpdatedAd[]; failed: FailedAd[]; warnings: string[]; stopped?: CheckStop }> {
   const updated: UpdatedAd[] = [];
   const failed: FailedAd[] = [];
   const warnings: string[] = [];
-  for (const adId of group.ad_ids) {
+  const stopAt = (index: number, stop: CheckStop) => {
+    for (const left of group.ad_ids.slice(index)) {
+      failed.push({ ad_id: left, error: `Not moved: ${stop.reason}`, new_creative_id: newCreativeId, code: "stopped" });
+    }
+    return { updated, failed, warnings, stopped: stop };
+  };
+  for (const [index, adId] of group.ad_ids.entries()) {
     if (options.verifyUnchanged) {
       const now = await readCreativeIdAfterFailedRepoint(adId);
       if (now !== group.creative_id) {
@@ -210,29 +227,50 @@ export async function repointGroup(
         continue;
       }
     }
+    const before = options.check ? await options.check() : undefined;
+    if (before) return stopAt(index, before);
+    let moved = false;
     try {
       await metaApiClient.postForm<{ success: boolean }>(
         `/${adId}`,
         { creative: JSON.stringify({ creative_id: newCreativeId }) },
-        { accountId: normalizeAccountId(group.account_id) },
+        // A checked move is sent once: a retry after the client's backoff
+        // would land without the check, and a doubtful answer is read back below.
+        { accountId: normalizeAccountId(group.account_id), noRetry: options.check !== undefined },
       );
       updated.push({ ad_id: adId, old_creative_id: group.creative_id, new_creative_id: newCreativeId });
+      moved = true;
     } catch (err) {
       const outcome = await readCreativeIdAfterFailedRepoint(adId);
       if (outcome === newCreativeId) {
         updated.push({ ad_id: adId, old_creative_id: group.creative_id, new_creative_id: newCreativeId });
         warnings.push(`Ad ${adId} reported an error (${errorMessage(err)}) but is confirmed to point at creative ${newCreativeId}.`);
-        continue;
+        moved = true;
+      } else {
+        const state = outcome === undefined
+          ? "the ad's creative could not be read back, so its state is unknown"
+          : `the ad still points at ${outcome}`;
+        failed.push({
+          ad_id: adId,
+          error: `Creative ${newCreativeId} was created but ${state}: ${errorMessage(err)}. Retry with ads_update_ad { ad_id: "${adId}", creative_id: "${newCreativeId}" }.`,
+          new_creative_id: newCreativeId,
+          code: "repoint_refused",
+        });
       }
-      const state = outcome === undefined
-        ? "the ad's creative could not be read back, so its state is unknown"
-        : `the ad still points at ${outcome}`;
-      failed.push({
-        ad_id: adId,
-        error: `Creative ${newCreativeId} was created but ${state}: ${errorMessage(err)}. Retry with ads_update_ad { ad_id: "${adId}", creative_id: "${newCreativeId}" }.`,
-        new_creative_id: newCreativeId,
-        code: "repoint_refused",
-      });
+    }
+    if (moved && options.check) {
+      const after = await options.check();
+      if (after) {
+        failed.push({
+          ad_id: adId,
+          error: after.unconfirmed
+            ? `Moved, but ${after.reason} right after, so it could not be confirmed that the form is still active: check it with ads_get_lead_form_details, and if it is not, point the ad back at creative ${group.creative_id} with ads_update_ad.`
+            : `Moved, but ${after.reason} right after: the ad now opens that form. Point it back at creative ${group.creative_id} with ads_update_ad, or at a creative with an active form.`,
+          new_creative_id: newCreativeId,
+          code: after.unconfirmed ? "unconfirmed_after_move" : "stopped_after_move",
+        });
+        return stopAt(index + 1, after);
+      }
     }
   }
   return { updated, failed, warnings };

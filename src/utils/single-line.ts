@@ -3,7 +3,8 @@ import { createHash } from "node:crypto";
 const CONTROL_CHARS = new RegExp("[\\x00-\\x1f\\x7f]+", "g");
 /** Characters a reader cannot see, or that break a line: every control, format and separator character except the plain space. */
 const HIDDEN_CHARS = /(?! )[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Zs}]/gu;
-const LINE_SEPARATORS = new RegExp("[" + String.fromCharCode(0x2028, 0x2029) + "]", "g");
+// U+0085 (next line) breaks a line in some renderers, as U+2028 and U+2029 do.
+const LINE_SEPARATORS = new RegExp("[" + String.fromCharCode(0x85, 0x2028, 0x2029) + "]", "g");
 /** Three or more hyphens are how this server fences untrusted content; inside it they are just text. */
 const FENCE_RUN = /-{3,}/g;
 
@@ -50,6 +51,21 @@ export function exactLine(value: string, max: number): string {
   // UTF-16 code units, not UTF-8: UTF-8 turns every lone surrogate into U+FFFD.
   const fingerprint = createHash("sha256").update(value, "utf16le").digest("hex").slice(0, 12);
   return `${literal}… (${value.length} characters in all, sha256 ${fingerprint})`;
+}
+
+// JSON.stringify escapes every control character below U+0020 inside strings,
+// so a raw newline or plain space in its output is indentation, never data.
+const HIDDEN_IN_JSON = /(?![ \n])[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Zs}]/gu;
+
+/**
+ * Indented JSON to show inside the untrusted-content fence. It parses back to
+ * the same value, but no hidden character or fence-length run of hyphens in
+ * the data survives to break a line or close the fence.
+ */
+export function fencedJson(value: unknown): string {
+  return JSON.stringify(value, null, 2)
+    .replace(HIDDEN_IN_JSON, unicodeEscape)
+    .replace(FENCE_RUN, (run) => `-${"\\u002d".repeat(run.length - 2)}-`);
 }
 
 function unicodeEscape(char: string): string {

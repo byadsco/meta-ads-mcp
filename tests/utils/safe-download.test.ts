@@ -93,6 +93,21 @@ describe("downloadSafePublicImage", () => {
     });
   });
 
+  it("refuses a PDF unless allowPdf is set, and then downloads it with every other guard", async () => {
+    const pdf = { headers: { "content-type": "application/pdf", "content-length": "8" }, chunks: [Buffer.from("%PDF-1.4")] };
+    const resolve = fakeResolve({ "cdn.example.com": ["203.0.113.10"] });
+
+    const refused = makeRequest([{ ...pdf }]);
+    await expect(downloadSafePublicImage("https://cdn.example.com/guide.pdf", { request: refused.request, resolve }))
+      .rejects.toThrow(/not allowed/);
+
+    const allowed = makeRequest([{ ...pdf }]);
+    const file = await downloadSafePublicImage("https://cdn.example.com/guide.pdf", { request: allowed.request, resolve, allowPdf: true });
+    expect(file.contentType).toBe("application/pdf");
+    expect(file.extension).toBe(".pdf");
+    await expect(runLookup(allowed.calls[0].options)).resolves.toEqual({ address: "203.0.113.10", family: 4 });
+  });
+
   it("rejects redirects to non-https URLs", async () => {
     const { request } = makeRequest([
       {

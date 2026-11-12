@@ -292,6 +292,71 @@ Measured with a customer-list audience, a website audience and paused ad sets, a
 - **Answer keys.** A multiple-choice answer without a `key` makes Meta fail with "An unknown error has occurred", and no form is made.
 - **After the form.** A form needs `thank_you_page` or `follow_up_action_url` (`subcode 1892085`, "missing FollowUpActionURL").
 - **Lead ads.** Lead creatives with an image and with a video (`video_data.call_to_action.value.lead_gen_form_id`) both ran as paused ads in an `ON_AD` ad set.
+- **Every Ads Manager option (measured 2026-11-12, v26.0, Page token).** One form was accepted with all of these:
+  - `is_optimized_for_quality: true`, `question_page_custom_headline` and `block_display_for_non_targeted_viewer`;
+  - `tracking_parameters` as an object;
+  - `custom_disclaimer` with a `body.text` and `checkboxes`;
+  - a `DATE_TIME` question with `inline_context`;
+  - `context_card` with `LIST_STYLE` and a `button_text`;
+  - a `thank_you_page` with `short_message`.
+
+  Other forms were accepted with:
+  - `is_phone_sms_verify_enabled` and the question types `PHONE_OTP`, `WORK_EMAIL`, `ID_CO_CC` and `SLIDER`;
+  - thank-you buttons `WHATSAPP`, `CALL_BUSINESS` (with `business_phone_number` and `country_code`) and `PROMO_CODE`.
+- **Refused.**
+  - `should_enforce_work_email` in a question: "Invalid keys".
+  - Making a conditional answer set: `POST /{page_id}/leadgen_conditional_questions_group` asks for `conditional_questions_group_csv`, then answers `(#3) Application does not have the capability`, with a Page token and with the person's, before and after `leads_retrieval`.
+  - A `cover_photo` file upload: `(#200) Permissions error`, even with `pages_manage_posts`.
+- **Conditional answers** (an answer that sets the options of the next question; Ads Manager's "Condicional" question with a CSV).
+  - Read back, the question carries `conditional_questions_group_id`, `conditional_questions_choices` (the tree, with `value`, `customized_token` and `next_question_choices`) and `dependent_conditional_questions: [{ name, input_type: "inline_select", field_key }]`; Ads Manager names the keys `conditional_question_1`, `conditional_question_2`.
+  - A form created through the API with a CUSTOM question carrying an existing `conditional_questions_group_id` and `dependent_conditional_questions` works: it reads back with the whole tree.
+  - `conditional_questions_choices` and `conditional_questions_choices_id` in a create are refused ("Invalid keys"). Without a group id, `dependent_conditional_questions` alone asks for `name`, then `field_key`, then a choices id (subcode 1892112).
+- **Conditional logic** (Ads Manager's "Lógica condicional": jumps, closing the form for non-leads, several end pages). Not in the API: such a form reads as a plain multiple-choice question. Probed on such a form, none of these exist:
+  - on the form: `logic`, `conditional_logic`, `conditional_logic_rules`, `skip_logic`, `logic_rules`, `logic_jumps`, `question_logic`, `question_logic_rules`, `rules`, `routing`, `branches`, `branching_logic`, `form_logic`, `flow`, `form_flow`, `pages`, `screens`, `sections`, `steps`, `end_page`, `end_pages`, `end_screens`, `custom_end_pages`, `thank_you_pages`, `thank_you_page_list`, `thank_you_page_ids`, `disqualifier`, `disqualified_thank_you_page`, `non_lead_thank_you_page`, `lead_qualifiers`, `qualifying_questions`, `lead_filter`, `lead_filtering`, `is_conditional`, `has_conditional_logic`, `is_conditional_logic_enabled`, `upsell_channel`;
+  - on a question or an option: `logic`, `skip_logic`, `conditional_logic`, `option_logic`, `next_question`, `jump_to`, `branches`, `rules`, `end_page`, `is_disqualifier`, `is_disqualifying`, `disqualify`;
+  - `qualifiers` exists only as a legacy field: `(#12) deprecate_legacy_fields_in_lead_form_node is deprecated for versions v5.0 and higher`.
+- **Forms made in Ads Manager** return no `thank_you_page`, only `follow_up_action_url`, with or without logic.
+- **Gated file.**
+  - A multipart create with `upload_gated_file` (a PDF) and a thank-you `button_type: "VIEW_ON_FACEBOOK"` works.
+  - It reads back as `thank_you_page.gated_file: { file_name, file_size_bytes, file_cdn_url, id }`.
+  - Another form reuses it with `thank_you_page.gated_file: { id }`.
+- **Cover image.** `context_card.cover_photo_id` takes a Page photo id. A photo added with `POST /{page_id}/photos` and `published: false` (by URL) works there.
+- **Reading a form.**
+  - `GET /{form_id}` answers to the person's own token, no Page token needed.
+  - The privacy link and the disclaimer come back inside `legal_content`.
+  - `tracking_parameters` come back as a list of `{ key, value }`.
+  - The intro card's cover comes back as `cover_photo: { id }`.
+  - Every part carries an `id`.
+  - `is_phone_sms_verify_enabled`, `privacy_policy`, `custom_disclaimer` and `cover_photo` are not readable fields of the form.
+  - A free-text `CUSTOM` question's `inline_context` is not kept.
+- **Listing.** `GET /{page_id}/leadgen_forms` lists archived forms too. On that edge `privacy_policy` is silently ignored.
+- **Archiving.**
+  - `POST /{form_id}` with `status` works with the person's token too.
+  - `ACTIVE` brings an archived form back.
+  - A `name` in the same call answers `success: true` and changes nothing.
+- **Archived forms in ads.** A new creative pointing at an `ARCHIVED` form is accepted.
+- **Changing an ad's form.** A new creative with another `lead_gen_form_id`, then `POST /{ad_id}` with it, works on a paused ad.
+- **Finding ads by form.** `GET /act_{id}/ads?fields=creative{object_story_spec{link_data{call_to_action}}}` returns each button's `lead_gen_form_id`.
+- **Leads.**
+  - `GET /{form_id}/leads` answers `(#200) Requires leads_retrieval permission` without it, with the person's token and with a Page token alike.
+  - With `leads_retrieval` the person's token reads them.
+  - A test lead shows there too, with `is_organic: true`.
+  - Tracking parameters come as answers in `field_data` (`source: …`).
+  - A checked consent box reads `is_checked: "1"`.
+  - `time_created` filtering works.
+- **Test leads** (Page token, with `leads_retrieval`).
+  - `POST /{form_id}/test_leads` with no body creates one, with Meta's placeholder answers (`<test lead: dummy data for …>`, `test@meta.com`).
+  - With `custom_disclaimer_responses` it sets the consent boxes.
+  - Any `field_data`, even one email or every question's key, is refused: code 2, subcode 1892059 "Test Lead Creation Failed".
+  - A second one on the same form is refused: subcode 1892058.
+  - `GET /{form_id}/test_leads` lists it.
+  - `DELETE /{lead_id}` with the Page token answers code 2, subcode 1892035 "Could Not Delete Lead", yet the lead is gone (the list and `/leads` no longer show it). A retry then answers `Object not found` (100/33).
+  - Without `leads_retrieval`, a test lead was made but never listed.
+- **Lead access.**
+  - `has_lead_access` needs both `user_id(...)` and `app_id(...)` (`(#100) The parameter user_id is required`).
+  - It answers `(#3) … granular permission` without `leads_retrieval`.
+  - With it, for this app, it answers only `failure_reason: "This API is not available."`, with no `can_access_lead`, although the same person reads the Page's leads.
+  - `leadgen_tos_accepted` reads with the person's token.
 
 ## Dynamic creative
 

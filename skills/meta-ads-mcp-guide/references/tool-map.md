@@ -1,6 +1,6 @@
 # Tool map
 
-Every tool this server registers, grouped by what you are trying to do. 162 in total; 91 are read-only.
+Every tool this server registers, grouped by what you are trying to do. 168 in total; 94 are read-only.
 
 A ⚠️ marks a tool that changes live data, spends money or touches stored credentials. Read the tool's own description before calling one: it carries the argument rules this map deliberately leaves out.
 
@@ -44,7 +44,7 @@ A ⚠️ marks a tool that changes live data, spends money or touches stored cre
 - `ads_create_ad` ⚠️ — Create an ad from an existing creative, in an ad set, with its conversion domain and labels. `flexible_format` adds groups of media and texts (Sales and App campaigns).
 - `ads_update_ad` ⚠️ — Change an ad's name, status or creative.
 - `ads_update_ad_url_tags` ⚠️ — Rewrite the UTM tags of live ads by cloning each creative onto the same post. Skips ads with several text options unless allow_new_post.
-- `ads_update_ad_content` ⚠️ — Add, remove or replace the copy of live ads, or change link, button or media. Dry run first; shows what happens to likes and comments. `allow_post_edit` edits the post itself for one-text ads (needs `pages_manage_posts`).
+- `ads_update_ad_content` ⚠️ — Add, remove or replace the copy of live ads, or change link, button, media or a lead ad's form. Dry run first; shows what happens to likes and comments. `allow_post_edit` edits the post itself for one-text ads (needs `pages_manage_posts`).
 - `ads_duplicate_ad` ⚠️ — Copy an ad into other ad sets of its account. By default the copies share its post and Instagram media, so its likes, comments and shares carry over; needs an idempotency_key.
 - `ads_get_ad_social_proof` — Likes, comments and shares behind ads, grouped by post, with every ad of the account that shows each post.
 - `ads_delete_ad` ⚠️ — Delete an ad. Pausing it with ads_activate_entity is reversible; this is not.
@@ -129,10 +129,16 @@ A ⚠️ marks a tool that changes live data, spends money or touches stored cre
 
 ## Leads
 
-- `ads_get_lead_forms` — List the instant lead forms on a page.
-- `ads_create_lead_form` ⚠️ — Create an instant form for lead ads: multiple-choice questions, intro card and thank-you screen. Uses a Page token (needs `pages_manage_ads`).
-- `ads_get_leads` — Download the leads submitted through a form.
-- `ads_get_ad_leads` — Download leads attributed to one ad.
+- `ads_get_lead_forms` — List the instant lead forms on a page, archived ones included, with the conditional answer set each one uses (the id to reuse).
+- `ads_get_lead_form_details` — One form completely, plus `create_input`: the same form in the shape `ads_create_lead_form` takes, to make a changed copy (forms cannot be edited).
+- `ads_create_lead_form` ⚠️ — Create an instant form with every option the API allows: higher intent, every question type (SMS-verified phone, appointment, national ID…), conditional answers from an Ads Manager answer set, intro card with cover image, consent checkboxes, thank-you button and gated file, tracking parameters. Uses a Page token (needs `pages_manage_ads`).
+- `ads_update_lead_form` ⚠️ — Archive a form or bring it back; Meta has no delete for forms.
+- `ads_get_lead_form_ads` — The ads of an account whose button opens a given form.
+- `ads_get_leads` — Download the leads of a form, with consent answers, date filters and paging (needs `leads_retrieval`).
+- `ads_get_ad_leads` — Download the leads one ad generated.
+- `ads_get_lead_setup` — Whether a Page's leads can reach you and another system (CRM or backend): Lead Ads terms and lead access, with Meta's reason and fix.
+- `ads_create_test_lead` ⚠️ — Create a test lead on a form, to check a connected system receives it.
+- `ads_delete_test_lead` ⚠️ — Delete a form's test leads; never a real lead.
 
 ## Pixels and conversions
 

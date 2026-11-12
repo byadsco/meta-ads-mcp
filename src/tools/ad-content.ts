@@ -65,9 +65,11 @@ async function releaseWithin(release: Promise<void>, ms: number): Promise<void> 
   }
 }
 import {
+  asRecord,
   createReplacementCreative,
   deleteCreative,
   errorMessage,
+  type CheckStop,
   groupAdsByCreative,
   hasFeedContent,
   readCreativeForRebuild,
@@ -77,6 +79,7 @@ import {
   type UpdatedAd,
 } from "../meta/creative-rebuild.js";
 import { readEngagement, type Engagement } from "../meta/post-engagement.js";
+import { metaApiClient } from "../meta/client.js";
 import type { AdCreative } from "../meta/types/index.js";
 import { ADVERTISER_CONTENT_CLOSE, ADVERTISER_CONTENT_OPEN, exactLine, singleLine } from "../utils/single-line.js";
 import { ctaEnum } from "./creatives.js";
@@ -97,12 +100,12 @@ const textChange = (label: string) =>
 interface PlanningProblem {
   creative_id: string;
   ad_ids: string[];
-  code: PlanErrorCode | "invalid_change";
+  code: PlanErrorCode | "invalid_change" | "lead_form_other_page";
   message: string;
 }
 
 type KindedFailure = FailedAd & {
-  kind: "read_failed" | "create_failed" | "repoint_failed" | "changed_meanwhile" | "post_edit_failed" | "left_on_temporary" | "move_back_unconfirmed";
+  kind: "read_failed" | "create_failed" | "repoint_failed" | "changed_meanwhile" | "form_changed" | "form_changed_after_move" | "form_unconfirmed_after_move" | "post_edit_failed" | "left_on_temporary" | "move_back_unconfirmed";
 };
 
 // Every ad of the account on the post a route-B plan edits, with each one's
@@ -140,6 +143,18 @@ const NUMERIC_ID = /^\d+$/;
 // that may need a read back: past this many, moving them all back at worst no
 // longer fits in the request's time limit next to the edit itself.
 const MAX_POST_EDIT_ADS = 3;
+
+// The Page of a lead form an ad is to open. Meta accepts a creative pointing
+// at an archived form (measured), so the status is checked here.
+async function activeFormPage(formId: string): Promise<string> {
+  const form = await metaApiClient.get<{ status?: string; page_id?: string }>(`/${formId}`, { fields: "status,page_id" });
+  const status = singleLine(form.status, 20);
+  if (status !== "ACTIVE") {
+    throw new Error(`lead_form_id ${formId} is ${status || "not readable"}: only an ACTIVE form can take ads. Reactivate it with ads_update_lead_form or pick another.`);
+  }
+  if (!form.page_id || !/^\d+$/.test(form.page_id)) throw new Error(`Meta did not say which Page lead form ${formId} belongs to.`);
+  return form.page_id;
+}
 
 // Binds an apply call to the dry run the person saw: the same ads, source
 // creatives, routes and replacement bodies, and the same problems. Creatives
@@ -328,7 +343,7 @@ export function registerAdContentTools(server: McpServer, options: { clock?: Clo
   server.registerTool(
     "ads_update_ad_content",
     {
-      description: `${WRITE_WARNING}Change the copy, link, button or media of live ads: add, remove or replace primary texts, headlines and descriptions, including removing one option of several. Meta creatives are immutable, so each ad gets a replacement creative and goes back through review; the ad keeps its ID, history and previous creative (point it back with ads_update_ad to undo, which brings its post back too). Likes, comments and shares live on the ad's post. When only primary texts change and at least two remain, the ad keeps its Facebook post and that engagement (its Instagram side starts over and the Facebook headline stays the post's own). Anything else creates a new post, which resets the visible engagement, and only happens with allow_new_post: true. With allow_post_edit: true, an ad with one primary text (an image or link ad, or a promoted post) can instead have its post itself edited: the Facebook post and its engagement stay, and Instagram too when the ad reuses the post rather than having created it. The new text then shows on every ad using the post, which the preview lists; while the post is edited (about a minute) active ads keep running on a temporary copy of the ad with the new text; headline and description cannot change this way; one post per call, with no other change, at most 3 ads on the post, none of them active with several text options, and one edit of a post at a time, none within three minutes of the last one (Meta's reads catch up meanwhile); the token needs pages_manage_posts. dry_run defaults to true: the first call shows, per creative, the copy before and after, any link, button, media or url_tags change, the route and the engagement at stake, without changing anything. The preview is read from the replacement that would be sent, so it includes what a change brings along (a video given a new link and no button gets a LEARN_MORE button). Show that to the person and, once they agree, call again with dry_run: false and the plan_token the dry run returned. Only that exact plan is applied: if the ads or the request changed since, nothing is written and the reply is the new preview with a new plan_token. Nothing changes if any ad cannot be read, has an invalid change or would need a route that is not allowed, or if any replacement creative cannot be created: all replacements are created before any ad is repointed. Right before each repoint the ad is read again; an ad someone moved to another creative meanwhile is left untouched. If Meta then refuses to repoint an ad, ads already repointed stay changed, and the response lists each one with its previous creative so it can be undone. Repeating a set, link, button or media change that is already applied does nothing; add and remove are not repeatable, so after a partial failure preview again with only the ads that failed. An ad with per-platform media (platform_customizations) cannot have its image or video changed here. Carousels, dynamic creative and other asset feeds are not supported. Meta lets an ad change creative at most once every 30 seconds (error 613): wait before changing the same ad again.`,
+      description: `${WRITE_WARNING}Change the copy, link, button or media of live ads: add, remove or replace primary texts, headlines and descriptions, including removing one option of several. lead_form_id points a lead ad at another ACTIVE instant form of its Page (a new post); the form is read again before and after each ad moves, and an ad that lands on a form archived meanwhile is reported, with the moves still to come stopped. Meta creatives are immutable, so each ad gets a replacement creative and goes back through review; the ad keeps its ID, history and previous creative (point it back with ads_update_ad to undo, which brings its post back too). Likes, comments and shares live on the ad's post. When only primary texts change and at least two remain, the ad keeps its Facebook post and that engagement (its Instagram side starts over and the Facebook headline stays the post's own). Anything else creates a new post, which resets the visible engagement, and only happens with allow_new_post: true. With allow_post_edit: true, an ad with one primary text (an image or link ad, or a promoted post) can instead have its post itself edited: the Facebook post and its engagement stay, and Instagram too when the ad reuses the post rather than having created it. The new text then shows on every ad using the post, which the preview lists; while the post is edited (about a minute) active ads keep running on a temporary copy of the ad with the new text; headline and description cannot change this way; one post per call, with no other change, at most 3 ads on the post, none of them active with several text options, and one edit of a post at a time, none within three minutes of the last one (Meta's reads catch up meanwhile); the token needs pages_manage_posts. dry_run defaults to true: the first call shows, per creative, the copy before and after, any link, button, media or url_tags change, the route and the engagement at stake, without changing anything. The preview is read from the replacement that would be sent, so it includes what a change brings along (a video given a new link and no button gets a LEARN_MORE button). Show that to the person and, once they agree, call again with dry_run: false and the plan_token the dry run returned. Only that exact plan is applied: if the ads or the request changed since, nothing is written and the reply is the new preview with a new plan_token. Nothing changes if any ad cannot be read, has an invalid change or would need a route that is not allowed, or if any replacement creative cannot be created: all replacements are created before any ad is repointed. Right before each repoint the ad is read again; an ad someone moved to another creative meanwhile is left untouched. If Meta then refuses to repoint an ad, ads already repointed stay changed, and the response lists each one with its previous creative so it can be undone. Repeating a set, link, button or media change that is already applied does nothing; add and remove are not repeatable, so after a partial failure preview again with only the ads that failed. An ad with per-platform media (platform_customizations) cannot have its image or video changed here. Carousels, dynamic creative and other asset feeds are not supported. Meta lets an ad change creative at most once every 30 seconds (error 613): wait before changing the same ad again.`,
       inputSchema: {
         ad_ids: z.array(z.string()).min(1).max(50).describe("Ad IDs to change (1-50). Ads sharing a creative get one replacement."),
         primary_texts: textChange("primary text"),
@@ -340,6 +355,7 @@ export function registerAdContentTools(server: McpServer, options: { clock?: Clo
         image_url: z.string().optional().describe("New image URL, or a video's new thumbnail. Ignored when image_hash is given."),
         video_id: z.string().optional().describe("New video for a video ad"),
         url_tags: z.string().optional().describe("New UTM query string, applied with the other changes. A leading '?' is stripped."),
+        lead_form_id: z.string().optional().describe("New instant form for a lead ad: an ACTIVE form of the ad's Page (Meta itself accepts an archived one). Needs allow_new_post"),
         allow_new_post: z
           .boolean()
           .default(false)
@@ -361,7 +377,7 @@ export function registerAdContentTools(server: McpServer, options: { clock?: Clo
     },
     async ({
       ad_ids, primary_texts, headlines, descriptions, link_url, call_to_action_type,
-      image_hash, image_url, video_id, url_tags, allow_new_post, allow_post_edit, dry_run, plan_token,
+      image_hash, image_url, video_id, url_tags, lead_form_id, allow_new_post, allow_post_edit, dry_run, plan_token,
     }) => {
       // A post edit has to be over, ads put back included, before the
       // request's time limit, counting from here.
@@ -375,9 +391,10 @@ export function registerAdContentTools(server: McpServer, options: { clock?: Clo
       const badAd = ad_ids.findIndex((id) => !NUMERIC_ID.test(id));
       if (badAd !== -1) throw new Error(`ad_ids[${badAd}] is not an ad ID: ad IDs are numeric.`);
       if (video_id !== undefined && !NUMERIC_ID.test(video_id)) throw new Error("video_id is not a video ID: video IDs are numeric.");
+      if (lead_form_id !== undefined && !NUMERIC_ID.test(lead_form_id)) throw new Error("lead_form_id is not a lead form ID: form IDs are numeric.");
       const changes: ContentChanges = {
         primary_texts, headlines, descriptions, link_url, call_to_action_type,
-        image_hash, image_url, video_id,
+        image_hash, image_url, video_id, lead_form_id,
         url_tags: url_tags === undefined ? undefined : normalizeUrlTags(url_tags),
       };
       if (image_url && !image_hash) {
@@ -398,6 +415,8 @@ export function registerAdContentTools(server: McpServer, options: { clock?: Clo
       // so how long the reads take does not matter there.
       const readPlan = async (mode: "preview" | "locate" | "locked" = "preview") => {
         const readStartedAt = clock.now();
+        // Read on every plan, so a form archived after the preview stops the apply.
+        const formPage = lead_form_id === undefined ? undefined : await activeFormPage(lead_form_id);
         const grouped = await groupAdsByCreative(ad_ids);
         const failed: KindedFailure[] = grouped.failed.map((f) => ({ ...f, kind: "read_failed" }));
         const reports: GroupReport[] = [];
@@ -411,6 +430,16 @@ export function registerAdContentTools(server: McpServer, options: { clock?: Clo
             creative = await readCreativeForRebuild(group.creative_id, ["body", "title"]);
           } catch (err) {
             for (const adId of group.ad_ids) failed.push({ ad_id: adId, error: errorMessage(err), kind: "read_failed" });
+            continue;
+          }
+          const creativePage = asRecord(creative.object_story_spec)?.["page_id"];
+          if (formPage !== undefined && creativePage !== formPage) {
+            planningErrors.push({
+              creative_id: group.creative_id,
+              ad_ids: group.ad_ids,
+              code: "lead_form_other_page",
+              message: `Lead form ${lead_form_id} belongs to Page ${formPage}, not to the Page of creative ${group.creative_id}: an ad can only open a form of its own Page.`,
+            });
             continue;
           }
           let plan: ContentPlan;
@@ -469,7 +498,7 @@ export function registerAdContentTools(server: McpServer, options: { clock?: Clo
         // any ad left out (unreadable, invalid change, refused route) stops
         // the batch: a batch never half-applies on a plan.
         const blocked = planningErrors.length > 0 || failed.length > 0 || reports.some((r) => r.blocking);
-        return { failed, reports, routed, actionable, planningErrors, token, blocked, postScope };
+        return { failed, reports, routed, actionable, planningErrors, token, blocked, postScope, formPage };
       };
 
       // An apply call writes only the plan the person saw: if the ads or the
@@ -581,11 +610,65 @@ export function registerAdContentTools(server: McpServer, options: { clock?: Clo
           }
           return;
         }
-        for (const { group, newCreativeId } of ready) {
-          const outcome = await repointGroup(group, newCreativeId, { verifyUnchanged: true });
+        // Meta moves an ad onto an archived form without complaint, so the
+        // form is read again before and after each ad moves; a form archived
+        // or moved meanwhile stops the moves still to come, and an ad that
+        // landed on it is reported.
+        const formCheck = lead_form_id === undefined ? undefined : async (): Promise<CheckStop | undefined> => {
+          let form: { status?: string; page_id?: string };
+          try {
+            form = await metaApiClient.get<{ status?: string; page_id?: string }>(`/${lead_form_id}`, { fields: "status,page_id" });
+          } catch (err) {
+            return { reason: `lead form ${lead_form_id} could not be read (${singleLine(errorMessage(err), 150) || "no answer"})`, unconfirmed: true };
+          }
+          const status = singleLine(form.status, 20);
+          if (status !== "ACTIVE") return { reason: `lead form ${lead_form_id} is ${status || "without a status"}` };
+          if (form.page_id !== plan.formPage) return { reason: `lead form ${lead_form_id} now belongs to Page ${singleLine(form.page_id, 30) || "unknown"}` };
+          return undefined;
+        };
+        for (const [index, { group, newCreativeId }] of ready.entries()) {
+          const outcome = await repointGroup(group, newCreativeId, { verifyUnchanged: true, check: formCheck });
           updated.push(...outcome.updated);
-          failed.push(...outcome.failed.map((f) => ({ ...f, kind: f.code === "changed_meanwhile" ? "changed_meanwhile" as const : "repoint_failed" as const })));
+          // Once a move toward the replacement was sent, an ad may point at it
+          // even if Meta did not confirm, so it stays. Only a replacement no
+          // move was sent to is deleted below, and then it is not named.
+          const sentToReplacement = outcome.updated.length > 0 || outcome.failed.some((f) => f.code === "repoint_refused");
+          const replacementKept = !outcome.stopped || sentToReplacement;
+          failed.push(...outcome.failed.map((f) => ({
+            ...f,
+            kind: f.code === "changed_meanwhile" ? "changed_meanwhile" as const
+              : f.code === "stopped" ? "form_changed" as const
+                : f.code === "stopped_after_move" ? "form_changed_after_move" as const
+                  : f.code === "unconfirmed_after_move" ? "form_unconfirmed_after_move" as const
+                    : "repoint_failed" as const,
+            code: f.code === "stopped" || f.code === "stopped_after_move" || f.code === "unconfirmed_after_move" ? undefined : f.code,
+            new_creative_id: replacementKept ? f.new_creative_id : undefined,
+          })));
           warnings.push(...outcome.warnings);
+          if (outcome.stopped) {
+            const stop = outcome.stopped;
+            const rest = ready.slice(index + 1);
+            for (const { group: left } of rest) {
+              for (const adId of left.ad_ids) failed.push({ ad_id: adId, error: `Not moved: ${stop.reason}`, kind: "form_changed" });
+            }
+            // Ads moved earlier in this call, while the form still read
+            // active, open it too now: each one is reported with its way back.
+            const flagged = new Set(failed.filter((f) => f.kind === "form_changed_after_move" || f.kind === "form_unconfirmed_after_move").map((f) => f.ad_id));
+            for (const moved of updated.filter((u) => !flagged.has(u.ad_id))) {
+              failed.push({
+                ad_id: moved.ad_id,
+                new_creative_id: moved.new_creative_id,
+                kind: stop.unconfirmed ? "form_unconfirmed_after_move" : "form_changed_after_move",
+                error: `Moved while the form still read active, but ${stop.reason} before a later ad moved: this ad opens that form. Check it with ads_get_lead_form_details, and point the ad back at creative ${moved.old_creative_id} with ads_update_ad if needed.`,
+              });
+            }
+            const unusedIds = [...(replacementKept ? [] : [newCreativeId]), ...rest.map((r) => r.newCreativeId)];
+            for (const id of unusedIds) {
+              unused.push(id);
+              if (!(await deleteCreative(id))) leftover.push(id);
+            }
+            return;
+          }
         }
       }
 

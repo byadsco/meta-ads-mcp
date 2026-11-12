@@ -26,6 +26,8 @@ const JPEG_MIME_ALIASES = new Set(["image/jpg", "image/pjpeg"]);
 
 export interface SafeImageDownloadOptions extends AssertSafeUrlOptions {
   maxBytes?: number;
+  /** Also accept application/pdf (a lead form's gated file), with every other guard unchanged. */
+  allowPdf?: boolean;
   maxRedirects?: number;
   timeoutMs?: number;
   signal?: AbortSignal;
@@ -37,11 +39,12 @@ export interface SafeImageDownloadOptions extends AssertSafeUrlOptions {
 export interface SafeImageDownload {
   buffer: Buffer;
   contentType: string;
-  extension: ".jpg" | ".png" | ".gif" | ".webp";
+  extension: ".jpg" | ".png" | ".gif" | ".webp" | ".pdf";
   finalUrl: URL;
 }
 
 function extensionFor(contentType: string): SafeImageDownload["extension"] {
+  if (contentType === "application/pdf") return ".pdf";
   if (contentType === "image/png") return ".png";
   if (contentType === "image/gif") return ".gif";
   if (contentType === "image/webp") return ".webp";
@@ -57,6 +60,7 @@ function normalizeImageContentType(headers: IncomingHttpHeaders): string | null 
 function requestImage(
   resolved: ResolvedSafePublicUrl,
   options: Required<Pick<SafeImageDownloadOptions, "maxBytes" | "timeoutMs">> & {
+    allowPdf?: boolean;
     request: typeof https.request;
     signal?: AbortSignal;
   },
@@ -69,7 +73,7 @@ function requestImage(
     }
     const reqOptions: RequestOptions = {
       method: "GET",
-      headers: { Accept: "image/*" },
+      headers: { Accept: options.allowPdf ? "image/*, application/pdf" : "image/*" },
       lookup: buildPinnedLookup(resolved),
     };
 
@@ -104,7 +108,7 @@ function requestImage(
       }
 
       const contentType = normalizeImageContentType(res.headers);
-      if (!contentType || !ALLOWED_IMAGE_TYPES.has(contentType)) {
+      if (!contentType || !(ALLOWED_IMAGE_TYPES.has(contentType) || (options.allowPdf && contentType === "application/pdf"))) {
         rejectAndClose(res, new UnsafeUrlError(`Image content-type "${contentType ?? "missing"}" is not allowed`));
         return;
       }
@@ -183,6 +187,6 @@ export async function downloadSafePublicImage(
       what: "image",
       validateHop: options.allowedHostSuffixes ? (url) => assertAllowedHost(url, options.allowedHostSuffixes as string[], "image") : undefined,
     },
-    (resolved) => requestImage(resolved, { request, maxBytes, timeoutMs, signal: options.signal }),
+    (resolved) => requestImage(resolved, { request, maxBytes, timeoutMs, signal: options.signal, allowPdf: options.allowPdf }),
   );
 }
