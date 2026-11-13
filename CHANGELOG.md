@@ -7,6 +7,26 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Changed
+
+- **The deployed server asks for the lead, Page-post and comment permissions at sign-in.** `deploy.yml` sets `META_OAUTH_EXTRA_SCOPES=leads_retrieval,pages_manage_ads,pages_manage_posts,pages_read_user_content`. Production never set it before, so people signing in were not asked for them: lead reads, test leads, instant forms, form cover images and post edits worked only for whoever had granted those permissions to the app elsewhere. People sign in again to grant them. The scopes are written with `\,`: the deploy action splits `env_vars` on plain commas.
+- **Allowlists separate their items with spaces.**
+  - **The problem.** The same split turned `AUTH_ALLOWED_EMAILS` into its first email plus an empty variable named after the second (seen on the live service), so only the first address could sign in.
+  - **The server.** It now reads `AUTH_ALLOWED_EMAILS`, `AUTH_ALLOWED_DOMAINS` and `AUTH_ALLOWED_FB_USER_IDS` separated by spaces or semicolons as well as commas.
+  - **The deploy.** It refuses a list secret that holds a comma.
+  - **Why not escape the commas.** Escaping them (`\,`) would print a decoded value that GitHub cannot mask in the public deploy log.
+
+### Fixed
+
+- **Instant forms, the last audit's minor findings.**
+  - The lead header mentions the summary's first 10 only when more than 10 are shown.
+  - `ads_update_lead_form` calls an id "not a lead form" only on Meta's #100 or a read without a Page. A transport or HTTP error goes through as it is.
+  - After a stop, a refused move's retry advice says it holds only once the form is active again.
+  - Ads left unmoved because the form could not be read are `form_unconfirmed`, not `form_changed`.
+  - The read error quoted in move messages is shorter, so the way back fits the summary line.
+  - Shortened answer-set trees keep a field named `__proto__` as data.
+  - The forms list says the full tree is in `ads_get_lead_form_details` when it fits there.
+
 ### Security
 
 - **An OAuth code could be issued without signing in with Meta.**

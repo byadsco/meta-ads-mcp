@@ -1,6 +1,7 @@
 import { metaApiClient } from "./client.js";
 import { normalizeAccountId, validateMetaId } from "../utils/format.js";
 import { DEPRECATED_FEATURES } from "./creative-spec.js";
+import { singleLine } from "../utils/single-line.js";
 import type { Ad, AdCreative } from "./types/index.js";
 
 // Meta creatives are immutable except for name/status/adlabels, so changing
@@ -109,7 +110,7 @@ export interface FailedAd {
   ad_id: string;
   error: string;
   new_creative_id?: string;
-  code?: "changed_meanwhile" | "repoint_refused" | "stopped" | "stopped_after_move" | "unconfirmed_after_move";
+  code?: "changed_meanwhile" | "repoint_refused" | "stopped" | "stopped_unconfirmed" | "stopped_after_move" | "unconfirmed_after_move";
 }
 
 export interface UpdatedAd {
@@ -208,7 +209,7 @@ export async function repointGroup(
   const warnings: string[] = [];
   const stopAt = (index: number, stop: CheckStop) => {
     for (const left of group.ad_ids.slice(index)) {
-      failed.push({ ad_id: left, error: `Not moved: ${stop.reason}`, new_creative_id: newCreativeId, code: "stopped" });
+      failed.push({ ad_id: left, error: `Not moved: ${stop.reason}`, new_creative_id: newCreativeId, code: stop.unconfirmed ? "stopped_unconfirmed" : "stopped" });
     }
     return { updated, failed, warnings, stopped: stop };
   };
@@ -252,7 +253,9 @@ export async function repointGroup(
           : `the ad still points at ${outcome}`;
         failed.push({
           ad_id: adId,
-          error: `Creative ${newCreativeId} was created but ${state}: ${errorMessage(err)}. Retry with ads_update_ad { ad_id: "${adId}", creative_id: "${newCreativeId}" }.`,
+          // Meta's text is bounded so the retry advice, and what a caller
+          // appends to it, fits a summary line.
+          error: `Creative ${newCreativeId} was created but ${state}: ${singleLine(errorMessage(err), 80)}. Retry with ads_update_ad { ad_id: "${adId}", creative_id: "${newCreativeId}" }.`,
           new_creative_id: newCreativeId,
           code: "repoint_refused",
         });

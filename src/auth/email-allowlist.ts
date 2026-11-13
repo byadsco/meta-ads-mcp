@@ -1,7 +1,9 @@
+// Production lists use spaces (or semicolons): the Cloud Run deploy action
+// splits env_vars on commas, which would keep only a list's first item.
 function parseList(value: string | undefined): string[] {
   if (!value) return [];
   return value
-    .split(",")
+    .split(/[\s,;]+/)
     .map((s) => s.trim().toLowerCase())
     .filter((s) => s.length > 0);
 }

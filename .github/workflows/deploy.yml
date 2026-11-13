@@ -177,6 +177,14 @@ jobs:
             errors+=("at least one of AUTH_ALLOWED_EMAILS / AUTH_ALLOWED_DOMAINS / AUTH_ALLOWED_FB_USER_IDS must hold a real value")
           fi
 
+          # The deploy action splits env_vars on commas: a comma in a list would
+          # keep only its first item. Lists separate their items with spaces.
+          for name in AUTH_ALLOWED_EMAILS AUTH_ALLOWED_DOMAINS AUTH_ALLOWED_FB_USER_IDS; do
+            case "${!name}" in
+              *,*) errors+=("$name must separate its items with spaces, not commas: the deploy action splits env_vars on commas") ;;
+            esac
+          done
+
           if [ "${#errors[@]}" -ne 0 ]; then
             echo "Production secret validation failed:"
             printf '  - %s\n' "${errors[@]}"
@@ -350,6 +358,10 @@ jobs:
             --min-instances=0
             --max-instances=10
             --port=3000
+          # The action splits env_vars on commas and line breaks: a comma inside a
+          # literal value here is written \, (the scope list). List secrets
+          # (AUTH_ALLOWED_*) separate their items with spaces instead, checked
+          # above: an escaped comma would print a decoded value GitHub cannot mask.
           env_vars: |
             META_API_VERSION=v26.0
             LOG_LEVEL=info
@@ -357,6 +369,7 @@ jobs:
             NODE_OPTIONS=--max-old-space-size=1536
             VIDEO_MAX_CONCURRENT_JOBS=2
             GEMINI_ANALYSES_PER_TENANT_PER_HOUR=20
+            META_OAUTH_EXTRA_SCOPES=leads_retrieval\,pages_manage_ads\,pages_manage_posts\,pages_read_user_content
             META_APP_ID=${{ secrets.META_APP_ID }}
             SERVER_URL=${{ secrets.SERVER_URL }}
             AUTH_ALLOWED_EMAILS=${{ secrets.AUTH_ALLOWED_EMAILS }}

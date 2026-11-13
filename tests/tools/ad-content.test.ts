@@ -494,6 +494,87 @@ describe("ads_update_ad_content", () => {
       expect(result.content[0].text).toMatch(/could not be confirmed/);
     });
 
+    it("adds to a refused move's retry advice that it applies only once the form is active again", async () => {
+      const ACTIVE_FORM = { id: "222", status: "ACTIVE", page_id: "6001" };
+      const AD_3002 = { id: "3002", account_id: "123", creative: { id: "4001" } };
+      const args = { ad_ids: ["3001", "3002"], lead_form_id: "222", allow_new_post: true };
+      const plan_token = await approvedToken(args, { 222: ACTIVE_FORM, 3001: AD_3001, 3002: AD_3002, 4001: LEAD_CREATIVE });
+      let sent = false;
+      vi.stubGlobal("fetch", vi.fn(async (input: string, init?: RequestInit) => {
+        const id = new URL(input).pathname.split("/").pop() ?? "";
+        const method = init?.method ?? "GET";
+        if (id === "222") return mockFetchResponse(sent ? { ...ACTIVE_FORM, status: "ARCHIVED" } : ACTIVE_FORM);
+        if (id === "adcreatives") return mockFetchResponse({ id: "5001" });
+        if (method === "POST" && id === "3001") {
+          sent = true;
+          return mockFetchResponse({ error: { code: 100, message: "Invalid parameter" } }, { status: 400 });
+        }
+        const objects: Record<string, unknown> = { 3001: AD_3001, 3002: AD_3002, 4001: LEAD_CREATIVE };
+        return mockFetchResponse(objects[id] ?? {});
+      }));
+
+      const result = await tool().handler({ ...args, dry_run: false, plan_token }) as ToolResult;
+
+      expect(result.content[0].text).toMatch(/Retry with ads_update_ad[\s\S]*only once lead form 222 is ACTIVE again/);
+    });
+
+    it("names the ads it did not move because the form could not be read as unconfirmed, not changed", async () => {
+      const ACTIVE_FORM = { id: "222", status: "ACTIVE", page_id: "6001" };
+      const AD_3002 = { id: "3002", account_id: "123", creative: { id: "4001" } };
+      const args = { ad_ids: ["3001", "3002"], lead_form_id: "222", allow_new_post: true };
+      const plan_token = await approvedToken(args, { 222: ACTIVE_FORM, 3001: AD_3001, 3002: AD_3002, 4001: LEAD_CREATIVE });
+      let formReads = 0;
+      vi.stubGlobal("fetch", vi.fn(async (input: string, init?: RequestInit) => {
+        const id = new URL(input).pathname.split("/").pop() ?? "";
+        const method = init?.method ?? "GET";
+        if (id === "222") {
+          return ++formReads <= 2
+            ? mockFetchResponse(ACTIVE_FORM)
+            : mockFetchResponse({ error: { code: 100, message: "x".repeat(300) } }, { status: 400 });
+        }
+        if (id === "adcreatives") return mockFetchResponse({ id: "5001" });
+        if (method === "POST") return mockFetchResponse({ success: true });
+        const objects: Record<string, unknown> = { 3001: AD_3001, 3002: AD_3002, 4001: LEAD_CREATIVE };
+        return mockFetchResponse(objects[id] ?? {});
+      }));
+
+      const result = await tool().handler({ ...args, dry_run: false, plan_token }) as ToolResult;
+      const json = JSON.parse(result.content[1].text);
+
+      expect(json.failed).toEqual([
+        { ad_id: "3001", kind: "form_unconfirmed_after_move", new_creative_id: "5001" },
+        { ad_id: "3002", kind: "form_unconfirmed", new_creative_id: "5001" },
+      ]);
+      // The way back survives the summary's line limit.
+      expect(result.content[0].text).toMatch(/ads_update_ad\./);
+    });
+
+    it("keeps the retry condition in the summary even with a long Meta error and real-length ids", async () => {
+      const FORM = "120245000000000001";
+      const ACTIVE_FORM = { id: FORM, status: "ACTIVE", page_id: "6001" };
+      const AD_A = { id: "120247627207110258", account_id: "123", creative: { id: "4001" } };
+      const AD_B = { id: "120247627207110259", account_id: "123", creative: { id: "4001" } };
+      const args = { ad_ids: [AD_A.id, AD_B.id], lead_form_id: FORM, allow_new_post: true };
+      const plan_token = await approvedToken(args, { [FORM]: ACTIVE_FORM, [AD_A.id]: AD_A, [AD_B.id]: AD_B, 4001: LEAD_CREATIVE });
+      let sent = false;
+      vi.stubGlobal("fetch", vi.fn(async (input: string, init?: RequestInit) => {
+        const id = new URL(input).pathname.split("/").pop() ?? "";
+        const method = init?.method ?? "GET";
+        if (id === FORM) return mockFetchResponse(sent ? { ...ACTIVE_FORM, status: "ARCHIVED" } : ACTIVE_FORM);
+        if (id === "adcreatives") return mockFetchResponse({ id: "1145323287981638" });
+        if (method === "POST" && id === AD_A.id) {
+          sent = true;
+          return mockFetchResponse({ error: { code: 100, message: "y".repeat(238) } }, { status: 400 });
+        }
+        const objects: Record<string, unknown> = { [AD_A.id]: AD_A, [AD_B.id]: AD_B, 4001: LEAD_CREATIVE };
+        return mockFetchResponse(objects[id] ?? {});
+      }));
+
+      const result = await tool().handler({ ...args, dry_run: false, plan_token }) as ToolResult;
+
+      expect(result.content[0].text).toContain(`only once lead form ${FORM} is ACTIVE again`);
+    });
+
     it("takes only a numeric form id", async () => {
       vi.stubGlobal("fetch", vi.fn());
       await expect(tool().handler({ ad_ids: ["3001"], lead_form_id: "1/../x", dry_run: true })).rejects.toThrow(/lead_form_id/);

@@ -341,6 +341,17 @@ describe("lead forms: create, read, archive, test leads and connections", () => 
       expect(out).not.toMatch(/Plain \(5002\).*conditional/);
     });
 
+    it("keeps a field named __proto__ as data when trees are shortened", async () => {
+      const { run } = setup();
+      const question = JSON.parse('{"key":"city","type":"CUSTOM","__proto__":{"odd":"value"},"conditional_questions_choices":[{"value":"A"}]}');
+      stubRoutes({ "GET /60123/leadgen_forms": { data: [{ id: "5001", name: "Offices", status: "ACTIVE", questions: [question] }] } });
+
+      const result = await run("ads_get_lead_forms", { page_id: "60123", limit: 25 });
+
+      expect(result.content[1].text).toContain('"__proto__"');
+      expect(({} as Record<string, unknown>).odd).toBeUndefined();
+    });
+
     it("lists answer-set trees as a count, not in full: they can be long and details has them", async () => {
       const { run } = setup();
       const tree = Array.from({ length: 300 }, (_, i) => ({ value: `City ${i}`, customized_token: `c${i}`, next_question_choices: [{ value: "Office", customized_token: "o" }] }));
@@ -350,7 +361,7 @@ describe("lead forms: create, read, archive, test leads and connections", () => 
 
       const result = await run("ads_get_lead_forms", { page_id: "60123", limit: 25 });
 
-      expect(result.content[1].text).toContain("(300 answers; the full tree is in ads_get_lead_form_details)");
+      expect(result.content[1].text).toContain("(300 answers; shown by ads_get_lead_form_details when it fits)");
       expect(result.content[1].text).not.toContain("City 299");
     });
   });
@@ -515,6 +526,28 @@ describe("lead forms: create, read, archive, test leads and connections", () => 
       expect(calls()).not.toContain("POST /2031");
     });
 
+    it("lets a failure that is not Meta's #100 through instead of calling the id not a form", async () => {
+      const { run } = setup();
+      // An HTTP error without Meta's error body: a plain Error, which the
+      // client retries; its backoff is skipped here.
+      const { metaApiClient } = await import("../../src/meta/client.js");
+      vi.spyOn(metaApiClient as unknown as { backoff: () => Promise<void> }, "backoff").mockResolvedValue(undefined);
+      vi.stubGlobal("fetch", vi.fn(async () => mockFetchResponse({}, { status: 400 })));
+
+      const err = await run("ads_update_lead_form", { form_id: "2031", status: "ARCHIVED" }).catch((e: Error) => e);
+      expect(String(err)).not.toMatch(/not a lead form/);
+      expect(vi.mocked(fetch).mock.calls.every(([, init]) => (init?.method ?? "GET") === "GET")).toBe(true);
+    });
+
+    it("writes only when Meta answers a numeric page_id", async () => {
+      const { run } = setup();
+      for (const owner of [{ id: "2031", page_id: "invalid" }, { id: "2031", page_id: {} }, { id: "2031" }]) {
+        stubRoutes({ "GET /2031": owner, "POST /2031": { success: true } });
+        await expect(run("ads_update_lead_form", { form_id: "2031", status: "ACTIVE" })).rejects.toThrow(/not a lead form/);
+        expect(calls()).not.toContain("POST /2031");
+      }
+    });
+
     it("refuses an id that is not a lead form before writing: the same call would switch a campaign or an ad", async () => {
       const { run } = setup();
       stubRoutes({ "GET /120200": new Error("(#100) Tried accessing nonexisting field (page_id)") });
@@ -611,6 +644,20 @@ describe("lead forms: create, read, archive, test leads and connections", () => 
       // The summary lists only leads the reply shows.
       const summaryIds = result.content[0].text.match(/• (\d+)/g) ?? [];
       expect(summaryIds.length).toBe(Math.min(10, shown.length));
+    });
+
+    it("mentions the summary's first 10 only when more than 10 are shown", async () => {
+      const { run } = setup();
+      const twelve = Array.from({ length: 12 }, (_, i) => ({
+        id: String(9100 + i), created_time: "2026-11-01T10:00:00+0000",
+        field_data: [{ name: "comment", values: ["x".repeat(9000)] }],
+      }));
+      stubRoutes({ "GET /2031/leads": { data: twelve } });
+
+      const result = await run("ads_get_leads", { form_id: "2031", limit: 12 });
+
+      expect(result.content[0].text).toMatch(/shown in full/);
+      expect(result.content[0].text).not.toMatch(/first 10/);
     });
 
     it("says Meta has more when its cursor cannot be passed on", async () => {

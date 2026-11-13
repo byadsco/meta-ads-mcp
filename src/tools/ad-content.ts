@@ -105,7 +105,7 @@ interface PlanningProblem {
 }
 
 type KindedFailure = FailedAd & {
-  kind: "read_failed" | "create_failed" | "repoint_failed" | "changed_meanwhile" | "form_changed" | "form_changed_after_move" | "form_unconfirmed_after_move" | "post_edit_failed" | "left_on_temporary" | "move_back_unconfirmed";
+  kind: "read_failed" | "create_failed" | "repoint_failed" | "changed_meanwhile" | "form_changed" | "form_unconfirmed" | "form_changed_after_move" | "form_unconfirmed_after_move" | "post_edit_failed" | "left_on_temporary" | "move_back_unconfirmed";
 };
 
 // Every ad of the account on the post a route-B plan edits, with each one's
@@ -619,7 +619,7 @@ export function registerAdContentTools(server: McpServer, options: { clock?: Clo
           try {
             form = await metaApiClient.get<{ status?: string; page_id?: string }>(`/${lead_form_id}`, { fields: "status,page_id" });
           } catch (err) {
-            return { reason: `lead form ${lead_form_id} could not be read (${singleLine(errorMessage(err), 150) || "no answer"})`, unconfirmed: true };
+            return { reason: `lead form ${lead_form_id} could not be read (${singleLine(errorMessage(err), 100) || "no answer"})`, unconfirmed: true };
           }
           const status = singleLine(form.status, 20);
           if (status !== "ACTIVE") return { reason: `lead form ${lead_form_id} is ${status || "without a status"}` };
@@ -638,10 +638,11 @@ export function registerAdContentTools(server: McpServer, options: { clock?: Clo
             ...f,
             kind: f.code === "changed_meanwhile" ? "changed_meanwhile" as const
               : f.code === "stopped" ? "form_changed" as const
+                : f.code === "stopped_unconfirmed" ? "form_unconfirmed" as const
                 : f.code === "stopped_after_move" ? "form_changed_after_move" as const
                   : f.code === "unconfirmed_after_move" ? "form_unconfirmed_after_move" as const
                     : "repoint_failed" as const,
-            code: f.code === "stopped" || f.code === "stopped_after_move" || f.code === "unconfirmed_after_move" ? undefined : f.code,
+            code: f.code === "stopped" || f.code === "stopped_unconfirmed" || f.code === "stopped_after_move" || f.code === "unconfirmed_after_move" ? undefined : f.code,
             new_creative_id: replacementKept ? f.new_creative_id : undefined,
           })));
           warnings.push(...outcome.warnings);
@@ -649,7 +650,13 @@ export function registerAdContentTools(server: McpServer, options: { clock?: Clo
             const stop = outcome.stopped;
             const rest = ready.slice(index + 1);
             for (const { group: left } of rest) {
-              for (const adId of left.ad_ids) failed.push({ ad_id: adId, error: `Not moved: ${stop.reason}`, kind: "form_changed" });
+              for (const adId of left.ad_ids) failed.push({ ad_id: adId, error: `Not moved: ${stop.reason}`, kind: stop.unconfirmed ? "form_unconfirmed" : "form_changed" });
+            }
+            // A refused move's retry advice names the replacement, which opens
+            // the form that just stopped the moves: it holds only once the
+            // form is active again.
+            for (const refused of failed.filter((f) => f.kind === "repoint_failed" && f.code === "repoint_refused")) {
+              refused.error += ` Do that only once lead form ${lead_form_id} is ACTIVE again.`;
             }
             // Ads moved earlier in this call, while the form still read
             // active, open it too now: each one is reported with its way back.
