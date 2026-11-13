@@ -109,7 +109,7 @@ export interface FailedAd {
   ad_id: string;
   error: string;
   new_creative_id?: string;
-  code?: "changed_meanwhile" | "repoint_refused" | "stopped" | "stopped_after_move" | "unconfirmed_after_move";
+  code?: "changed_meanwhile" | "repoint_refused" | "stopped" | "stopped_unconfirmed" | "stopped_after_move" | "unconfirmed_after_move";
 }
 
 export interface UpdatedAd {
@@ -208,7 +208,7 @@ export async function repointGroup(
   const warnings: string[] = [];
   const stopAt = (index: number, stop: CheckStop) => {
     for (const left of group.ad_ids.slice(index)) {
-      failed.push({ ad_id: left, error: `Not moved: ${stop.reason}`, new_creative_id: newCreativeId, code: "stopped" });
+      failed.push({ ad_id: left, error: `Not moved: ${stop.reason}`, new_creative_id: newCreativeId, code: stop.unconfirmed ? "stopped_unconfirmed" : "stopped" });
     }
     return { updated, failed, warnings, stopped: stop };
   };

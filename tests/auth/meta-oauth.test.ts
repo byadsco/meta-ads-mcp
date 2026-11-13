@@ -154,3 +154,24 @@ describe("fetchPrimaryBusiness", () => {
     expect(result).toEqual({ id: "9999", name: null });
   });
 });
+
+describe("production login scopes", () => {
+  it("deploy.yml asks for the lead, Page-post and comment permissions, each one the server knows", async () => {
+    const { readFileSync } = await import("node:fs");
+    const deploy = readFileSync(new URL("../../.github/workflows/deploy.yml", import.meta.url), "utf8");
+    const line = /^\s*META_OAUTH_EXTRA_SCOPES=(.+)$/m.exec(deploy);
+    expect(line).not.toBeNull();
+    const listed = line![1].trim().split(",");
+    expect(listed).toEqual(["leads_retrieval", "pages_manage_ads", "pages_manage_posts", "pages_read_user_content"]);
+
+    const previous = process.env.META_OAUTH_EXTRA_SCOPES;
+    process.env.META_OAUTH_EXTRA_SCOPES = line![1].trim();
+    try {
+      // Every listed scope is one the server requests: none is dropped as unknown.
+      expect(oauthScopes()).toEqual(expect.arrayContaining(listed));
+    } finally {
+      if (previous === undefined) delete process.env.META_OAUTH_EXTRA_SCOPES;
+      else process.env.META_OAUTH_EXTRA_SCOPES = previous;
+    }
+  });
+});

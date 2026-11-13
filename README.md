@@ -362,7 +362,7 @@ OAUTH_SECRET=$(openssl rand -hex 32)
 FIRESTORE_PROJECT_ID=my-gcp-project
 ```
 
-Permissions that need Meta App Review are asked for only when `META_OAUTH_EXTRA_SCOPES` lists them. For example, editing an ad's post (`ads_update_ad_content` with `allow_post_edit`) needs `pages_manage_posts`; instant forms need `pages_manage_ads`, and reading leads, test leads and lead access need `leads_retrieval`. Set it once Meta approved the permission; people with a role on the app can use it before. People then sign in again to grant it.
+Permissions that need Meta App Review are asked for only when `META_OAUTH_EXTRA_SCOPES` lists them. For example, editing an ad's post (`ads_update_ad_content` with `allow_post_edit`) needs `pages_manage_posts`; instant forms need `pages_manage_ads`, and reading leads, test leads and lead access need `leads_retrieval`. The production deploy (`.github/workflows/deploy.yml`) lists `leads_retrieval`, `pages_manage_ads`, `pages_manage_posts` and `pages_read_user_content`. Set it once Meta approved the permission; people with a role on the app can use it before. People then sign in again to grant it.
 
 For local development with `stdio` (no OAuth, no Firestore needed):
 
