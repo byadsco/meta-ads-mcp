@@ -10,7 +10,11 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ### Changed
 
 - **The deployed server asks for the lead, Page-post and comment permissions at sign-in.** `deploy.yml` sets `META_OAUTH_EXTRA_SCOPES=leads_retrieval,pages_manage_ads,pages_manage_posts,pages_read_user_content`. Production never set it before, so people signing in were not asked for them: lead reads, test leads, instant forms, form cover images and post edits worked only for whoever had granted those permissions to the app elsewhere. People sign in again to grant them. The scopes are written with `\,`: the deploy action splits `env_vars` on plain commas.
-- **List secrets in the deploy need `\,` between items.** The same split turned `AUTH_ALLOWED_EMAILS` into its first email plus an empty variable named after the second (seen on the live service), so only the first address could sign in. `deploy.yml` now says so next to `env_vars`; the secret itself is edited in GitHub.
+- **Allowlists separate their items with spaces.**
+  - **The problem.** The same split turned `AUTH_ALLOWED_EMAILS` into its first email plus an empty variable named after the second (seen on the live service), so only the first address could sign in.
+  - **The server.** It now reads `AUTH_ALLOWED_EMAILS`, `AUTH_ALLOWED_DOMAINS` and `AUTH_ALLOWED_FB_USER_IDS` separated by spaces or semicolons as well as commas.
+  - **The deploy.** It refuses a list secret that holds a comma.
+  - **Why not escape the commas.** Escaping them (`\,`) would print a decoded value that GitHub cannot mask in the public deploy log.
 
 ### Fixed
 

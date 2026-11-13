@@ -75,4 +75,16 @@ describe("email-allowlist", () => {
     expect(isAllowed({ email: "anyone@anywhere.com" })).toBe(false);
     expect(isAllowed({ fbUserId: "9999" })).toBe(false);
   });
+
+  it("takes items separated by spaces or semicolons as well as commas", () => {
+    // Production lists use spaces: the deploy action splits env_vars on commas.
+    process.env.AUTH_ALLOWED_EMAILS = "a@x.co  b@y.co;c@z.co,d@w.co";
+    for (const email of ["a@x.co", "b@y.co", "c@z.co", "d@w.co"]) {
+      expect(isAllowed({ email }), email).toBe(true);
+    }
+    expect(isAllowed({ email: "e@v.co" })).toBe(false);
+
+    process.env.AUTH_ALLOWED_FB_USER_IDS = "111 222";
+    expect(isAllowed({ fbUserId: "222" })).toBe(true);
+  });
 });

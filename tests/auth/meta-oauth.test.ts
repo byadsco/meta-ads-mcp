@@ -216,6 +216,14 @@ describe("production login scopes", () => {
     // empty variable named after the second (measured on the live service).
     expect(parseActionEnvVars("A=1\nB=x,y\nC=x\\,y\n")).toEqual({ A: "1", B: "x", y: "", C: "x,y" });
     expect(parseActionEnvVars("AUTH_ALLOWED_EMAILS=a@x.co,b@y.co")).toEqual({ AUTH_ALLOWED_EMAILS: "a@x.co", "b@y.co": "" });
-    expect(parseActionEnvVars("AUTH_ALLOWED_EMAILS=a@x.co\\,b@y.co")).toEqual({ AUTH_ALLOWED_EMAILS: "a@x.co,b@y.co" });
+    // Spaces keep the list one value, printed exactly as the secret, which
+    // GitHub masks; an escaped comma would print a decoded, unmasked value.
+    expect(parseActionEnvVars("AUTH_ALLOWED_EMAILS=a@x.co b@y.co")).toEqual({ AUTH_ALLOWED_EMAILS: "a@x.co b@y.co" });
+  });
+
+  it("deploy.yml refuses list secrets with commas before deploying", async () => {
+    const { readFileSync } = await import("node:fs");
+    const deploy = readFileSync(new URL("../../.github/workflows/deploy.yml", import.meta.url), "utf8");
+    expect(deploy).toMatch(/for name in AUTH_ALLOWED_EMAILS AUTH_ALLOWED_DOMAINS AUTH_ALLOWED_FB_USER_IDS; do\n\s*case "\$\{!name\}" in\n\s*\*,\*\) errors\+=/);
   });
 });
