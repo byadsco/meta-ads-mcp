@@ -155,23 +155,67 @@ describe("fetchPrimaryBusiness", () => {
   });
 });
 
+// The Cloud Run deploy action reads env_vars with this grammar (actions-utils
+// parseKVString): a comma or a line break ends a variable, a backslash keeps
+// the next character as it is.
+function parseActionEnvVars(block: string): Record<string, string> {
+  const result: Record<string, string> = {};
+  let key = "";
+  let value = "";
+  let inValue = false;
+  let escaped = false;
+  const flush = () => {
+    if (key !== "") result[key.trim()] = value.trim();
+    key = "";
+    value = "";
+    inValue = false;
+  };
+  for (const ch of block) {
+    if (escaped) {
+      if (inValue) value += ch; else key += ch;
+      escaped = false;
+    } else if (ch === "\\") {
+      escaped = true;
+    } else if (ch === "=" && !inValue) {
+      inValue = true;
+    } else if (ch === "," || ch === "\n" || ch === "\r") {
+      flush();
+    } else if (inValue) {
+      value += ch;
+    } else {
+      key += ch;
+    }
+  }
+  flush();
+  return result;
+}
+
 describe("production login scopes", () => {
-  it("deploy.yml asks for the lead, Page-post and comment permissions, each one the server knows", async () => {
+  it("deploy.yml gives the server the lead, Page-post and comment permissions as one variable, each one the server knows", async () => {
     const { readFileSync } = await import("node:fs");
     const deploy = readFileSync(new URL("../../.github/workflows/deploy.yml", import.meta.url), "utf8");
-    const line = /^\s*META_OAUTH_EXTRA_SCOPES=(.+)$/m.exec(deploy);
-    expect(line).not.toBeNull();
-    const listed = line![1].trim().split(",");
-    expect(listed).toEqual(["leads_retrieval", "pages_manage_ads", "pages_manage_posts", "pages_read_user_content"]);
+    const block = /^\s*env_vars: \|\n((?:\s{12}.*\n)+)/m.exec(deploy)?.[1] ?? "";
+    const vars = parseActionEnvVars(block);
+
+    expect(vars.META_OAUTH_EXTRA_SCOPES).toBe("leads_retrieval,pages_manage_ads,pages_manage_posts,pages_read_user_content");
+    // No scope leaks out as a variable of its own.
+    expect(Object.keys(vars).filter((name) => /^(leads|pages)_/.test(name))).toEqual([]);
 
     const previous = process.env.META_OAUTH_EXTRA_SCOPES;
-    process.env.META_OAUTH_EXTRA_SCOPES = line![1].trim();
+    process.env.META_OAUTH_EXTRA_SCOPES = vars.META_OAUTH_EXTRA_SCOPES;
     try {
-      // Every listed scope is one the server requests: none is dropped as unknown.
-      expect(oauthScopes()).toEqual(expect.arrayContaining(listed));
+      expect(oauthScopes()).toEqual(expect.arrayContaining(vars.META_OAUTH_EXTRA_SCOPES.split(",")));
     } finally {
       if (previous === undefined) delete process.env.META_OAUTH_EXTRA_SCOPES;
       else process.env.META_OAUTH_EXTRA_SCOPES = previous;
     }
+  });
+
+  it("reads env_vars the way the deploy action does: a plain comma in a list secret splits it", () => {
+    // AUTH_ALLOWED_EMAILS=a@x.co,b@y.co reached Cloud Run as one email plus an
+    // empty variable named after the second (measured on the live service).
+    expect(parseActionEnvVars("A=1\nB=x,y\nC=x\\,y\n")).toEqual({ A: "1", B: "x", y: "", C: "x,y" });
+    expect(parseActionEnvVars("AUTH_ALLOWED_EMAILS=a@x.co,b@y.co")).toEqual({ AUTH_ALLOWED_EMAILS: "a@x.co", "b@y.co": "" });
+    expect(parseActionEnvVars("AUTH_ALLOWED_EMAILS=a@x.co\\,b@y.co")).toEqual({ AUTH_ALLOWED_EMAILS: "a@x.co,b@y.co" });
   });
 });

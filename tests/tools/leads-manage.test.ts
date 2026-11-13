@@ -539,6 +539,15 @@ describe("lead forms: create, read, archive, test leads and connections", () => 
       expect(vi.mocked(fetch).mock.calls.every(([, init]) => (init?.method ?? "GET") === "GET")).toBe(true);
     });
 
+    it("writes only when Meta answers a numeric page_id", async () => {
+      const { run } = setup();
+      for (const owner of [{ id: "2031", page_id: "invalid" }, { id: "2031", page_id: {} }, { id: "2031" }]) {
+        stubRoutes({ "GET /2031": owner, "POST /2031": { success: true } });
+        await expect(run("ads_update_lead_form", { form_id: "2031", status: "ACTIVE" })).rejects.toThrow(/not a lead form/);
+        expect(calls()).not.toContain("POST /2031");
+      }
+    });
+
     it("refuses an id that is not a lead form before writing: the same call would switch a campaign or an ad", async () => {
       const { run } = setup();
       stubRoutes({ "GET /120200": new Error("(#100) Tried accessing nonexisting field (page_id)") });

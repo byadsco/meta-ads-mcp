@@ -549,6 +549,32 @@ describe("ads_update_ad_content", () => {
       expect(result.content[0].text).toMatch(/ads_update_ad\./);
     });
 
+    it("keeps the retry condition in the summary even with a long Meta error and real-length ids", async () => {
+      const FORM = "120245000000000001";
+      const ACTIVE_FORM = { id: FORM, status: "ACTIVE", page_id: "6001" };
+      const AD_A = { id: "120247627207110258", account_id: "123", creative: { id: "4001" } };
+      const AD_B = { id: "120247627207110259", account_id: "123", creative: { id: "4001" } };
+      const args = { ad_ids: [AD_A.id, AD_B.id], lead_form_id: FORM, allow_new_post: true };
+      const plan_token = await approvedToken(args, { [FORM]: ACTIVE_FORM, [AD_A.id]: AD_A, [AD_B.id]: AD_B, 4001: LEAD_CREATIVE });
+      let sent = false;
+      vi.stubGlobal("fetch", vi.fn(async (input: string, init?: RequestInit) => {
+        const id = new URL(input).pathname.split("/").pop() ?? "";
+        const method = init?.method ?? "GET";
+        if (id === FORM) return mockFetchResponse(sent ? { ...ACTIVE_FORM, status: "ARCHIVED" } : ACTIVE_FORM);
+        if (id === "adcreatives") return mockFetchResponse({ id: "1145323287981638" });
+        if (method === "POST" && id === AD_A.id) {
+          sent = true;
+          return mockFetchResponse({ error: { code: 100, message: "y".repeat(238) } }, { status: 400 });
+        }
+        const objects: Record<string, unknown> = { [AD_A.id]: AD_A, [AD_B.id]: AD_B, 4001: LEAD_CREATIVE };
+        return mockFetchResponse(objects[id] ?? {});
+      }));
+
+      const result = await tool().handler({ ...args, dry_run: false, plan_token }) as ToolResult;
+
+      expect(result.content[0].text).toContain(`only once lead form ${FORM} is ACTIVE again`);
+    });
+
     it("takes only a numeric form id", async () => {
       vi.stubGlobal("fetch", vi.fn());
       await expect(tool().handler({ ad_ids: ["3001"], lead_form_id: "1/../x", dry_run: true })).rejects.toThrow(/lead_form_id/);

@@ -599,7 +599,9 @@ export function registerLeadTools(server: McpServer): void {
         if (err instanceof McpError && err.code === ErrorCode.InvalidParams) return undefined;
         throw err;
       });
-      if (!owner?.page_id) throw new Error(`${id} is not a lead form (Meta gives it no Page): nothing was changed.`);
+      if (typeof owner?.page_id !== "string" || !/^\d+$/.test(owner.page_id)) {
+        throw new Error(`${id} is not a lead form (Meta gives it no Page): nothing was changed.`);
+      }
       await metaApiClient.postForm<{ success?: boolean }>(`/${id}`, { status });
       const after = await metaApiClient.get<{ status?: string }>(`/${id}`, { fields: "status" }).catch(() => {
         throw new Error(`Meta answered the change of lead form ${id} to ${status}, but its status could not be read back: read it with ads_get_lead_form_details before changing it again.`);

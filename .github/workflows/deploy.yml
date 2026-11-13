@@ -350,6 +350,11 @@ jobs:
             --min-instances=0
             --max-instances=10
             --port=3000
+          # The action splits env_vars on commas and line breaks: a comma inside a
+          # value is written \, (a list of scopes, for instance). The same holds
+          # for list secrets (AUTH_ALLOWED_EMAILS, AUTH_ALLOWED_DOMAINS,
+          # AUTH_ALLOWED_FB_USER_IDS): separate their items with \, in the secret,
+          # or every item after the first becomes an empty variable of its own.
           env_vars: |
             META_API_VERSION=v26.0
             LOG_LEVEL=info
@@ -357,7 +362,7 @@ jobs:
             NODE_OPTIONS=--max-old-space-size=1536
             VIDEO_MAX_CONCURRENT_JOBS=2
             GEMINI_ANALYSES_PER_TENANT_PER_HOUR=20
-            META_OAUTH_EXTRA_SCOPES=leads_retrieval,pages_manage_ads,pages_manage_posts,pages_read_user_content
+            META_OAUTH_EXTRA_SCOPES=leads_retrieval\,pages_manage_ads\,pages_manage_posts\,pages_read_user_content
             META_APP_ID=${{ secrets.META_APP_ID }}
             SERVER_URL=${{ secrets.SERVER_URL }}
             AUTH_ALLOWED_EMAILS=${{ secrets.AUTH_ALLOWED_EMAILS }}
