@@ -17,7 +17,7 @@
 - [Who is this for?](#who-is-this-for)
 - [Aligned with Meta's official MCP](#aligned-with-metas-official-mcp)
 - [Features](#features)
-- [Tools (168 total)](#tools-168-total)
+- [Tools (171 total)](#tools-171-total)
 - [Quick start](#quick-start)
 - [Authentication — three modes](#authentication--three-modes)
 - [Setting up Sign in with Meta](#setting-up-sign-in-with-meta)
@@ -62,7 +62,7 @@ both servers.
 | | Meta's official MCP (`mcp.facebook.com/ads`) | This project |
 |---|---|---|
 | Auth model | Per-user OAuth in your AI client | **Multi-tenant**: agency operator handles N client accounts from one server |
-| Tool surface | 29 tools (campaigns, ads, catalogs, 5 insight views, opportunity_score, dataset, errors, help) | **168 tools** including the official 29-equivalent + audiences, lookalikes, lead forms, automated rules, A/B studies, async reports, billing invoices, custom conversions, asset uploads, comment moderation, cross-account macros, and full WhatsApp Business management (templates, phone numbers, flows, QR codes) |
+| Tool surface | 29 tools (campaigns, ads, catalogs, 5 insight views, opportunity_score, dataset, errors, help) | **171 tools** including the official 29-equivalent + audiences, lookalikes, lead forms, automated rules, A/B studies, async reports, billing invoices, custom conversions, asset uploads, comment moderation, cross-account macros, and full WhatsApp Business management (templates, phone numbers, flows, QR codes) |
 | Hosting | Hosted by Meta | Self-hosted on Cloud Run / your infra; tokens encrypted at rest in Firestore |
 | Cross-account | Per-user, single Meta login | Yes — `ads_portfolio_summary` aggregates across N accounts |
 | Token control | Lives in your AI client | Server-side System User token registry per agency operator |
@@ -78,7 +78,7 @@ When to use which:
 
 ## Features
 
-- **168 tools** covering campaign management, creatives, targeting, audiences, reporting, comments, billing, invoices, tokens, Instagram workflows, WhatsApp Business management, rate-limit observability, semantic insight views, diagnostics, help-center search, competitor research via the public Meta Ad Library (full ad cards with their images and videos), video analysis (keyframes or the MP4 itself for video-capable models), and agency-tier cross-account macros.
+- **171 tools** covering campaign management, creatives, targeting, audiences, reporting, comments, billing, invoices, tokens, Instagram workflows, WhatsApp Business management, rate-limit observability, semantic insight views, diagnostics, help-center search, competitor research via the public Meta Ad Library (full ad cards with their images and videos), video analysis (keyframes or the MP4 itself for video-capable models), and agency-tier cross-account macros.
 - **Aligned vocabulary** with Meta's official MCP server so agents transfer cleanly between both.
 - **Sign in with Meta (Facebook Login)** — replaces shared PINs. Each user lands their own long-lived (60-day) Meta token.
 - **System User token registry** — for tokens that don't expire, register them per user from the consent UI.
@@ -94,7 +94,7 @@ When to use which:
 - **Async reports with safe polling** — `ads_run_report_and_wait` one-shot with 5 s-min / 60 s-max backoff, proper `Job Failed` / `Job Skipped` handling.
 - **Retry logic** — exponential backoff on truly transient errors only (never on throttled requests).
 
-## Tools (168 total)
+## Tools (171 total)
 
 Ads tools use the `ads_*` naming convention, aligned with Meta's official MCP server; WhatsApp Business tools use `whatsapp_*`. Read tools declare `readOnlyHint: true`; mutating tools declare `destructiveHint` / `idempotentHint` and prefix descriptions with a `⚠️` warning.
 
@@ -113,7 +113,7 @@ Ads tools use the `ads_*` naming convention, aligned with Meta's official MCP se
 | Insights — power tool | 1 | `ads_get_insights` — full control over breakdowns, attribution, time series |
 | Insights views | 5 | `performance_trend`, `anomaly_signal`, `auction_ranking_benchmarks`, `industry_benchmark`, `advertiser_context` |
 | Targeting | 8 | Interest / behavior / demographic / geo / locale search, audience estimation, targeting description |
-| Budget | 1 | Budget schedule management |
+| Budget schedules | 4 | Scheduled budget increases (high demand periods) on a campaign or ad set: create with a dry run that states the daily budget during the window, list with what is in progress now, change one that has not started (Meta can only replace a period) and delete. The value is an increase added to the daily budget, never the total. |
 | Leads | 10 | Instant forms with every Ads Manager option, their details, archiving, the ads using each, lead retrieval with paging, test leads and a lead-access check for connected systems |
 | Audiences | 11 | Custom audiences, lookalikes, cross-account sharing, customer-list members (hashed on the server) and the ad sets that use an audience |
 | Previews | 2 | Ad previews before launch |
@@ -264,7 +264,7 @@ lines, so an analysis cannot forge the structure around it.
 
 ## Skills and MCP protocol surface
 
-An agent connecting to this server does not have to work out which of 168 tools
+An agent connecting to this server does not have to work out which of 171 tools
 answers a question. The server ships four **skills** and exposes them three
 ways.
 
@@ -278,7 +278,7 @@ them without any local installation:
 | `meta-ads://skills/meta-ads-video-analysis` | Which video delivery your model can ingest, how to read a hook and a retention curve |
 | `meta-ads://skills/meta-ads-competitor-research` | The Ad Library scrape-poll-read sequence, its cost, and how to read a scraped record |
 
-The guide carries three references of its own: a map of all 168 tools by intent
+The guide carries three references of its own: a map of all 171 tools by intent
 with the write tools marked, the call sequences for the recurring jobs, and a
 safety-and-costs page.
 
@@ -850,7 +850,7 @@ For local dev / single-user, yes — set `META_ACCESS_TOKEN` and use `npm run de
 OAuth is for human users with a browser (Claude Desktop, Claude Web, Cursor users). API key + `X-Meta-Token` header is for server-to-server agents that can't open a browser tab. They can coexist on the same deployment. An OAuth user who also sends `X-Meta-Token` has Meta calls made with that token, while the request keeps the user's identity: the token tools, Apify and Gemini keys stay the user's own.
 
 **How do I add a new tool?**
-Full walkthrough in [docs/adding-a-tool.md](docs/adding-a-tool.md). The short version: create a `register*Tools(server)` module under [src/tools/](src/tools/), call `server.registerTool(name, { description, inputSchema, annotations }, handler)` with the `ads_*` naming convention, and route every Graph API call through `metaApiClient` ([src/meta/client.ts](src/meta/client.ts)) — never `fetch` directly. The shared client is what gives every tool bucketed rate-limiting, circuit breaking, write pacing, multi-tenant token resolution, and Meta-error → `McpError` classification for free. The smallest end-to-end example in the codebase is [src/tools/budget.ts](src/tools/budget.ts):
+Full walkthrough in [docs/adding-a-tool.md](docs/adding-a-tool.md). The short version: create a `register*Tools(server)` module under [src/tools/](src/tools/), call `server.registerTool(name, { description, inputSchema, annotations }, handler)` with the `ads_*` naming convention, and route every Graph API call through `metaApiClient` ([src/meta/client.ts](src/meta/client.ts)) — never `fetch` directly. The shared client is what gives every tool bucketed rate-limiting, circuit breaking, write pacing, multi-tenant token resolution, and Meta-error → `McpError` classification for free. A trimmed sketch of `ads_create_budget_schedule` ([src/tools/budget.ts](src/tools/budget.ts); the real tool also checks Meta's rules, offers a dry run and reads the period back):
 
 ```ts
 import { CREATE, WRITE_WARNING } from "./_register.js";
@@ -858,10 +858,10 @@ import { CREATE, WRITE_WARNING } from "./_register.js";
 server.registerTool(
   "ads_create_budget_schedule",
   {
-    description: `${WRITE_WARNING}Schedule a temporary budget increase for a campaign…`,
+    description: `${WRITE_WARNING}Schedule a temporary budget INCREASE… budget_value is ADDED to the daily budget, NOT the total.`,
     inputSchema: {
-      campaign_id: z.string().describe("Campaign ID"),
-      budget_value: z.string(),
+      campaign_id: z.string().describe("Campaign that holds the daily budget"),
+      budget_value: z.string().regex(/^\d{1,15}$/),
       budget_value_type: z.enum(["ABSOLUTE", "MULTIPLIER"]),
       time_start: z.string(),
       time_end: z.string(),
@@ -869,12 +869,18 @@ server.registerTool(
     annotations: { ...CREATE },
   },
   async ({ campaign_id, budget_value, budget_value_type, time_start, time_end }) => {
-    const id = validateMetaId(campaign_id, "campaign");
+    const id = validateNumericId(campaign_id, "campaign_id");
     const result = await metaApiClient.postForm<{ id: string }>(
       `/${id}/budget_schedules`,
-      { budget_value, budget_value_type, time_start, time_end },
+      {
+        budget_value,
+        budget_value_type,
+        time_start: instantSeconds(time_start, "time_start"), // Meta takes Unix seconds
+        time_end: instantSeconds(time_end, "time_end"),
+      },
+      { noRetry: true },
     );
-    return { content: [{ type: "text", text: `Budget schedule created! ID: ${result.id}` }] };
+    return { content: [{ type: "text", text: `Increase created: period ${result.id}` }] };
   },
 );
 ```

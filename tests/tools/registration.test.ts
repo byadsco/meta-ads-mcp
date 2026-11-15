@@ -5,7 +5,7 @@ import { MINOR_UNIT_NOTE } from "../../src/meta/currency.js";
 import { createMockMcpServer } from "../setup.js";
 
 describe("registerAllTools", () => {
-  it("registers exactly 168 tools total", () => {
+  it("registers exactly 171 tools total", () => {
     // 79 v2 tools renamed (with account_insights removed → 79) + 14 new in v3 +
     //   3 audience-sharing tools (share / unshare / get-shared-accounts) +
     //   1 invoices tool (ads_get_invoices) +
@@ -26,10 +26,12 @@ describe("registerAllTools", () => {
     //   7 official-parity tools (ads_get_ad_account_pages / ads_get_user_pages /
     //     ads_get_creative_ads / ads_boost_ig_post / ads_get_field_context /
     //     ads_account_get_activity_logs / ads_library_search) +
-    //   2 experiment tools (ads_experiment_check_eligibility / ads_experiment_abtest_update_test).
+    //   2 experiment tools (ads_experiment_check_eligibility / ads_experiment_abtest_update_test) +
+    //   3 budget schedule tools (ads_get_budget_schedules / ads_update_budget_schedule /
+    //     ads_delete_budget_schedule).
     const server = createMockMcpServer();
     registerAllTools(server as never);
-    expect(server.registerTool).toHaveBeenCalledTimes(168);
+    expect(server.registerTool).toHaveBeenCalledTimes(171);
   });
 
   it("registers all tools with unique names", () => {
@@ -248,8 +250,9 @@ describe("money amounts in what a model reads on tools/list", () => {
     return server._registeredTools.map((tool) => {
       const descriptions = [tool.description];
       const parameters = new Set<string>();
-      const shape = tool.schema as Record<string, z.ZodType> | undefined;
-      if (shape) collect(z.toJSONSchema(z.object(shape), { io: "input", unrepresentable: "any" }), descriptions, parameters);
+      const shape = tool.schema as z.ZodType | Record<string, z.ZodType> | undefined;
+      const object = shape instanceof z.ZodType ? shape : shape ? z.object(shape) : undefined;
+      if (object) collect(z.toJSONSchema(object, { io: "input", unrepresentable: "any" }), descriptions, parameters);
       return { name: tool.name, descriptions, parameters };
     });
   };
@@ -281,6 +284,7 @@ describe("money amounts in what a model reads on tools/list", () => {
       "ads_create_budget_schedule",
       "ads_create_campaign",
       "ads_update_ad_set",
+      "ads_update_budget_schedule",
       "ads_update_campaign",
     ]);
     for (const tool of taking) {

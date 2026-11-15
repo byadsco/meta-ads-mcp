@@ -128,6 +128,12 @@ export function registerEntityTools(server: McpServer): void {
     },
     async ({ entity_type, entity_id, updates }) => {
       const id = validateMetaId(entity_id, VALIDATE_KIND[entity_type]);
+      // Measured 2026-11-15: with daily_budget, budget_schedule_specs creates
+      // periods that skip Meta's checks (an overlap above the 8 × cap was
+      // accepted), so increases only go through the edge that checks them.
+      if (updates && Object.keys(updates).some((key) => /^budget_schedule_specs/i.test(key.trim()))) {
+        throw new Error("budget_schedule_specs is not sent from here: Meta skips its own checks on it. Schedule increases with ads_create_budget_schedule and change them with ads_update_budget_schedule.");
+      }
       const body = encodeUpdatesBody(updates);
 
       await metaApiClient.postForm<{ success: boolean }>(`/${id}`, body);

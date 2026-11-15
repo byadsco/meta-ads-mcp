@@ -7,6 +7,21 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Added
+
+- **Budget schedules can be listed, changed and deleted** (168 → 171 tools). The rules below were measured on Graph API v26.0 (2026-11-15), except the limit of 50 periods, which is Meta's documentation.
+  - `ads_get_budget_schedules` lists the periods of a campaign or ad set. For each one it shows the increase in money, the daily budget during its window, the window in the account's time zone, and whether it is upcoming, IN PROGRESS or ended. `daily_budget` and `budget_remaining` stay the same while a period runs, so until now nothing showed an increase in progress.
+  - `ads_update_budget_schedule` changes the increase or the window of a period that has not started.
+    - Meta retired editing a period in place: `POST /{id}` answers "Deprecated Platform API Endpoint". So the tool deletes the period and creates the new one, under a new id.
+    - It only replaces a period that starts at least 8 minutes from now (the 6 minutes measured as accepted plus the time its two writes may take), so the original can still be put back.
+    - If Meta refuses the new period, the tool tries to put the original back, and the answer says what is left. It does not put it back when a period it had not seen has appeared meanwhile, since the two could add up.
+    - A period in progress is not touched: once started it cannot come back with its own start, so a refused replacement would lose the increase. The answer gives the two steps instead: delete it (its dry run first), then create a new one from the next quarter hour, with at least 3 hours to its end.
+    - Changing `budget_value_type` needs `budget_value` too, since the same number means an amount in one and a percentage in the other.
+  - A period that repeats (`recurrence_type` other than `ONE_TIME`) is listed by id with its recurrence and left alone: these tools neither show nor keep its weekly schedule, so they change nothing on a campaign or ad set that has one.
+  - `ads_delete_budget_schedule` deletes a period, whether it is upcoming or in progress. `dry_run` shows what it would remove.
+  - The four tools refuse a parameter they do not know. The SDK drops one silently otherwise, so a misspelt `dry_run` would have turned a preview into a write.
+  - When the list cannot be read whole (a page without a cursor, a cursor that repeats, a period that cannot be read), `ads_get_budget_schedules` says the state is not known instead of "none", and no write goes ahead.
+
 ### Changed
 
 - **The deployed server asks for the lead, Page-post and comment permissions at sign-in.** `deploy.yml` sets `META_OAUTH_EXTRA_SCOPES=leads_retrieval,pages_manage_ads,pages_manage_posts,pages_read_user_content`. Production never set it before, so people signing in were not asked for them: lead reads, test leads, instant forms, form cover images and post edits worked only for whoever had granted those permissions to the app elsewhere. People sign in again to grant them. The scopes are written with `\,`: the deploy action splits `env_vars` on plain commas.
@@ -18,6 +33,27 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Fixed
 
+- **`ads_create_budget_schedule` described its value as the total, which moved real money.**
+  - **What happened.** The description said "ABSOLUTE = set exact budget", but Meta adds the value to the daily budget. An agent that wanted the budget at USD 300 sent 30000 and scheduled an increase of USD 300 on top of the daily budget.
+  - **The description.** It now says that the value is an INCREASE, not the total, with an example in money and the way to get a total: T − D with ABSOLUTE, and 100 × (T − D) / D with MULTIPLIER, which is a percentage added (800 at most), not a factor. The daily budget during the window is still a daily budget, not a cap on a day's spend.
+  - **`dry_run`.** It shows the daily budget during the window before anything is written, so the total can be agreed in money.
+  - **Times.** The tool sent the ISO 8601 it asked for, and Meta refuses it ("Param time_start must be a number"). It now takes a time with its offset, or Unix seconds, and sends Unix seconds. A date alone is refused.
+  - **Meta's rules are checked before sending:**
+    - daily budgets only;
+    - the increase goes where the budget is: the campaign with Advantage+ campaign budget, otherwise each ad set (`ad_set_id` is new);
+    - times on a quarter hour, at least 3 hours long, starting in the future;
+    - an increase of at most 8 × the daily budget;
+    - no overlapping periods, and no mixing ABSOLUTE with MULTIPLIER on one campaign or ad set (an ended period counts too, since it is not known whether Meta counts it);
+    - at most 50 periods.
+  - **Sent once.**
+    - The write never waits on rate limits or for an answer for more than 20 seconds.
+    - The clock is read again just before it, so slow reads cannot send a start that has passed.
+    - A lost answer is looked for among the periods before anything else is said: a second create would add a second increase.
+    - The client no longer retries any POST to `/budget_schedules`.
+  - **The result.** It reads the period back and states it in the account's currency and time zone.
+  - **Meta's words stay fenced.** When Meta refuses or a call fails, its text reaches the agent inside the untrusted-content fence, with the tool's own sentence saying what was and was not changed.
+- **`ads_update_entity` refuses `budget_schedule_specs`.** Sent with `daily_budget`, Meta accepts that field without its own checks: an overlapping period above the 8 × cap was accepted.
+- **`ads_get_field_context`** says that `daily_budget` and `budget_remaining` never include a scheduled increase.
 - **Instant forms, the last audit's minor findings.**
   - The lead header mentions the summary's first 10 only when more than 10 are shown.
   - `ads_update_lead_form` calls an id "not a lead form" only on Meta's #100 or a read without a Page. A transport or HTTP error goes through as it is.

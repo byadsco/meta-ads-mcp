@@ -67,7 +67,7 @@ export function registerAllTools(server: McpServer): void {
   registerInsightsTools(server);     // 1 tool  — power-tool ads_get_insights
   registerInsightsViewTools(server); // 5 tools — semantic insight views
   registerTargetingTools(server);    // 8 tools (+ ads_search_locales)
-  registerBudgetTools(server);       // 1 tool
+  registerBudgetTools(server);       // 4 tools — budget schedules: create, list, change (replace), delete
 
   // ─── Extended Features ──────────────────────────────────
   registerLeadTools(server);         // 10 tools — Instant forms, leads, test leads, lead access
@@ -114,5 +114,5 @@ export function registerAllTools(server: McpServer): void {
   // ─── Token Management ────────────────────────────────────
   registerTokenTools(server);        // 4 tools — list / set-active / register / delete
 
-  // Total: 168 tools (79 renamed + 14 new in v3 + 3 audience-sharing + 1 invoices + 27 WhatsApp + 1 url-tags + 1 bulk video ads + 1 creative media + 9 Ad Library/Apify + 1 video media + 1 video analysis + 3 Gemini key mgmt + 1 ad dossier + 1 ad content editor + 2 social proof + 4 Business Manager access + 1 locale search + 7 official-parity tools + 2 experiment tools + 3 audience tools + 6 lead form tools)
+  // Total: 171 tools (79 renamed + 14 new in v3 + 3 audience-sharing + 1 invoices + 27 WhatsApp + 1 url-tags + 1 bulk video ads + 1 creative media + 9 Ad Library/Apify + 1 video media + 1 video analysis + 3 Gemini key mgmt + 1 ad dossier + 1 ad content editor + 2 social proof + 4 Business Manager access + 1 locale search + 7 official-parity tools + 2 experiment tools + 3 audience tools + 6 lead form tools + 3 budget schedule tools)
 }

@@ -1,6 +1,6 @@
 # Adding a new MCP tool
 
-This is the canonical guide for extending meta-ads-mcp with a Meta Marketing API endpoint that isn't already covered by the 168 built-in tools. Follow it end-to-end and your tool will inherit every security, rate-limit, circuit-breaker, error-handling, multi-tenant, and MCP-annotation guarantee the rest of the server provides.
+This is the canonical guide for extending meta-ads-mcp with a Meta Marketing API endpoint that isn't already covered by the 171 built-in tools. Follow it end-to-end and your tool will inherit every security, rate-limit, circuit-breaker, error-handling, multi-tenant, and MCP-annotation guarantee the rest of the server provides.
 
 If you're contributing for the first time, also read [CONTRIBUTING.md](../CONTRIBUTING.md) for setup, CI checks, commit conventions, and the auth-surface review policy.
 
@@ -81,42 +81,45 @@ For write tools, **prepend `${WRITE_WARNING}` to the description** so clients th
 
 ## Canonical example, line by line
 
-The smallest tool in the codebase is [src/tools/budget.ts](../src/tools/budget.ts). Use this as your template for a write tool:
+A trimmed sketch of `ads_create_budget_schedule` from [src/tools/budget.ts](../src/tools/budget.ts). The real tool also checks Meta's rules before sending, offers a dry run, looks for a lost answer and reads the period back. Use the shape as your template for a write tool:
 
 ```ts
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { metaApiClient } from "../meta/client.js";
-import { validateMetaId } from "../utils/format.js";
 import { MINOR_UNIT_NOTE } from "../meta/currency.js";
+import { validateNumericId } from "../utils/format.js";
+import { instantSeconds } from "../utils/time.js";
 import { CREATE, WRITE_WARNING } from "./_register.js";
 
 export function registerBudgetTools(server: McpServer): void {
   server.registerTool(
     "ads_create_budget_schedule",
     {
-      description: `${WRITE_WARNING}Schedule a temporary budget increase for a campaign during high-demand periods (e.g., Black Friday, product launches).`,
+      description: `${WRITE_WARNING}Schedule a temporary budget INCREASE on a campaign with a daily budget. budget_value is ADDED to the daily budget during the window, NOT the total.`,
       inputSchema: {
-        campaign_id: z.string().describe("Campaign ID"),
-        budget_value: z.string().describe(`For ABSOLUTE, a budget amount ${MINOR_UNIT_NOTE}. For MULTIPLIER, the multiplier value.`),
-        budget_value_type: z.enum(["ABSOLUTE", "MULTIPLIER"]).describe("ABSOLUTE = set exact budget (unit: see budget_value), MULTIPLIER = multiply current budget"),
-        time_start: z.string().describe("ISO 8601 start time for the budget increase"),
-        time_end: z.string().describe("ISO 8601 end time for the budget increase"),
+        campaign_id: z.string().describe("Campaign that holds the daily budget"),
+        budget_value: z.string().regex(/^\d{1,15}$/).describe(`The INCREASE, not the total. For ABSOLUTE, the amount added ${MINOR_UNIT_NOTE}. For MULTIPLIER, a whole percentage added (50 = +50%).`),
+        budget_value_type: z.enum(["ABSOLUTE", "MULTIPLIER"]).describe("ABSOLUTE = an amount added to the daily budget, MULTIPLIER = a percentage of it added"),
+        time_start: z.string().describe("Start: a time with its offset (2026-11-20T10:00:00-05:00), on a quarter hour"),
+        time_end: z.string().describe("End: same form, at least 3 hours after the start"),
       },
       annotations: { ...CREATE },
     },
     async ({ campaign_id, budget_value, budget_value_type, time_start, time_end }) => {
-      const id = validateMetaId(campaign_id, "campaign");
+      const id = validateNumericId(campaign_id, "campaign_id");
       const result = await metaApiClient.postForm<{ id: string }>(
         `/${id}/budget_schedules`,
-        { budget_value, budget_value_type, time_start, time_end },
+        {
+          budget_value,
+          budget_value_type,
+          // Meta takes Unix seconds here and refuses ISO 8601.
+          time_start: instantSeconds(time_start, "time_start"),
+          time_end: instantSeconds(time_end, "time_end"),
+        },
+        { noRetry: true },
       );
-      return {
-        content: [{
-          type: "text",
-          text: `Budget schedule created!\nID: ${result.id}\nCampaign: ${id}\nValue: ${budget_value} (${budget_value_type})\nPeriod: ${time_start} → ${time_end}`,
-        }],
-      };
+      return { content: [{ type: "text", text: `Increase created: period ${result.id} on campaign ${id}.` }] };
     },
   );
 }
@@ -127,8 +130,9 @@ What each part does:
 - **`server.registerTool(name, config, handler)`** — modern SDK API. The deprecated `server.tool(...)` form is no longer used in this repo. The MCP SDK uses the Zod `inputSchema` both to validate inputs at runtime and to expose a JSON Schema to clients during `tools/list`. The description is what the AI sees when picking a tool — keep it specific and outcome-oriented.
 - **`annotations: { ...CREATE }`** — spread of the standard ToolAnnotations for create operations. Clients render confirmation prompts based on these.
 - **`${WRITE_WARNING}` prefix** — for write tools only. Clients that don't read annotations still see the warning.
-- **`validateMetaId(campaign_id, "campaign")`** — defence-in-depth on top of `z.string()`. The helper enforces `^(act_\d+|\d+|\d+_\d+)$` and throws otherwise, so a malformed id can't add path segments / query strings to the URL. Every tool that interpolates a non-account id (campaign / ad set / ad / creative / page / business…) into a Graph path must call this at the start of the handler.
-- **`metaApiClient.postForm(...)`** — issues `POST /v26.0/<id>/budget_schedules` with `application/x-www-form-urlencoded` body. Behind the scenes the client looks up the per-request access token, checks the circuit-breaker, throttles writes, retries transient failures, and converts any Meta error into a typed `McpError`.
+- **Say what a value means, not just its unit** — the model reads the description and nothing else. This tool once said "ABSOLUTE = set exact budget" while Meta adds the value to the daily budget, and an agent that wanted a total of USD 300 scheduled an increase of USD 300. When a field is an increase, a total, a cap or a percentage, the description says which, with an example in money.
+- **`validateNumericId(campaign_id, "campaign_id")`**: defence-in-depth on top of `z.string()`. It accepts digits only and throws otherwise, so a malformed id can't add path segments or query strings to the URL. `validateMetaId` is the looser form for paths that can also take `act_<id>` or `<page>_<post>`. Every tool that puts an id into a Graph path must call one of them at the start of the handler.
+- **`metaApiClient.postForm(...)`**: issues `POST /v26.0/<id>/budget_schedules` with an `application/x-www-form-urlencoded` body. Behind the scenes the client looks up the per-request access token, checks the circuit breaker, throttles writes, retries transient failures and converts any Meta error into a typed `McpError`. It never retries a POST that creates something (`/act_<id>/…`, `/copies`, `/budget_schedules` and the other edges listed in the client), because a retry after a lost answer can create a second one. `{ noRetry: true }` says the same for a single call.
 - **Return shape** — every handler must return `{ content: [{ type: "text", text: "..." }, ...] }`. Adding a second `text` block with the raw JSON (`JSON.stringify(obj, null, 2)`) is a common pattern for read tools — see [src/tools/campaigns.ts](../src/tools/campaigns.ts).
 
 ## Templates
@@ -347,7 +351,7 @@ describe("registerMyResourceTools", () => {
 });
 ```
 
-**Important:** [tests/tools/registration.test.ts](../tests/tools/registration.test.ts) hard-codes the total tool count (`expect(server.registerTool).toHaveBeenCalledTimes(168)` at the time of writing). When you add a tool, bump that number, add an `expect(names).toContain("ads_my_new_tool")` assertion, and update the count comment in [src/tools/index.ts](../src/tools/index.ts).
+**Important:** [tests/tools/registration.test.ts](../tests/tools/registration.test.ts) hard-codes the total tool count (`expect(server.registerTool).toHaveBeenCalledTimes(171)` at the time of writing). When you add a tool, bump that number, add an `expect(names).toContain("ads_my_new_tool")` assertion, and update the count comment in [src/tools/index.ts](../src/tools/index.ts).
 
 ## Verification
 

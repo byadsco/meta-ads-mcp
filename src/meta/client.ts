@@ -315,13 +315,15 @@ export class MetaApiClient {
     // duplicates on retry. A Page's /leadgen_forms creates a lead form the
     // same way, /photos a Page photo, and a form's /test_leads a test lead
     // (one per form: a retry after a lost answer is refused as a second one).
+    // A campaign's or ad set's /budget_schedules adds a budget increase, and a
+    // second one would add to the first.
     // Other POSTs (updates on /<id>) and DELETEs are idempotent at the API
     // level.
     const isCreatingRequest =
       method === "POST" &&
       (/^\/?act_[A-Za-z0-9]+\//.test(path) ||
         /\/copies$/.test(path) ||
-        /\/(message_templates|flows|message_qrdls|request_code|leadgen_forms|photos|test_leads|ad_studies)$/.test(path));
+        /\/(message_templates|flows|message_qrdls|request_code|leadgen_forms|photos|test_leads|ad_studies|budget_schedules)$/.test(path));
     const canRetryTransport = !isCreatingRequest;
     const maxRetries = endBy === undefined && !scope?.noRetry ? this.maxRetries : 0;
     const timeout = endBy === undefined ? this.timeout : Math.max(1, endBy - Date.now());

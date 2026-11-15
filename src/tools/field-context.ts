@@ -26,6 +26,9 @@ interface FieldInfo {
   note?: string;
 }
 
+
+// Measured 2026-11-15: both stayed at the daily budget while a period ran.
+const NO_SCHEDULED_INCREASE = "It never includes a scheduled increase, even while one runs: see ads_get_budget_schedules";
 const ALL: readonly Level[] = ["campaign", "ad_set", "ad"];
 const CAMPAIGN_ADSET: readonly Level[] = ["campaign", "ad_set"];
 const EVERYWHERE = (operator: string): Partial<Record<Level, string>> => ({ campaign: operator, ad_set: operator, ad: operator });
@@ -63,9 +66,9 @@ export const FIELD_CONTEXT: Record<string, FieldInfo> = {
   bid_strategy: { type: "enum", levels: CAMPAIGN_ADSET, filter: { campaign: "IN" }, values: bidStrategyEnum.options },
   special_ad_categories: { type: "list of enum", levels: ["campaign"], filter: { campaign: "no" }, values: specialAdCategoryEnum.options, note: "NONE is read back as an empty list" },
   special_ad_category_country: { type: "list of country codes", levels: ["campaign"] },
-  daily_budget: { type: "integer", levels: CAMPAIGN_ADSET, filter: { campaign: "GREATER_THAN", ad_set: "GREATER_THAN" }, note: MINOR_UNIT_NOTE },
+  daily_budget: { type: "integer", levels: CAMPAIGN_ADSET, filter: { campaign: "GREATER_THAN", ad_set: "GREATER_THAN" }, note: `${MINOR_UNIT_NOTE}. ${NO_SCHEDULED_INCREASE}` },
   lifetime_budget: { type: "integer", levels: CAMPAIGN_ADSET, filter: { campaign: "GREATER_THAN" }, note: MINOR_UNIT_NOTE },
-  budget_remaining: { type: "integer", levels: CAMPAIGN_ADSET, filter: { campaign: "no" }, note: MINOR_UNIT_NOTE },
+  budget_remaining: { type: "integer", levels: CAMPAIGN_ADSET, filter: { campaign: "no" }, note: `${MINOR_UNIT_NOTE}. ${NO_SCHEDULED_INCREASE}` },
   spend_cap: {
     type: "integer",
     levels: ["campaign"],

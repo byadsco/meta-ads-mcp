@@ -111,6 +111,16 @@ describe("ads_get_field_context", () => {
     expect(lineOf(text, "spend_cap")).toContain("not the account spend cap");
   });
 
+  // Measured 2026-11-15: both stayed at the daily budget during a period.
+  it("says that daily_budget and budget_remaining never include a scheduled increase", async () => {
+    const text = await context({ fields: ["daily_budget", "budget_remaining"] });
+
+    for (const field of ["daily_budget", "budget_remaining"]) {
+      expect(lineOf(text, field)).toContain(MINOR_UNIT_NOTE);
+      expect(lineOf(text, field)).toMatch(/scheduled increase.*ads_get_budget_schedules/);
+    }
+  });
+
   it("names filters for times as Unix seconds", async () => {
     expect(lineOf(await context({ fields: ["created_time"] }), "created_time")).toMatch(/Unix seconds/);
   });
