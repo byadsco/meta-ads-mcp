@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { registerBudgetTools } from "../../src/tools/budget.js";
+import { Deadline, registerBudgetTools } from "../../src/tools/budget.js";
 import { metaApiClient } from "../../src/meta/client.js";
 import { resetAccountCurrencyCacheForTests } from "../../src/meta/account-currency.js";
 import { createMockMcpServer, setupTestToken, cleanupTestToken, mockFetchResponse } from "../setup.js";
@@ -90,6 +90,19 @@ afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllGlobals();
   cleanupTestToken();
+});
+
+describe("Deadline", () => {
+  it("gives what is left, capped at 20 s, and nothing under 3 s", () => {
+    const d = new Deadline();
+    expect(d.scope()).toEqual({ noRetry: true, timeoutMs: 20000 });
+    vi.setSystemTime(Date.now() + 30_000);
+    expect(d.scope()).toEqual({ noRetry: true, timeoutMs: 15000 });
+    vi.setSystemTime(Date.now() + 12_000);
+    expect(d.scope()).toEqual({ noRetry: true, timeoutMs: 3000 });
+    vi.setSystemTime(Date.now() + 1);
+    expect(d.scope()).toBeUndefined();
+  });
 });
 
 describe("registration", () => {
@@ -617,6 +630,53 @@ describe("ads_update_budget_schedule (Meta retired POST /{id}: a change replaces
     expect(message).toMatch(/last start that works is 2026-11-16 18:00 UTC/);
     expect(message).toMatch(/Meta can still refuse step 2/);
     expect(calls()).toContain(`GET /${CAMPAIGN}/budget_schedules`);
+  });
+
+  it("re-reads the clock after its reads: a start that came too close is moved to the next quarter hour before step 2 is advised", async () => {
+    // 15:13 UTC; the period ends at 21:00. Reads that take a second leave
+    // 15:15 under 2 minutes away, so the advised start must be 15:30.
+    vi.setSystemTime((T + 13 * 60) * 1000);
+    stubRoutes(routes({
+      [`GET /${PERIOD}`]: period(PERIOD, 30000, T, T + 6 * H),
+      [`GET /act_${ACCOUNT}`]: () => {
+        vi.setSystemTime((T + 13 * 60 + 1) * 1000);
+        return account;
+      },
+    }));
+    const message = ((await setup().run("ads_update_budget_schedule", { budget_schedule_id: PERIOD, budget_value: 10000 }).catch((e: Error) => e)) as Error).message;
+    expect(message).toContain(`time_start ${T + 30 * 60}`);
+    expect(message).not.toContain(`time_start ${T + 15 * 60}`);
+  });
+
+  it("does not advise deleting when the reads leave too little of the window", async () => {
+    // The period ends at 18:15: from 15:15 there are exactly 3 hours, from 15:30 not.
+    vi.setSystemTime((T + 13 * 60) * 1000);
+    stubRoutes(routes({
+      [`GET /${PERIOD}`]: period(PERIOD, 30000, T, T + 3 * H + 15 * 60),
+      [`GET /act_${ACCOUNT}`]: () => {
+        vi.setSystemTime((T + 13 * 60 + 1) * 1000);
+        return account;
+      },
+    }));
+    const message = ((await setup().run("ads_update_budget_schedule", { budget_schedule_id: PERIOD, budget_value: 10000 }).catch((e: Error) => e)) as Error).message;
+    expect(message).toMatch(/not advised/);
+    expect(message).not.toMatch(/ads_create_budget_schedule with/);
+  });
+
+  it("sends every call after the first write with a bounded scope", async () => {
+    stubRoutes(routes());
+    const get = vi.spyOn(metaApiClient, "get");
+    const post = vi.spyOn(metaApiClient, "postForm");
+    const del = vi.spyOn(metaApiClient, "delete");
+    await setup().run("ads_update_budget_schedule", { budget_schedule_id: PERIOD, budget_value: 10000 });
+    const bounded = (scope: unknown) => {
+      const s = scope as { noRetry?: boolean; timeoutMs?: number } | undefined;
+      return s?.noRetry === true && typeof s.timeoutMs === "number" && s.timeoutMs >= 3000 && s.timeoutMs <= 20000;
+    };
+    expect(bounded(del.mock.calls[0][2])).toBe(true);
+    expect(bounded(post.mock.calls[0][2])).toBe(true);
+    const readBackCall = get.mock.calls.find(([path]) => path === `/${NEW_PERIOD}`);
+    expect(bounded(readBackCall?.[2])).toBe(true);
   });
 
   it("names ad_set_id for step 2 when the period belongs to an ad set", async () => {

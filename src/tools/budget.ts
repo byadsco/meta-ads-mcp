@@ -61,7 +61,7 @@ const WRITE_BOUND = { noRetry: true, timeoutMs: 20_000 } as const;
 const AFTER_WRITE_MS = 45_000;
 const MIN_CALL_MS = 3_000;
 
-class Deadline {
+export class Deadline {
   private readonly at = Date.now() + AFTER_WRITE_MS;
 
   /** The scope for the next call, or undefined when it would not fit. */
@@ -240,7 +240,13 @@ async function inProgressAdvice(id: string, old: Schedule, given: Partial<Values
     daily = requireDailyBudget(owner);
     account = await readAccount(owner.accountId);
     checkIncrease(daily, values.type, values.value, account.currency);
-    checkConflicts(await listSchedulesForWrite(objectId), values, now, old.id);
+    const existing = await listSchedulesForWrite(objectId);
+    // The reads took time: the start is worked out again from the clock now,
+    // and the window checked again, so the call advised is one that still fits.
+    const fresh = nowSeconds();
+    if (given.start === undefined) values.start = nextUsableStart(fresh);
+    checkWindow(values.start, values.end, fresh);
+    checkConflicts(existing, values, fresh, old.id);
   } catch (err) {
     return `${head} A new period from ${formatInstant(values.start, undefined)} to ${formatInstant(values.end, undefined)} would not pass the checks, so deleting this one to make room for it is not advised: ` +
       `${err instanceof Error ? err.message : String(err)} To stop the increase now, delete it with ads_delete_budget_schedule (dry_run: true first).`;
@@ -250,9 +256,9 @@ async function inProgressAdvice(id: string, old: Schedule, given: Partial<Values
     head,
     `To change it, in two steps, each confirmed with the person: (1) ads_delete_budget_schedule with budget_schedule_id ${id} and dry_run: true shows what it removes; called without dry_run it deletes the period and its increase stops at once.`,
     `(2) ${createCall(owner, values)} (${formatInstant(values.start, account.timezone)} to ${formatInstant(values.end, account.timezone)}). ` +
-      `Its dry run passes only after the delete, since the two windows overlap. If that start has passed by then, use the next quarter hour: the window needs at least 3 hours, so the last start that works is ${formatInstant(lastStart, undefined)}.`,
+      `Its dry run passes only after the delete, since the two windows overlap. If that start is less than 2 minutes away by then, use the next quarter hour: the window needs at least 3 hours, so the last start that works is ${formatInstant(lastStart, undefined)}.`,
     "The new period, as checked now:",
-    ...describeSchedule({ ...values, id: "(new)" }, { daily, currency: account.currency, timezone: account.timezone, now }),
+    ...describeSchedule({ ...values, id: "(new)" }, { daily, currency: account.currency, timezone: account.timezone, now: nowSeconds() }),
     "Between the two steps no increase applies from this period. Meta can still refuse step 2, for example a window outside the campaign's schedule; then no increase applies until a new one is created.",
   ].join("\n");
 }
