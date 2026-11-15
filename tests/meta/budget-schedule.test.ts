@@ -61,6 +61,13 @@ describe("parseSchedule (what Meta returns, measured 2026-11-15)", () => {
     expect(parseSchedule({ id: "1", budget_value: 1, budget_value_type: "ABSOLUTE", recurrence_type: "ONE_TIME", time_start: time, time_end: "2026-11-16T18:00:00+0000" })).toBeUndefined();
   });
 
+  it("keeps the minutes of an offset and the seconds", () => {
+    const read = (time_start: string, time_end: string) =>
+      parseSchedule({ id: "1", budget_value: 1, budget_value_type: "ABSOLUTE", recurrence_type: "ONE_TIME", time_start, time_end });
+    // 20:45:07 at +05:45 and 11:30:09 at -03:30 are 15:00:07 and 15:00:09 UTC.
+    expect(read("2026-11-16T20:45:07+0545", "2026-11-16T11:30:09-0330")).toMatchObject({ start: T + 7, end: T + 9 });
+  });
+
   it("reads Meta's form with any offset", () => {
     expect(parseSchedule({ id: "1", budget_value: 1, budget_value_type: "ABSOLUTE", recurrence_type: "ONE_TIME", time_start: "2026-11-16T10:00:00-0500", time_end: "2026-11-16T18:00:00+0000" })?.start).toBe(T);
   });
