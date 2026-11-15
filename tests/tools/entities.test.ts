@@ -47,6 +47,24 @@ describe("ads_update_entity: budget stated in the account currency", () => {
     expect(fetchCallSummary()).toEqual(["POST /2001", "GET /2001", "GET /act_123"]);
   });
 
+  // Measured 2026-11-15: sent with daily_budget, budget_schedule_specs creates
+  // periods without Meta's own checks (an overlap above the 8 × cap was
+  // accepted), unlike POST /{id}/budget_schedules.
+  it("refuses budget_schedule_specs and sends nothing", async () => {
+    stubWriteAndCurrencyLookup({ write: { success: true } });
+
+    await expect(update("campaign", { daily_budget: 1000, budget_schedule_specs: [{ budget_value: 3000 }] }))
+      .rejects.toThrow(/ads_create_budget_schedule/);
+    expect(fetchCallSummary()).toEqual([]);
+    await expect(update("campaign", { daily_budget: 1000, "budget_schedule_specs[0][budget_value]": 3000 }))
+      .rejects.toThrow(/ads_create_budget_schedule/);
+    await expect(update("campaign", { daily_budget: 1000, Budget_Schedule_Specs: "[]" }))
+      .rejects.toThrow(/ads_create_budget_schedule/);
+    await expect(update("campaign", { daily_budget: 1000, " budget_schedule_specs": "[]", "\tbudget_schedule_specs": "[]" }))
+      .rejects.toThrow(/ads_create_budget_schedule/);
+    expect(fetchCallSummary()).toEqual([]);
+  });
+
   it("reads a budget passed as a string of digits the same way", async () => {
     stubWriteAndCurrencyLookup({
       write: { success: true },

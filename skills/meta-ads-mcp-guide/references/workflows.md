@@ -169,9 +169,20 @@ What keeps the engagement and what resets it:
 1. `ads_get_campaign_details` or `ads_get_ad_set_details` — read the current budget and bid strategy.
 2. `ads_get_account_info` — confirm the spend cap leaves room.
 3. Say the change in the advertiser's currency, and get agreement.
-4. `ads_update_campaign` or `ads_update_ad_set`, or `ads_create_budget_schedule` when it should take effect later.
+4. `ads_update_campaign` or `ads_update_ad_set`, or a scheduled increase (below) when it should apply for a few hours or days.
 
 Large jumps reset the learning phase. Meta's own guidance is roughly 20% at a time; say so when someone asks for a tripling.
+
+## Scheduled budget increase
+
+"Raise the budget to 300 for Black Friday."
+
+1. `ads_get_budget_schedules` on the campaign (or the ad set, when the budget is on its ad sets) — the current daily budget and the periods already there.
+2. Work out the increase: the value is ADDED to the daily budget, never the total. To reach a total of 300 a day on a daily budget of 100, ABSOLUTE is 200 (in the minor unit, 20000 in USD) and MULTIPLIER is 200 (percent). Meta caps the increase at 8 × the daily budget.
+3. `ads_create_budget_schedule` with `dry_run: true`. Read the person its "daily budget during the window" and the window in the account's time zone, and get agreement on that total.
+4. `ads_create_budget_schedule` without `dry_run`, then `ads_get_budget_schedules` to confirm it is there.
+
+To lower or move an upcoming one, `ads_update_budget_schedule` with `dry_run` first. It replaces the period under a new id; if Meta refuses the new period, the tool tries to put the old one back and says what is left. One in progress is not replaced: delete it with `ads_delete_budget_schedule` (`dry_run: true` first; without it the increase stops at once), then create a new one from the next quarter hour, with at least 3 hours to its end. The create's dry run passes only after the delete, since the two windows overlap. Confirm both steps with the person. Never create a second period to correct a first one: Meta refuses periods that overlap.
 
 ## Automated rules
 

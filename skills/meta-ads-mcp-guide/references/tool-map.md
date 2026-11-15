@@ -1,6 +1,6 @@
 # Tool map
 
-Every tool this server registers, grouped by what you are trying to do. 168 in total; 94 are read-only.
+Every tool this server registers, grouped by what you are trying to do. 171 in total; 95 are read-only.
 
 A ⚠️ marks a tool that changes live data, spends money or touches stored credentials. Read the tool's own description before calling one: it carries the argument rules this map deliberately leaves out.
 
@@ -121,7 +121,10 @@ A ⚠️ marks a tool that changes live data, spends money or touches stored cre
 
 ## Budget and billing
 
-- `ads_create_budget_schedule` ⚠️ — Schedule a budget increase for a campaign or ad set.
+- `ads_create_budget_schedule` ⚠️ — Schedule a temporary budget increase on the campaign or ad set that holds a daily budget. The value is ADDED to the daily budget, not the total; `dry_run` shows the daily budget during the window first.
+- `ads_get_budget_schedules` — The scheduled increases of a campaign or ad set, each with its money, its window in the account's time zone and whether it is in progress. `daily_budget` and `budget_remaining` never show them.
+- `ads_update_budget_schedule` ⚠️ — Change an upcoming increase or its window, at least 8 minutes before it starts. Meta cannot edit a period in place, so this replaces it (new id). One in progress is not touched; the answer gives the two steps.
+- `ads_delete_budget_schedule` ⚠️ — Delete a scheduled increase (`dry_run` shows what it would remove); an upcoming one never starts, one in progress stops at once.
 - `ads_get_billing_info` — Payment methods and the account billing state.
 - `ads_get_spend_limit` — The account spend cap and how much of it is used.
 - `ads_update_spend_cap` ⚠️ — Raise, lower or clear the account spend cap.

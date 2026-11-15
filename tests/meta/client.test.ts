@@ -690,6 +690,16 @@ describe("MetaApiClient", () => {
       expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
     });
 
+    it("does NOT retry POST to a campaign's or ad set's budget schedules on a transient error (a second increase would add up)", async () => {
+      const retryClient = new MetaApiClient({ maxRetries: 3, timeout: 5000 });
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockFetchResponse({
+        error: { message: "An unknown error has occurred.", type: "OAuthException", code: 1 },
+      })));
+
+      await expect(retryClient.postForm("/8001/budget_schedules", { budget_value: "1000" })).rejects.toThrow();
+      expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
+    });
+
     it("uses caller-provided account scope for /copies write pacing", async () => {
       const scopedClient = new MetaApiClient({
         maxRetries: 0,
