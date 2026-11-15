@@ -353,6 +353,33 @@ describe("ads_create_budget_schedule", () => {
     await expect(setup().run("ads_create_budget_schedule", createArgs())).rejects.toThrow(/may or may not exist/);
   });
 
+  it("reads every page of the lost-answer search with a scope bounded by what is left", async () => {
+    let listed = 0;
+    stubRoutes(routes({
+      [`POST /${CAMPAIGN}/budget_schedules`]: () => {
+        vi.setSystemTime(Date.now() + 30_000);
+        return new Lost();
+      },
+      [`GET /${CAMPAIGN}/budget_schedules`]: (url: URL) => {
+        listed++;
+        if (listed === 1) return { data: [] };
+        return url.searchParams.get("after") === "p2"
+          ? { data: [period(NEW_PERIOD, 30000)] }
+          : { data: [], paging: { next: "https://graph.facebook.com/next", cursors: { after: "p2" } } };
+      },
+    }));
+    const get = vi.spyOn(metaApiClient, "get");
+    await setup().run("ads_create_budget_schedule", createArgs());
+    const pages = get.mock.calls.filter(([path]) => path === `/${CAMPAIGN}/budget_schedules`).slice(1);
+    expect(pages).toHaveLength(2);
+    for (const [, , scope] of pages) {
+      const s = scope as { noRetry?: boolean; timeoutMs?: number };
+      expect(s.noRetry).toBe(true);
+      expect(s.timeoutMs).toBeLessThanOrEqual(15_000);
+      expect(s.timeoutMs).toBeGreaterThanOrEqual(3_000);
+    }
+  });
+
   it("does not look for a lost answer once the time for the write has run out", async () => {
     stubRoutes(routes({
       [`POST /${CAMPAIGN}/budget_schedules`]: () => {
