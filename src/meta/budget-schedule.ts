@@ -1,7 +1,8 @@
 // Budget schedules ("high demand periods"): a temporary increase ADDED to the
-// daily budget of a campaign or an ad set. Every rule below was measured on
+// daily budget of a campaign or an ad set. The rules below were measured on
 // Graph API v26.0 on 2026-11-15, in a USD account with a daily budget of
-// 1000; Meta's error subcode is noted next to each.
+// 1000, with Meta's error subcode next to each; the limit of 50 periods comes
+// from Meta's documentation and the 2-minute lead is this server's own.
 import { metaApiClient } from "./client.js";
 import { wasRefused } from "./errors.js";
 import { scrubbed } from "./read-list.js";

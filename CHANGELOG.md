@@ -9,7 +9,7 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
-- **Budget schedules can be listed, changed and deleted** (168 → 171 tools). Each rule below was measured on Graph API v26.0 (2026-11-15).
+- **Budget schedules can be listed, changed and deleted** (168 → 171 tools). The rules below were measured on Graph API v26.0 (2026-11-15), except the limit of 50 periods, which is Meta's documentation.
   - `ads_get_budget_schedules` lists the periods of a campaign or ad set. For each one it shows the increase in money, the daily budget during its window, the window in the account's time zone, and whether it is upcoming, IN PROGRESS or ended. `daily_budget` and `budget_remaining` stay the same while a period runs, so until now nothing showed an increase in progress.
   - `ads_update_budget_schedule` changes the increase or the window of a period that has not started.
     - Meta retired editing a period in place: `POST /{id}` answers "Deprecated Platform API Endpoint". So the tool deletes the period and creates the new one, under a new id.

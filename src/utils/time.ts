@@ -33,7 +33,7 @@ const UNIX_SECONDS = /^\d{10}$/;
  */
 export function instantSeconds(value: string | number, name: string): number {
   const refuse = (detail: string): never => {
-    throw new Error(`${name} must be a time with its offset (2026-11-20T10:00:00-05:00) or Unix seconds (1795014000)${detail}. Got: ${JSON.stringify(value)?.slice(0, 60)}`);
+    throw new Error(`${name} must be a time with its offset (2026-11-20T10:00:00-05:00) or Unix seconds (the same instant is 1795186800)${detail}. Got: ${JSON.stringify(value)?.slice(0, 60)}`);
   };
   if (typeof value === "number") {
     if (Number.isSafeInteger(value) && value >= 1e12) refuse(": this looks like milliseconds");
