@@ -340,6 +340,17 @@ describe("ads_create_budget_schedule", () => {
     await expect(setup().run("ads_create_budget_schedule", createArgs())).rejects.toThrow(/may or may not exist/);
   });
 
+  it("does not look for a lost answer once the time for the write has run out", async () => {
+    stubRoutes(routes({
+      [`POST /${CAMPAIGN}/budget_schedules`]: () => {
+        vi.setSystemTime(Date.now() + 44_000);
+        return new Lost();
+      },
+    }));
+    await expect(setup().run("ads_create_budget_schedule", createArgs())).rejects.toThrow(/may or may not exist/);
+    expect(calls().filter((c) => c === `GET /${CAMPAIGN}/budget_schedules`)).toHaveLength(1);
+  });
+
   it("when Meta's answer is lost and no new period shows up, says it may exist and warns against a second create", async () => {
     stubRoutes(routes({ [`POST /${CAMPAIGN}/budget_schedules`]: new Lost() }));
     await expect(setup().run("ads_create_budget_schedule", createArgs())).rejects.toThrow(/may or may not exist.*second increase/);
@@ -584,17 +595,63 @@ describe("ads_update_budget_schedule (Meta retired POST /{id}: a change replaces
     expect(message).toMatch(/ads_delete_budget_schedule.*ads_create_budget_schedule/s);
     expect(message).toContain("2026-11-16 15:30 UTC");
     // The delete has a dry run of its own; the create's passes only after the delete.
-    expect(message).toMatch(/ads_delete_budget_schedule with dry_run: true/);
+    expect(message).toMatch(/ads_delete_budget_schedule with budget_schedule_id \d+ and dry_run: true/);
     expect(message).toMatch(/only after the delete/);
     expect(message).not.toMatch(/each with dry_run/);
-    expect(calls()).toEqual([`GET /${PERIOD}`]);
+    expect(calls().filter((c) => !c.startsWith("GET"))).toEqual([]);
+  });
+
+  // Step 2 is checked before step 1 is advised: deleting a running increase
+  // to make room for one Meta would refuse leaves no increase at all.
+  it("for a period in progress, checks step 2 first and gives it with the exact values, the total and the last start that works", async () => {
+    vi.setSystemTime((T + 20 * 60) * 1000);
+    stubRoutes(routes({ [`GET /${PERIOD}`]: period(PERIOD, 30000, T, T + 6 * H) }));
+    const message = ((await setup().run("ads_update_budget_schedule", { budget_schedule_id: PERIOD, budget_value: 10000 }).catch((e: Error) => e)) as Error).message;
+    expect(message).toContain(`campaign_id ${CAMPAIGN}`);
+    expect(message).toContain("budget_value 10000");
+    expect(message).toContain("budget_value_type ABSOLUTE");
+    expect(message).toContain(`time_start ${T + 30 * 60}`);
+    expect(message).toContain(`time_end ${T + 6 * H}`);
+    expect(message).toContain("+USD 100.00");
+    expect(message).toContain("USD 200.00");
+    expect(message).toMatch(/last start that works is 2026-11-16 18:00 UTC/);
+    expect(message).toMatch(/Meta can still refuse step 2/);
+    expect(calls()).toContain(`GET /${CAMPAIGN}/budget_schedules`);
+  });
+
+  it("names ad_set_id for step 2 when the period belongs to an ad set", async () => {
+    vi.setSystemTime((T + 20 * 60) * 1000);
+    stubRoutes(routes({
+      [`GET /${PERIOD}`]: period(PERIOD, 30000, T, T + 6 * H, "ABSOLUTE", AD_SET),
+      [`GET /${AD_SET}`]: (url: URL) => (url.searchParams.get("fields")?.includes("objective")
+        ? metaError("(#100) Tried accessing nonexisting field (objective)")
+        : { id: AD_SET, daily_budget: "10000", lifetime_budget: "0", account_id: ACCOUNT, campaign_id: CAMPAIGN }),
+      [`GET /${AD_SET}/budget_schedules`]: { data: [period(PERIOD, 30000, T, T + 6 * H, "ABSOLUTE", AD_SET)] },
+    }));
+    const message = ((await setup().run("ads_update_budget_schedule", { budget_schedule_id: PERIOD, budget_value: 10000 }).catch((e: Error) => e)) as Error).message;
+    expect(message).toContain(`ad_set_id ${AD_SET}`);
+    expect(message).not.toContain(`campaign_id ${AD_SET}`);
+  });
+
+  it.each([
+    ["the new value is over the cap", { budget_value: 90000 }, {}, /8 × the daily budget/],
+    ["another period sits in the new window", { budget_value: 10000 }, { [`GET /${CAMPAIGN}/budget_schedules`]: { data: [period(PERIOD, 30000, T, T + 6 * H), period("77", 1000, T + 4 * H, T + 7 * H)] } }, /overlaps period 77/],
+    ["a period that repeats is on the campaign", { budget_value: 10000 }, { [`GET /${CAMPAIGN}/budget_schedules`]: { data: [period(PERIOD, 30000, T, T + 6 * H), { ...period("78", 1000, T + 30 * H, T + 33 * H), recurrence_type: "WEEKLY" }] } }, /78 repeats/],
+  ])("for a period in progress, does not advise deleting it when step 2 would be refused: %s", async (_label, change, overrides, reason) => {
+    vi.setSystemTime((T + 20 * 60) * 1000);
+    stubRoutes(routes({ [`GET /${PERIOD}`]: period(PERIOD, 30000, T, T + 6 * H), ...overrides }));
+    const message = ((await setup().run("ads_update_budget_schedule", { budget_schedule_id: PERIOD, ...change }).catch((e: Error) => e)) as Error).message;
+    expect(message).toMatch(reason);
+    expect(message).toMatch(/not advised/);
+    expect(message).not.toMatch(/ads_create_budget_schedule with/);
+    expect(calls().filter((c) => !c.startsWith("GET"))).toEqual([]);
   });
 
   it("on a period in progress with under 3 hours left, says only deleting it is possible", async () => {
     vi.setSystemTime((T + H) * 1000);
     stubRoutes(routes());
     await expect(setup().run("ads_update_budget_schedule", { budget_schedule_id: PERIOD, budget_value: 10000 }))
-      .rejects.toThrow(/less than 3 hours.*ads_delete_budget_schedule/s);
+      .rejects.toThrow(/at least 3 hours.*ads_delete_budget_schedule/s);
     expect(calls().filter((c) => !c.startsWith("GET"))).toEqual([]);
   });
 
@@ -766,6 +823,36 @@ describe("ads_update_budget_schedule (Meta retired POST /{id}: a change replaces
     await expect(setup().run("ads_update_budget_schedule", { budget_schedule_id: PERIOD, budget_value_type: "MULTIPLIER", budget_value: 50 }))
       .rejects.toThrow(/66.*ABSOLUTE/);
     expect(calls().filter((c) => !c.startsWith("GET"))).toEqual([]);
+  });
+
+  // The MCP SDK's client stops waiting after 60 s: what follows a confirmed
+  // delete shares 45 s, and a call that would not fit is not sent.
+  it("does not try to put the original back when the time after the delete has run out, and says how to recreate it", async () => {
+    stubRoutes(routes({
+      [`POST /${CAMPAIGN}/budget_schedules`]: () => {
+        vi.setSystemTime(Date.now() + 44_000);
+        return metaError("Invalid parameter", 100, 3858086);
+      },
+    }));
+    const message = ((await setup().run("ads_update_budget_schedule", { budget_schedule_id: PERIOD, budget_value: 10000 }).catch((e: Error) => e)) as Error).message;
+    expect(message).toMatch(/not enough time/);
+    expect(message).toMatch(/ads_create_budget_schedule/);
+    expect(message).toContain("+USD 300.00");
+    expect(calls().filter((c) => c.startsWith("POST"))).toHaveLength(1);
+    expect(calls().filter((c) => c === `GET /${CAMPAIGN}/budget_schedules`)).toHaveLength(1);
+  });
+
+  it("skips the read-back when the time after the delete has run out", async () => {
+    stubRoutes(routes({
+      [`POST /${CAMPAIGN}/budget_schedules`]: () => {
+        vi.setSystemTime(Date.now() + 44_000);
+        return { id: NEW_PERIOD };
+      },
+    }));
+    const out = await setup().text("ads_update_budget_schedule", { budget_schedule_id: PERIOD, budget_value: 10000 });
+    expect(out).toContain(NEW_PERIOD);
+    expect(out).toMatch(/could not be read back/);
+    expect(calls()).not.toContain(`GET /${NEW_PERIOD}`);
   });
 
   it("stops before creating anything when the deletion is not confirmed", async () => {

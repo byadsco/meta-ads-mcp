@@ -281,6 +281,9 @@ export async function fromMeta<T>(call: () => Promise<T>): Promise<T> {
 }
 
 /** The budget of a campaign or ad set, refusing an id of the other kind. */
+/** An id read as a campaign that is not one, or as an ad set that is not one. */
+class WrongKind extends Error {}
+
 export async function readTarget(kind: TargetKind, id: string): Promise<BudgetTarget> {
   let raw: Record<string, unknown>;
   try {
@@ -288,11 +291,21 @@ export async function readTarget(kind: TargetKind, id: string): Promise<BudgetTa
   } catch (err) {
     if (!wasRefused(err) || kind === "object") throw err;
     const other = kind === "campaign" ? "ad_set_id" : "campaign_id";
-    throw new Error(`${kind === "campaign" ? "campaign_id" : "ad_set_id"} ${id} could not be read as ${kind === "campaign" ? "a campaign" : "an ad set"}. If it is ${kind === "campaign" ? "an ad set" : "a campaign"}, pass it as ${other}.${untrustedDetail(err)}`);
+    throw new WrongKind(`${kind === "campaign" ? "campaign_id" : "ad_set_id"} ${id} could not be read as ${kind === "campaign" ? "a campaign" : "an ad set"}. If it is ${kind === "campaign" ? "an ad set" : "a campaign"}, pass it as ${other}.${untrustedDetail(err)}`);
   }
   const accountId = typeof raw.account_id === "string" && /^\d{1,30}$/.test(raw.account_id) ? raw.account_id : undefined;
   const campaignId = typeof raw.campaign_id === "string" && /^\d{1,30}$/.test(raw.campaign_id) ? raw.campaign_id : undefined;
   return { kind, id, daily: amount(raw.daily_budget), lifetime: amount(raw.lifetime_budget), accountId, campaignId };
+}
+
+/** The budget of the object a period belongs to, and whether it is a campaign or an ad set: a create needs to name which. */
+export async function readOwner(id: string): Promise<BudgetTarget> {
+  try {
+    return await readTarget("campaign", id);
+  } catch (err) {
+    if (!(err instanceof WrongKind)) throw err;
+  }
+  return readTarget("ad_set", id);
 }
 
 /**
@@ -331,8 +344,16 @@ const MAX_PAGES = 5;
 
 type Page = { data?: unknown; paging?: { next?: unknown; cursors?: { after?: unknown } } };
 
-/** Every period on a campaign or ad set, oldest start first, and whether the list is known to be whole. */
-export async function listSchedules(objectId: string): Promise<Listed> {
+/** How one call to Meta is sent; undefined means it no longer fits its deadline and is not sent. */
+export type CallScope = Parameters<typeof metaApiClient.get>[2];
+
+/**
+ * Every period on a campaign or ad set, oldest start first, and whether the
+ * list is known to be whole. With `scopeFor`, each page is sent with the scope
+ * it gives, and a page it has no time for is not sent: the list is then not
+ * whole.
+ */
+export async function listSchedules(objectId: string, scopeFor?: () => CallScope | undefined): Promise<Listed> {
   const path = `/${objectId}/budget_schedules`;
   const params = { fields: SCHEDULE_FIELDS, limit: PAGE_SIZE };
   const raw: unknown[] = [];
@@ -340,7 +361,9 @@ export async function listSchedules(objectId: string): Promise<Listed> {
   let after: string | undefined;
   let complete = false;
   for (let page = 0; page < MAX_PAGES; page++) {
-    const answer = await fromMeta(() => metaApiClient.get<Page>(path, after === undefined ? params : { ...params, after }));
+    const scope = scopeFor?.();
+    if (scopeFor && !scope) break;
+    const answer = await fromMeta(() => metaApiClient.get<Page>(path, after === undefined ? params : { ...params, after }, scope));
     // An answer without a list is not "no periods": a write would skip its checks.
     if (!Array.isArray(answer?.data)) {
       if (page === 0) throw new Error(`Meta's list of periods on ${objectId} could not be read.`);

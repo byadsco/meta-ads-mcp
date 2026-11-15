@@ -22,6 +22,7 @@ import {
   parseIncrease,
   parseSchedule,
   readAccount,
+  readOwner,
   readSchedule,
   readTarget,
   requireDailyBudget,
@@ -29,13 +30,15 @@ import {
   scheduleStatus,
   fromMeta,
   untrustedDetail,
+  type AccountInfo,
   type BudgetTarget,
+  type CallScope,
   type IncreaseType,
   type Schedule,
 } from "../meta/budget-schedule.js";
 import { validateNumericId } from "../utils/format.js";
 import { instantSeconds } from "../utils/time.js";
-import { McpError } from "@modelcontextprotocol/sdk/types.js";
+import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { CREATE, DELETE, READ, UPDATE, WRITE_WARNING } from "./_register.js";
 
 type Values = Omit<Schedule, "id" | "objectId">;
@@ -50,6 +53,34 @@ const text = (lines: Array<string | false | undefined>) => ({
 // every start is checked against the clock to be at least 2 minutes away just
 // before the first write.
 const WRITE_BOUND = { noRetry: true, timeoutMs: 20_000 } as const;
+
+// From the first write on, the answer has to come back before the agent's
+// client stops waiting (the MCP SDK's client gives up after 60 s by default):
+// every call from then on shares this much time, each is sent with what is
+// left (at most WRITE_BOUND), and one that would not fit is not sent.
+const AFTER_WRITE_MS = 45_000;
+const MIN_CALL_MS = 3_000;
+
+class Deadline {
+  private readonly at = Date.now() + AFTER_WRITE_MS;
+
+  /** The scope for the next call, or undefined when it would not fit. */
+  scope(): CallScope | undefined {
+    const left = this.at - Date.now();
+    return left >= MIN_CALL_MS ? { noRetry: true, timeoutMs: Math.min(WRITE_BOUND.timeoutMs, left) } : undefined;
+  }
+
+  hasRoomFor(calls: number): boolean {
+    return this.at - Date.now() >= calls * MIN_CALL_MS;
+  }
+}
+
+/** A call that was not sent because the time for this answer had run out. */
+class OutOfTime extends Error {
+  constructor() {
+    super("there was not enough time left in this answer to send it");
+  }
+}
 
 // A replacement keeps this much lead, for itself and for the original it may
 // have to put back: the shortest lead Meta was seen to accept for a new
@@ -106,10 +137,10 @@ class LostCreate extends Error {
 // stale read can still show it), with exactly the values sent, in a list known
 // to be whole with every row read. Two of them would mean someone else is
 // writing too, so neither is claimed.
-async function findCreated(objectId: string, sent: Values, before: readonly Schedule[]): Promise<string | undefined> {
+async function findCreated(objectId: string, sent: Values, before: readonly Schedule[], deadline: Deadline): Promise<string | undefined> {
   const known = new Set(before.map((s) => s.id));
   try {
-    const { schedules, complete, unreadable, repeating } = await listSchedules(objectId);
+    const { schedules, complete, unreadable, repeating } = await listSchedules(objectId, () => deadline.scope());
     const matches = schedules.filter((s) => !known.has(s.id) && sameValues(s, sent));
     return complete && unreadable === 0 && repeating.length === 0 && matches.length === 1 ? matches[0].id : undefined;
   } catch {
@@ -118,28 +149,33 @@ async function findCreated(objectId: string, sent: Values, before: readonly Sche
 }
 
 /**
- * POST /{campaign or ad set}/budget_schedules, sent once and bounded. A
- * refusal is thrown as is (nothing was written). A lost answer is looked for
- * among the periods; if it is not there, LostCreate.
+ * POST /{campaign or ad set}/budget_schedules, sent once and within the
+ * deadline. A refusal is thrown as is (nothing was written), and OutOfTime
+ * when there was no time to send it. A lost answer is looked for among the
+ * periods; if it is not there, LostCreate.
  */
-async function createPeriod(objectId: string, values: Values, before: readonly Schedule[]): Promise<{ id: string; lost?: unknown }> {
+async function createPeriod(objectId: string, values: Values, before: readonly Schedule[], deadline: Deadline): Promise<{ id: string; lost?: unknown }> {
+  const scope = deadline.scope();
+  if (!scope) throw new OutOfTime();
   let lost: unknown;
   try {
-    const answer = await fromMeta(() => metaApiClient.postForm<{ id?: unknown }>(`/${objectId}/budget_schedules`, bodyFor(values), WRITE_BOUND));
+    const answer = await fromMeta(() => metaApiClient.postForm<{ id?: unknown }>(`/${objectId}/budget_schedules`, bodyFor(values), scope));
     if (typeof answer?.id === "string" && /^\d{1,30}$/.test(answer.id)) return { id: answer.id };
     lost = new Error("its answer did not carry the new id");
   } catch (err) {
     if (wasRefused(err)) throw err;
     lost = err;
   }
-  const found = await findCreated(objectId, values, before);
+  const found = await findCreated(objectId, values, before, deadline);
   if (found) return { id: found, lost };
   throw new LostCreate(lost);
 }
 
-async function readBack(id: string): Promise<Schedule | undefined> {
+async function readBack(id: string, deadline: Deadline): Promise<Schedule | undefined> {
+  const scope = deadline.scope();
+  if (!scope) return undefined;
   try {
-    return parseSchedule(scrubbed(await metaApiClient.get<unknown>(`/${id}`, { fields: SCHEDULE_FIELDS }, { noRetry: true })));
+    return parseSchedule(scrubbed(await metaApiClient.get<unknown>(`/${id}`, { fields: SCHEDULE_FIELDS }, scope)));
   } catch {
     return undefined;
   }
@@ -150,10 +186,12 @@ function readBackLine(after: Schedule | undefined, sent: Values): string | undef
   return sameValues(after, sent) ? undefined : "Meta holds different values from the ones sent; the lines above are what Meta holds.";
 }
 
-async function deletePeriod(id: string, unconfirmed: (cause: unknown) => Error, refusedText: string): Promise<void> {
+async function deletePeriod(id: string, unconfirmed: (cause: unknown) => Error, refusedText: string, deadline: Deadline): Promise<void> {
+  const scope = deadline.scope();
+  if (!scope) throw new McpError(ErrorCode.InvalidRequest, `${refusedText} ${new OutOfTime().message}.`);
   let answer: { success?: unknown };
   try {
-    answer = await fromMeta(() => metaApiClient.delete<{ success?: unknown }>(`/${id}`, undefined, WRITE_BOUND));
+    answer = await fromMeta(() => metaApiClient.delete<{ success?: unknown }>(`/${id}`, undefined, scope));
   } catch (err) {
     if (wasRefused(err)) throw new McpError((err as McpError).code, `${refusedText}${untrustedDetail(err)}`);
     throw unconfirmed(err);
@@ -173,6 +211,51 @@ function recheckWindow(values: Values): number {
 }
 
 const targetLabel = (target: Pick<BudgetTarget, "kind" | "id">) => `${KIND_LABEL[target.kind]} ${target.id}`;
+
+/** The create call that makes this period, for an answer that has to leave it to the agent. */
+const createCall = (target: Pick<BudgetTarget, "kind" | "id">, v: Values) =>
+  `ads_create_budget_schedule with ${target.kind === "ad_set" ? "ad_set_id" : "campaign_id"} ${target.id}, budget_value ${v.value}, budget_value_type ${v.type}, time_start ${v.start} and time_end ${v.end}`;
+
+/**
+ * What to tell an agent that asked to change a period in progress. Such a
+ * period cannot be replaced safely, and the two steps that would change it
+ * delete a running increase first: they are only advised when the new period
+ * passes every check here, which are the same as for a create.
+ */
+async function inProgressAdvice(id: string, old: Schedule, given: Partial<Values>, now: number): Promise<string> {
+  const head = `Budget schedule ${id} is in progress, so it is not changed here. Meta cannot edit a period, and one that has started cannot be put back with its own start: a replacement that Meta refused would lose the increase.`;
+  const objectId = old.objectId as string;
+  const values: Values = {
+    value: given.value ?? old.value,
+    type: given.type ?? old.type,
+    start: given.start ?? nextUsableStart(now),
+    end: given.end ?? old.end,
+  };
+  let owner: BudgetTarget;
+  let account: AccountInfo;
+  let daily: number;
+  try {
+    checkWindow(values.start, values.end, now);
+    owner = await readOwner(objectId);
+    daily = requireDailyBudget(owner);
+    account = await readAccount(owner.accountId);
+    checkIncrease(daily, values.type, values.value, account.currency);
+    checkConflicts(await listSchedulesForWrite(objectId), values, now, old.id);
+  } catch (err) {
+    return `${head} A new period from ${formatInstant(values.start, undefined)} to ${formatInstant(values.end, undefined)} would not pass the checks, so deleting this one to make room for it is not advised: ` +
+      `${err instanceof Error ? err.message : String(err)} To stop the increase now, delete it with ads_delete_budget_schedule (dry_run: true first).`;
+  }
+  const lastStart = Math.floor((values.end - 3 * 3600) / 900) * 900;
+  return [
+    head,
+    `To change it, in two steps, each confirmed with the person: (1) ads_delete_budget_schedule with budget_schedule_id ${id} and dry_run: true shows what it removes; called without dry_run it deletes the period and its increase stops at once.`,
+    `(2) ${createCall(owner, values)} (${formatInstant(values.start, account.timezone)} to ${formatInstant(values.end, account.timezone)}). ` +
+      `Its dry run passes only after the delete, since the two windows overlap. If that start has passed by then, use the next quarter hour: the window needs at least 3 hours, so the last start that works is ${formatInstant(lastStart, undefined)}.`,
+    "The new period, as checked now:",
+    ...describeSchedule({ ...values, id: "(new)" }, { daily, currency: account.currency, timezone: account.timezone, now }),
+    "Between the two steps no increase applies from this period. Meta can still refuse step 2, for example a window outside the campaign's schedule; then no increase applies until a new one is created.",
+  ].join("\n");
+}
 
 const increaseText = (s: Values, currency: string | undefined) =>
   `+${s.type === "ABSOLUTE" ? formatMinorAmount(s.value, currency) : `${s.value}%`} (${s.type} ${s.value})`;
@@ -228,15 +311,16 @@ export function registerBudgetTools(server: McpServer): void {
       }
 
       recheckWindow(values);
+      const deadline = new Deadline();
       let created: { id: string; lost?: unknown };
       try {
-        created = await createPeriod(id, values, existing);
+        created = await createPeriod(id, values, existing, deadline);
       } catch (err) {
         if (wasRefused(err)) throw new McpError((err as McpError).code, `Nothing was created on the ${label}: Meta refused the new increase, or the request was not sent.${untrustedDetail(err)}`);
         if (!(err instanceof LostCreate)) throw err;
         throw new Error(`Meta did not confirm the new increase on the ${label}: it may or may not exist. List with ads_get_budget_schedules before trying again; a second create would add a second increase.${untrustedDetail(err.cause)}`);
       }
-      const after = await readBack(created.id);
+      const after = await readBack(created.id, deadline);
       return text([
         created.lost === undefined
           ? `Increase created on the ${label}.`
@@ -314,7 +398,7 @@ export function registerBudgetTools(server: McpServer): void {
       description:
         `${WRITE_WARNING}Change the increase or the window of a budget schedule that has not started yet. Meta retired editing a period in place (POST /{id}, measured 2026-11-15), so this REPLACES it: the period is deleted and a new one created with the new values, under a new id. ` +
         "Everything is checked first with the same rules as ads_create_budget_schedule. If Meta still refuses the new one, the tool tries to put the original back, and the answer says what is left. " +
-        "Only a period that starts at least 8 minutes from now is replaced, so the original can still be put back. A period IN PROGRESS is not touched: a started period cannot be put back with its own start, so the answer gives the two steps instead (delete it, then create a new one from the next quarter hour). Other periods are not touched. " +
+        "Only a period that starts at least 8 minutes from now is replaced, so the original can still be put back. A period IN PROGRESS is not touched: a started period cannot be put back with its own start. The new period is checked first, and only if it passes does the answer give the two steps (delete it, then the exact create call from the next quarter hour); otherwise it says why, and not to delete it to make room. Other periods are not touched. " +
         `Changing budget_value_type needs budget_value too. Run with dry_run: true first. ${INCREASE_NOT_TOTAL}`,
       inputSchema: z.strictObject({
         budget_schedule_id: z.string().describe("ID of the budget schedule (period), as listed by ads_get_budget_schedules"),
@@ -347,25 +431,15 @@ export function registerBudgetTools(server: McpServer): void {
       if (status === "ended") {
         throw new Error(`Budget schedule ${id} has ended, so there is nothing to change. Create a new one with ads_create_budget_schedule.`);
       }
-      if (status === "in progress") {
-        const next = nextUsableStart(now);
-        const steps = old.end - next >= 3 * 3600
-          ? "To change it, in two steps, each confirmed with the person: (1) ads_delete_budget_schedule with dry_run: true shows what it removes; called without dry_run it deletes the period and its increase stops at once. " +
-            `(2) ads_create_budget_schedule on the same campaign or ad set (${objectId}) with the new value, from the next usable quarter hour (now ${formatInstant(next, undefined)}) to ${formatInstant(old.end, undefined)} or later. ` +
-            "Its dry run passes only after the delete, since the two windows overlap. Between the two steps no increase applies from this period."
-          : `From the next usable start (${formatInstant(next, undefined)}) to its end there are less than 3 hours, and Meta needs at least 3, so it cannot be replaced: to stop it now, delete it with ads_delete_budget_schedule.`;
-        throw new Error(
-          `Budget schedule ${id} is in progress, so it is not changed here. Meta cannot edit a period, and one that has started cannot be put back with its own start: a replacement that Meta refused would lose the increase. ${steps}`,
-        );
-      }
-      if (old.start < now + REPLACE_LEAD) {
-        throw new Error(`Budget schedule ${id} starts in less than 8 minutes, so it is not replaced: if Meta refused the new one, the original might not be put back in time. Once it starts, the answer here gives the steps to change it; or delete it with ads_delete_budget_schedule.`);
-      }
       if (given.type !== undefined && given.type !== old.type && given.value === undefined) {
         throw new Error("Changing budget_value_type changes what budget_value means (with ABSOLUTE it is an amount in the account currency's minor unit, with MULTIPLIER a percentage of the daily budget, so the same 500 is a small amount in one and +500% in the other): give budget_value too.");
       }
       const changes = (Object.keys(given) as Array<keyof Values>).some((key) => given[key] !== undefined && given[key] !== old[key]);
       if (!changes) throw new Error(`Nothing to change: budget schedule ${id} already has these values.`);
+      if (status === "in progress") throw new Error(await inProgressAdvice(id, old, given, now));
+      if (old.start < now + REPLACE_LEAD) {
+        throw new Error(`Budget schedule ${id} starts in less than 8 minutes, so it is not replaced: if Meta refused the new one, the original might not be put back in time. Once it starts, the answer here gives the steps to change it; or delete it with ads_delete_budget_schedule.`);
+      }
 
       const values: Values = {
         value: given.value ?? old.value,
@@ -378,7 +452,7 @@ export function registerBudgetTools(server: McpServer): void {
       }
       checkWindow(values.start, values.end, now);
 
-      const target = await readTarget("object", objectId);
+      const target = await readOwner(objectId);
       const daily = requireDailyBudget(target);
       const account = await readAccount(target.accountId);
       checkIncrease(daily, values.type, values.value, account.currency);
@@ -409,9 +483,10 @@ export function registerBudgetTools(server: McpServer): void {
         throw new Error(`Nothing was changed: by the time the checks were done, the period or its new start was less than 8 minutes away. Run it again with a later start, or delete the period.`);
       }
       recheckWindow(values);
+      const deadline = new Deadline();
       await deletePeriod(id, (cause) => new Error(
         `Meta did not confirm deleting budget schedule ${id}: it may or may not have been deleted, and nothing new was created. Check with ads_get_budget_schedules before trying again.${untrustedDetail(cause)}`,
-      ), `Nothing was changed: Meta refused deleting budget schedule ${id}, or the request was not sent.`);
+      ), `Nothing was changed: Meta refused deleting budget schedule ${id}, or the request was not sent.`, deadline);
       const original = `${increaseText(old, account.currency)}, ${formatWindow(old.start, old.end, account.timezone)}`;
       // Never a "new" period, even when the list before the delete did not
       // show it: a stale read afterwards can.
@@ -419,8 +494,11 @@ export function registerBudgetTools(server: McpServer): void {
 
       let created: { id: string; lost?: unknown };
       try {
-        created = await createPeriod(objectId, values, known);
+        created = await createPeriod(objectId, values, known, deadline);
       } catch (err) {
+        if (err instanceof OutOfTime) {
+          throw new Error(`Budget schedule ${id} was deleted, but ${err.message}, so nothing new was created. To make the new one, call ${createCall(target, values)}, with dry_run first. The original was ${original}.`);
+        }
         if (err instanceof LostCreate) {
           throw new Error(`Budget schedule ${id} was deleted, but Meta did not confirm its replacement: it may or may not exist. List with ads_get_budget_schedules before trying again; a second create would add a second increase. The original was ${original}.${untrustedDetail(err.cause)}`);
         }
@@ -432,13 +510,18 @@ export function registerBudgetTools(server: McpServer): void {
             `That increase is gone; other periods are not touched. The original was ${original}.${untrustedDetail(err)}`,
           );
         }
+        const noTime = () => new Error(
+          `The replacement was refused or not sent, and the original period ${id} is deleted and was not put back: there was not enough time left in this answer to check the periods and put it back safely. ` +
+          `To recreate it, list with ads_get_budget_schedules first, then call ${createCall(target, old)} while its start is at least 2 minutes away. The original was ${original}. Other periods are not touched.${untrustedDetail(err)}`,
+        );
+        if (!deadline.hasRoomFor(2)) throw noTime();
         // Another writer may have added a period since the list was read (a
         // second call on the same period, say): putting the original back
         // next to it could add two increases, so a period not seen before
         // stops the restore.
         let seen: Awaited<ReturnType<typeof listSchedules>> | undefined;
         try {
-          seen = await listSchedules(objectId);
+          seen = await listSchedules(objectId, () => deadline.scope());
         } catch {
           seen = undefined;
         }
@@ -451,10 +534,18 @@ export function registerBudgetTools(server: McpServer): void {
             ` List with ads_get_budget_schedules before recreating it. The original was ${original}. Other periods are not touched.${untrustedDetail(err)}`,
           );
         }
+        // The list took time: the original's start is checked again.
+        if (!canStillStart(old.start, nowSeconds())) {
+          throw new Error(
+            `The replacement was refused or not sent. The original period ${id} was about to start and has been deleted; it cannot be put back, since Meta does not accept a start in the past. ` +
+            `That increase is gone; other periods are not touched. The original was ${original}.${untrustedDetail(err)}`,
+          );
+        }
         let restored: string;
         try {
-          restored = (await createPeriod(objectId, old, known)).id;
+          restored = (await createPeriod(objectId, old, known, deadline)).id;
         } catch (restoreErr) {
+          if (restoreErr instanceof OutOfTime) throw noTime();
           const lostRestore = restoreErr instanceof LostCreate;
           throw new Error(
             `The replacement was refused or not sent, and the original period ${id} ${lostRestore
@@ -467,7 +558,7 @@ export function registerBudgetTools(server: McpServer): void {
         throw new Error(`The replacement was refused or not sent, so the original period was put back as ${restored}, with its values: ${original}. Nothing else changed.${untrustedDetail(err)}`);
       }
 
-      const after = await readBack(created.id);
+      const after = await readBack(created.id, deadline);
       return text([
         `Budget schedule ${id} replaced on the ${label}. ${how}`,
         created.lost !== undefined && `Meta's answer was lost when creating the new period, but the new period is there.${untrustedDetail(created.lost)}`,
@@ -515,7 +606,7 @@ export function registerBudgetTools(server: McpServer): void {
 
       await deletePeriod(id, (cause) => new Error(
         `Meta did not confirm deleting budget schedule ${id}: it may or may not be deleted. Check with ads_get_budget_schedules.${untrustedDetail(cause)}`,
-      ), `Nothing was deleted: Meta refused deleting budget schedule ${id}, or the request was not sent.`);
+      ), `Nothing was deleted: Meta refused deleting budget schedule ${id}, or the request was not sent.`, new Deadline());
 
       const status = scheduleStatus(old, nowSeconds());
       const effect = status === "in progress" ? "It was in progress: its increase stops now."
