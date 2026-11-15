@@ -47,6 +47,24 @@ describe("parseSchedule (what Meta returns, measured 2026-11-15)", () => {
     expect(parseSchedule({ id: "1", budget_value: 1, budget_value_type: "ABSOLUTE", time_start: "2026-11-16T15:00:00+0000", time_end: "2026-11-16T18:00:00+0000" })).toBeUndefined();
   });
 
+  // Measured: Meta sends "2026-11-16T15:00:00+0000". Anything else is not
+  // guessed at: a time without an offset would be read in the server's zone.
+  it.each([
+    "2026-11-16T15:00:00",
+    "2026-11-16",
+    "Mon, 16 Nov 2026 15:00:00 GMT",
+    "5",
+    "2026-11-16T15:00:00Z",
+    "2026-02-30T15:00:00+0000",
+    "2026-11-16T24:00:00+0000",
+  ])("is undefined for a time not in Meta's form: %s", (time) => {
+    expect(parseSchedule({ id: "1", budget_value: 1, budget_value_type: "ABSOLUTE", recurrence_type: "ONE_TIME", time_start: time, time_end: "2026-11-16T18:00:00+0000" })).toBeUndefined();
+  });
+
+  it("reads Meta's form with any offset", () => {
+    expect(parseSchedule({ id: "1", budget_value: 1, budget_value_type: "ABSOLUTE", recurrence_type: "ONE_TIME", time_start: "2026-11-16T10:00:00-0500", time_end: "2026-11-16T18:00:00+0000" })?.start).toBe(T);
+  });
+
   it("is undefined for anything it cannot read whole", () => {
     expect(parseSchedule({ id: "1", budget_value: 1, budget_value_type: "OTHER", time_start: "2026-11-16T15:00:00+0000", time_end: "2026-11-16T18:00:00+0000" })).toBeUndefined();
     expect(parseSchedule({ id: "1", budget_value: "x", budget_value_type: "ABSOLUTE", time_start: "2026-11-16T15:00:00+0000", time_end: "2026-11-16T18:00:00+0000" })).toBeUndefined();

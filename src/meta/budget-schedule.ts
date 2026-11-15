@@ -7,7 +7,7 @@ import { metaApiClient } from "./client.js";
 import { wasRefused } from "./errors.js";
 import { scrubbed } from "./read-list.js";
 import { formatMinorAmount } from "./currency.js";
-import { metaTimeSeconds } from "../utils/time.js";
+import { instantSeconds } from "../utils/time.js";
 import { ADVERTISER_CONTENT_CLOSE, ADVERTISER_CONTENT_OPEN, singleLine } from "../utils/single-line.js";
 import { McpError } from "@modelcontextprotocol/sdk/types.js";
 
@@ -40,13 +40,30 @@ const MAX_DIGITS = 15;
 
 const utc = (seconds: number): string => new Date(seconds * 1000).toISOString().slice(0, 16).replace("T", " ");
 
+// The form Meta sends (measured): "2026-11-16T15:00:00+0000". Anything else is
+// not guessed at: a time without an offset would be read in the server's zone,
+// and a day or hour that does not exist is refused, not rolled over.
+const META_INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{4}$/;
+
+function metaInstant(value: unknown): number | undefined {
+  if (typeof value !== "string" || !META_INSTANT.test(value)) return undefined;
+  try {
+    return instantSeconds(value.replace(/([+-]\d{2})(\d{2})$/, "$1:$2"), "time");
+  } catch {
+    return undefined;
+  }
+}
+
+/** A recurrence as Meta names it, or "not shown" for anything that is not plain capitals: it is Meta's text, shown unfenced. */
+const recurrenceText = (value: string): string => (/^[A-Z_]{1,20}$/.test(value) ? value : "not shown");
+
 /** A period as Meta returns it, or undefined when any part of it cannot be read. */
 export function parseSchedule(raw: unknown): Schedule | undefined {
   if (typeof raw !== "object" || raw === null) return undefined;
   const r = raw as Record<string, unknown>;
   const value = typeof r.budget_value === "string" && /^\d{1,15}$/.test(r.budget_value) ? Number(r.budget_value) : r.budget_value;
-  const start = metaTimeSeconds(r.time_start);
-  const end = metaTimeSeconds(r.time_end);
+  const start = metaInstant(r.time_start);
+  const end = metaInstant(r.time_end);
   if (typeof r.id !== "string" || !/^\d{1,30}$/.test(r.id)) return undefined;
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) return undefined;
   if (r.budget_value_type !== "ABSOLUTE" && r.budget_value_type !== "MULTIPLIER") return undefined;
@@ -387,7 +404,7 @@ export async function listSchedules(objectId: string, scopeFor?: () => CallScope
     const r = item as { id?: unknown; recurrence_type?: unknown } | null;
     if (s) schedules.push(s);
     else if (typeof r?.id === "string" && /^\d{1,30}$/.test(r.id) && typeof r.recurrence_type === "string" && r.recurrence_type !== "ONE_TIME") {
-      repeating.push({ id: r.id, recurrence: singleLine(r.recurrence_type, 20) });
+      repeating.push({ id: r.id, recurrence: recurrenceText(r.recurrence_type) });
     } else unreadable += 1;
   }
   schedules.sort((a, b) => a.start - b.start || a.id.localeCompare(b.id));
@@ -419,7 +436,7 @@ export async function readSchedule(id: string): Promise<Schedule> {
   }
   const recurrence = (raw as { recurrence_type?: unknown } | null)?.recurrence_type;
   if (typeof recurrence === "string" && recurrence !== "ONE_TIME") {
-    throw new Error(`Budget schedule ${id} repeats (recurrence_type ${singleLine(recurrence, 20)}), which these tools do not handle. Change or delete it in Ads Manager.`);
+    throw new Error(`Budget schedule ${id} repeats (recurrence_type ${recurrenceText(recurrence)}), which these tools do not handle. Change or delete it in Ads Manager.`);
   }
   const s = parseSchedule(raw);
   if (!s || !s.objectId) throw new Error(`Meta's answer for budget schedule ${id} could not be read whole.`);

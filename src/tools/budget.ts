@@ -471,7 +471,7 @@ export function registerBudgetTools(server: McpServer): void {
 
       if (dry_run === true) {
         return text([
-          `Dry run on the ${label}: nothing was changed.`,
+          `Dry run on the ${label}: nothing was changed. The rules checked here pass; Meta can still refuse the new period, for example a window outside the campaign's schedule, and then the tool tries to put the original back.`,
           how,
           "Before:",
           ...before,
