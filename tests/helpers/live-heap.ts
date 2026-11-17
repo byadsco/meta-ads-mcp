@@ -30,10 +30,9 @@ export function pieceByPieceRequest(headers: IncomingHttpHeaders) {
   const ready = new Promise<void>((resolve) => {
     responded = resolve;
   });
-  const calls: Array<{ options: Record<string, unknown> }> = [];
+  const calls: Array<{ options: Record<string, unknown>; req: { destroy: ReturnType<typeof vi.fn> } }> = [];
   const request = vi.fn((_url: URL, options: Record<string, unknown>, callback: (res: IncomingMessage) => void) => {
-    calls.push({ options });
-    return Object.assign(new EventEmitter(), {
+    const req = Object.assign(new EventEmitter(), {
       setTimeout: vi.fn(),
       destroy: vi.fn(),
       end: vi.fn(() =>
@@ -43,6 +42,8 @@ export function pieceByPieceRequest(headers: IncomingHttpHeaders) {
         }),
       ),
     });
+    calls.push({ options, req });
+    return req;
   });
   return { request: request as never, res, ready, calls };
 }

@@ -12,10 +12,15 @@ import {
   parseContentLength,
   parseContentType,
   redirectTarget,
+  stopReason,
+  withDownloadDeadline,
   type RedirectOrResult,
 } from "./safe-http.js";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
+// A 10 MB file at 0.5 MB/s, while a tool that downloads one URL and then
+// uploads it to Meta still answers well inside an MCP client's 100 s.
+const DEFAULT_DEADLINE_MS = 20_000;
 const DEFAULT_MAX_BYTES = 10 * 1024 * 1024;
 const DEFAULT_MAX_REDIRECTS = 3;
 const ALLOWED_IMAGE_TYPES = new Set([
@@ -31,7 +36,10 @@ export interface SafeImageDownloadOptions extends AssertSafeUrlOptions {
   /** Also accept application/pdf (a lead form's gated file), with every other guard unchanged. */
   allowPdf?: boolean;
   maxRedirects?: number;
+  /** Longest silence while the server is sending (default 30 s). */
   timeoutMs?: number;
+  /** The whole download, the DNS lookup of every hop and every redirect included (default 20 s). */
+  deadlineMs?: number;
   signal?: AbortSignal;
   /** Optional host allowlist by suffix, enforced on every hop. */
   allowedHostSuffixes?: string[];
@@ -70,9 +78,10 @@ function requestImage(
   return new Promise((resolve, reject) => {
     let settled = false;
     if (options.signal?.aborted) {
-      reject(new UnsafeUrlError("Image download aborted"));
+      reject(stopReason(options.signal, "Image"));
       return;
     }
+    let response: IncomingMessage | undefined;
     const reqOptions: RequestOptions = {
       method: "GET",
       headers: { Accept: options.allowPdf ? "image/*, application/pdf" : "image/*" },
@@ -81,15 +90,17 @@ function requestImage(
     };
 
     // Rejected responses are torn down, never drained, so an oversized image
-    // does not keep transferring after the caller has moved on.
-    const rejectAndClose = (res: IncomingMessage, err: UnsafeUrlError) => {
+    // does not keep transferring after the caller has moved on. Settling first
+    // keeps the response's own "aborted" error from replacing the reason.
+    const rejectAndClose = (res: IncomingMessage | undefined, err: UnsafeUrlError) => {
       settled = true;
-      res.destroy();
+      res?.destroy();
       req.destroy();
       reject(err);
     };
 
     const req = options.request(resolved.url, reqOptions, (res: IncomingMessage) => {
+      response = res;
       if (isRedirect(res.statusCode)) {
         let target: URL;
         try {
@@ -157,10 +168,10 @@ function requestImage(
     });
 
     req.setTimeout(options.timeoutMs, () => {
-      req.destroy(new UnsafeUrlError(`Image download timed out after ${options.timeoutMs}ms`));
+      rejectAndClose(response, new UnsafeUrlError(`Image download timed out after ${options.timeoutMs}ms`));
     });
 
-    const onAbort = () => req.destroy(new UnsafeUrlError("Image download aborted"));
+    const onAbort = () => rejectAndClose(response, stopReason(options.signal, "Image"));
     options.signal?.addEventListener("abort", onAbort, { once: true });
 
     req.on("error", (err) => {
@@ -184,15 +195,17 @@ export async function downloadSafePublicImage(
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const maxRedirects = options.maxRedirects ?? DEFAULT_MAX_REDIRECTS;
 
-  return followSafeRedirects(
-    rawUrl,
-    {
-      maxRedirects,
-      resolve: options.resolve,
-      signal: options.signal,
-      what: "image",
-      validateHop: options.allowedHostSuffixes ? (url) => assertAllowedHost(url, options.allowedHostSuffixes as string[], "image") : undefined,
-    },
-    (resolved) => requestImage(resolved, { request, maxBytes, timeoutMs, signal: options.signal, allowPdf: options.allowPdf }),
+  return withDownloadDeadline(options.deadlineMs ?? DEFAULT_DEADLINE_MS, "Image", options.signal, (signal) =>
+    followSafeRedirects(
+      rawUrl,
+      {
+        maxRedirects,
+        resolve: options.resolve,
+        signal,
+        what: "image",
+        validateHop: options.allowedHostSuffixes ? (url) => assertAllowedHost(url, options.allowedHostSuffixes as string[], "image") : undefined,
+      },
+      (resolved) => requestImage(resolved, { request, maxBytes, timeoutMs, signal, allowPdf: options.allowPdf }),
+    ),
   );
 }

@@ -8,6 +8,7 @@ import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { downloadSafePublicVideo } from "../../src/media/safe-video-download.js";
 import { UnsafeUrlError } from "../../src/utils/url-guard.js";
+import { drippingServer } from "../helpers/dripping-server.js";
 import { liveHeapBytes, pieceByPieceRequest } from "../helpers/live-heap.js";
 
 interface FakeResponse {
@@ -320,5 +321,96 @@ describe("downloadSafePublicVideo", () => {
     expect(agent).toBeInstanceOf(https.Agent);
     expect(agent).not.toBe(https.globalAgent);
     expect((agent as unknown as { keepAlive: boolean }).keepAlive).toBe(false);
+  });
+});
+
+describe("downloadSafePublicVideo total deadline", () => {
+  let dir: string;
+  let unhandled: unknown[];
+  const onUnhandled = (reason: unknown) => unhandled.push(reason);
+
+  beforeEach(async () => {
+    dir = await fs.mkdtemp(path.join(os.tmpdir(), "meta-ads-video-deadline-"));
+    unhandled = [];
+    process.on("unhandledRejection", onUnhandled);
+  });
+
+  afterEach(async () => {
+    vi.useRealTimers();
+    await new Promise((r) => setTimeout(r, 10));
+    process.off("unhandledRejection", onUnhandled);
+    expect(unhandled).toEqual([]);
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+
+  function track<T>(promise: Promise<T>) {
+    const state: { done: boolean; value?: T; error?: Error } = { done: false };
+    promise.then(
+      (value) => Object.assign(state, { done: true, value }),
+      (error: Error) => Object.assign(state, { done: true, error }),
+    );
+    return state;
+  }
+
+  it("cuts a server that sends a byte every 200 ms, never idle, at the total limit, and removes the partial file", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const { request, res, ready, calls } = pieceByPieceRequest({ "content-type": "video/mp4" });
+    const download = track(downloadSafePublicVideo("https://video.xx.fbcdn.net/clip.mp4", { request, resolve: PUBLIC, destDir: dir, deadlineMs: 1_000 }));
+    await ready;
+    for (let elapsed = 0; elapsed < 3_000 && !download.done; elapsed += 200) {
+      res.emit("data", Buffer.from([1]));
+      await vi.advanceTimersByTimeAsync(200);
+    }
+    vi.useRealTimers();
+    for (let i = 0; i < 50 && !download.done; i++) await new Promise((r) => setTimeout(r, 10));
+
+    expect(download.error).toBeInstanceOf(UnsafeUrlError);
+    expect(download.error?.message).toMatch(/1000 ms total limit/);
+    expect(res.destroy).toHaveBeenCalled();
+    expect(calls[0].req.destroy).toHaveBeenCalled();
+    expect(await fs.readdir(dir)).toEqual([]);
+  });
+
+  it("lets through a download that ends 1 ms before the limit", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const { request, res, ready } = pieceByPieceRequest({ "content-type": "video/mp4" });
+    const download = track(downloadSafePublicVideo("https://video.xx.fbcdn.net/clip.mp4", { request, resolve: PUBLIC, destDir: dir, deadlineMs: 1_000 }));
+    await ready;
+    res.emit("data", Buffer.from("ftypmp42"));
+    await vi.advanceTimersByTimeAsync(999);
+    res.emit("end");
+    vi.useRealTimers();
+    for (let i = 0; i < 50 && !download.done; i++) await new Promise((r) => setTimeout(r, 10));
+    expect(download.value?.bytes).toBe(8);
+  });
+
+  it("counts a DNS lookup that never answers", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const { request, calls } = makeRequest([]);
+    const download = track(
+      downloadSafePublicVideo("https://video.xx.fbcdn.net/clip.mp4", { request, resolve: () => new Promise(() => undefined), destDir: dir, deadlineMs: 1_000 }),
+    );
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(download.error?.message).toMatch(/1000 ms total limit/);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("closes a real dripping connection at the total limit", async () => {
+    const server = await drippingServer("video/mp4", 20);
+    try {
+      const started = Date.now();
+      const outcome = await Promise.race([
+        downloadSafePublicVideo("https://video.xx.fbcdn.net/clip.mp4", { request: server.request, resolve: PUBLIC, destDir: dir, deadlineMs: 300 })
+          .then(() => "finished", (err: Error) => err),
+        new Promise((r) => setTimeout(() => r("still running after 2 s"), 2_000)),
+      ]);
+      expect(outcome).toBeInstanceOf(UnsafeUrlError);
+      expect((outcome as Error).message).toMatch(/300 ms total limit/);
+      expect(Date.now() - started).toBeLessThan(1_500);
+      await server.clientClosed;
+      expect(await fs.readdir(dir)).toEqual([]);
+    } finally {
+      await server.close();
+    }
   });
 });

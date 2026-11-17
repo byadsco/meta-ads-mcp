@@ -15,11 +15,16 @@ import {
   parseContentLength,
   parseContentType,
   redirectTarget,
+  stopReason,
+  withDownloadDeadline,
   type HttpsRequestFn,
   type RedirectOrResult,
 } from "../utils/safe-http.js";
 
 const DEFAULT_TIMEOUT_MS = 120_000;
+// 150 MB at 2.5 MB/s. The video call's own budget (VIDEO_CALL_BUDGET_MS)
+// still bounds the whole job, ffmpeg included, through the caller's signal.
+const DEFAULT_DEADLINE_MS = 60_000;
 const DEFAULT_MAX_BYTES = 150 * 1024 * 1024;
 const DEFAULT_MAX_REDIRECTS = 3;
 
@@ -45,7 +50,10 @@ export interface SafeVideoDownloadOptions extends AssertSafeUrlOptions {
   destDir: string;
   maxBytes?: number;
   maxRedirects?: number;
+  /** Longest silence while the server is sending (default 120 s). */
   timeoutMs?: number;
+  /** The whole download, the DNS lookup of every hop and every redirect included (default 60 s). */
+  deadlineMs?: number;
   signal?: AbortSignal;
   allowedHostSuffixes?: string[];
   request?: HttpsRequestFn;
@@ -70,10 +78,6 @@ export function resolveAllowedVideoHostSuffixes(env: NodeJS.ProcessEnv = process
 
 export function assertAllowedVideoHost(url: URL, suffixes: string[]): void {
   assertAllowedHost(url, suffixes, "video");
-}
-
-function abortError(): UnsafeUrlError {
-  return new UnsafeUrlError("Video download aborted");
 }
 
 /** Filesystem errors carry scratch paths; those must not reach tool output or logs. */
@@ -133,11 +137,11 @@ function requestVideo(
     const onAbort = () => {
       teardown();
       req.destroy();
-      fail(abortError());
+      fail(stopReason(options.signal, "Video"));
     };
 
     if (options.signal?.aborted) {
-      fail(abortError());
+      fail(stopReason(options.signal, "Video"));
       return;
     }
 
@@ -245,7 +249,7 @@ function requestVideo(
     options.signal?.addEventListener("abort", onAbort, { once: true });
 
     req.setTimeout(options.timeoutMs, () => {
-      req.destroy(new UnsafeUrlError(`Video download timed out after ${options.timeoutMs}ms`));
+      reject_(new UnsafeUrlError(`Video download timed out after ${options.timeoutMs}ms`));
     });
 
     req.on("error", fail);
@@ -263,22 +267,24 @@ export async function downloadSafePublicVideo(
   const maxRedirects = options.maxRedirects ?? DEFAULT_MAX_REDIRECTS;
   const suffixes = options.allowedHostSuffixes ?? resolveAllowedVideoHostSuffixes();
 
-  return followSafeRedirects(
-    rawUrl,
-    {
-      maxRedirects,
-      resolve: options.resolve,
-      signal: options.signal,
-      what: "video",
-      validateHop: (url) => assertAllowedVideoHost(url, suffixes),
-    },
-    (resolved) =>
-      requestVideo(resolved, {
-        request,
-        maxBytes,
-        timeoutMs,
-        destDir: options.destDir,
-        signal: options.signal,
-      }),
+  return withDownloadDeadline(options.deadlineMs ?? DEFAULT_DEADLINE_MS, "Video", options.signal, (signal) =>
+    followSafeRedirects(
+      rawUrl,
+      {
+        maxRedirects,
+        resolve: options.resolve,
+        signal,
+        what: "video",
+        validateHop: (url) => assertAllowedVideoHost(url, suffixes),
+      },
+      (resolved) =>
+        requestVideo(resolved, {
+          request,
+          maxBytes,
+          timeoutMs,
+          destDir: options.destDir,
+          signal,
+        }),
+    ),
   );
 }

@@ -2,9 +2,10 @@ import { EventEmitter } from "node:events";
 import https from "node:https";
 import type { IncomingHttpHeaders, IncomingMessage } from "node:http";
 import { PassThrough } from "node:stream";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { downloadSafePublicImage } from "../../src/utils/safe-download.js";
 import { UnsafeUrlError } from "../../src/utils/url-guard.js";
+import { drippingServer } from "../helpers/dripping-server.js";
 import { liveHeapBytes, pieceByPieceRequest } from "../helpers/live-heap.js";
 
 interface FakeResponse {
@@ -383,5 +384,139 @@ describe("downloadSafePublicImage", () => {
     expect(agent).not.toBe(https.globalAgent);
     expect((agent as unknown as { keepAlive: boolean }).keepAlive).toBe(false);
     await expect(runLookup(calls[0].options)).resolves.toEqual({ address: "203.0.113.10", family: 4 });
+  });
+});
+
+describe("downloadSafePublicImage total deadline", () => {
+  const resolve = fakeResolve({ "cdn.example.com": ["203.0.113.10"] });
+  let unhandled: unknown[];
+  const onUnhandled = (reason: unknown) => unhandled.push(reason);
+
+  beforeEach(() => {
+    unhandled = [];
+    process.on("unhandledRejection", onUnhandled);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  });
+
+  afterEach(async () => {
+    vi.useRealTimers();
+    await new Promise((r) => setTimeout(r, 10));
+    process.off("unhandledRejection", onUnhandled);
+    expect(unhandled).toEqual([]);
+  });
+
+  function track<T>(promise: Promise<T>) {
+    const state: { done: boolean; value?: T; error?: Error } = { done: false };
+    promise.then(
+      (value) => Object.assign(state, { done: true, value }),
+      (error: Error) => Object.assign(state, { done: true, error }),
+    );
+    return state;
+  }
+
+  it("cuts a server that sends a byte every 200 ms, never idle, at the total limit", async () => {
+    const { request, res, ready, calls } = pieceByPieceRequest({ "content-type": "image/png" });
+    const download = track(downloadSafePublicImage("https://cdn.example.com/a.png", { request, resolve, deadlineMs: 1_000 }));
+    await ready;
+    for (let elapsed = 0; elapsed < 3_000 && !download.done; elapsed += 200) {
+      res.emit("data", Buffer.from([1]));
+      await vi.advanceTimersByTimeAsync(200);
+    }
+
+    expect(download.error).toBeInstanceOf(UnsafeUrlError);
+    expect(download.error?.message).toMatch(/1000 ms total limit/);
+    expect(res.destroy).toHaveBeenCalled();
+    expect(calls[0].req.destroy).toHaveBeenCalled();
+  });
+
+  it("lets through a download that ends 1 ms before the limit, and stops one still open at it", async () => {
+    const early = pieceByPieceRequest({ "content-type": "image/png" });
+    const ok = track(downloadSafePublicImage("https://cdn.example.com/a.png", { request: early.request, resolve, deadlineMs: 1_000 }));
+    await early.ready;
+    early.res.emit("data", Buffer.from("png"));
+    await vi.advanceTimersByTimeAsync(999);
+    early.res.emit("end");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(ok.value?.buffer.toString()).toBe("png");
+    expect(vi.getTimerCount()).toBe(0);
+
+    const late = pieceByPieceRequest({ "content-type": "image/png" });
+    const cut = track(downloadSafePublicImage("https://cdn.example.com/a.png", { request: late.request, resolve, deadlineMs: 1_000 }));
+    await late.ready;
+    late.res.emit("data", Buffer.from("png"));
+    await vi.advanceTimersByTimeAsync(1_000);
+    late.res.emit("end");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(cut.error?.message).toMatch(/1000 ms total limit/);
+  });
+
+  it("counts a DNS lookup that never answers", async () => {
+    const { request, calls } = makeRequest([]);
+    const download = track(
+      downloadSafePublicImage("https://cdn.example.com/a.png", { request, resolve: () => new Promise(() => undefined), deadlineMs: 1_000 }),
+    );
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(download.error?.message).toMatch(/1000 ms total limit/);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("counts every hop of a redirect chain against one clock", async () => {
+    // Each hop's lookup takes 300 ms: three hops fit in the second, the fourth does not.
+    const slowResolve = () => new Promise<Array<{ address: string }>>((done) => setTimeout(() => done([{ address: "203.0.113.10" }]), 300));
+    const { request, calls } = makeRequest([
+      { statusCode: 302, headers: { location: "https://cdn.example.com/2" } },
+      { statusCode: 302, headers: { location: "https://cdn.example.com/3" } },
+      { statusCode: 302, headers: { location: "https://cdn.example.com/4" } },
+      { headers: { "content-type": "image/png" }, chunks: ["png"] },
+    ]);
+    const download = track(
+      downloadSafePublicImage("https://cdn.example.com/1", { request, resolve: slowResolve, maxRedirects: 5, deadlineMs: 1_000 }),
+    );
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(download.error?.message).toMatch(/1000 ms total limit/);
+    expect(calls).toHaveLength(3);
+  });
+
+  it("says the caller aborted, not the clock, when the caller's signal fires first", async () => {
+    const controller = new AbortController();
+    const { request, res, ready } = pieceByPieceRequest({ "content-type": "image/png" });
+    const download = track(
+      downloadSafePublicImage("https://cdn.example.com/a.png", { request, resolve, deadlineMs: 1_000, signal: controller.signal }),
+    );
+    await ready;
+    res.emit("data", Buffer.from([1]));
+    controller.abort();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(download.error?.message).toBe("Image download aborted");
+    expect(res.destroy).toHaveBeenCalled();
+  });
+});
+
+describe("downloadSafePublicImage against a real dripping server", () => {
+  it("closes the connection at the total limit and leaves no error unhandled", async () => {
+    const server = await drippingServer("image/png", 20);
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      const started = Date.now();
+      const outcome = await Promise.race([
+        downloadSafePublicImage("https://cdn.example.com/a.png", {
+          request: server.request,
+          resolve: fakeResolve({ "cdn.example.com": ["203.0.113.10"] }),
+          deadlineMs: 300,
+        }).then(() => "finished", (err: Error) => err),
+        new Promise((r) => setTimeout(() => r("still running after 2 s"), 2_000)),
+      ]);
+      expect(outcome).toBeInstanceOf(UnsafeUrlError);
+      expect((outcome as Error).message).toMatch(/300 ms total limit/);
+      expect(Date.now() - started).toBeLessThan(1_500);
+      await server.clientClosed;
+      await new Promise((r) => setTimeout(r, 50));
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+      await server.close();
+    }
   });
 });
