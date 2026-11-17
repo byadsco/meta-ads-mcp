@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
 import { promises as fs } from "node:fs";
+import https from "node:https";
 import type { IncomingHttpHeaders, IncomingMessage } from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -279,5 +280,14 @@ describe("downloadSafePublicVideo", () => {
         destDir: dir,
       }),
     ).rejects.toBeInstanceOf(UnsafeUrlError);
+  });
+
+  it("uses its own agent, never the global one an environment proxy can take over", async () => {
+    const { request, calls } = makeRequest([{ headers: { "content-type": "video/mp4" }, chunks: [Buffer.from("ftyp")] }]);
+    await downloadSafePublicVideo("https://video.xx.fbcdn.net/clip.mp4", { request, resolve: PUBLIC, destDir: dir });
+    const agent = calls[0].options.agent as https.Agent | undefined;
+    expect(agent).toBeInstanceOf(https.Agent);
+    expect(agent).not.toBe(https.globalAgent);
+    expect((agent as unknown as { keepAlive: boolean }).keepAlive).toBe(false);
   });
 });

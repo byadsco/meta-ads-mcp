@@ -8,6 +8,7 @@ import { UnsafeUrlError, type AssertSafeUrlOptions, type ResolvedSafePublicUrl }
 import {
   assertAllowedHost,
   buildPinnedLookup,
+  DIRECT_HTTPS_AGENT,
   followSafeRedirects,
   isRedirect,
   parseContentLength,
@@ -143,6 +144,7 @@ function requestVideo(
       method: "GET",
       headers: { Accept: "video/*,application/octet-stream;q=0.9,*/*;q=0.5" },
       lookup: buildPinnedLookup(resolved),
+      agent: DIRECT_HTTPS_AGENT,
     };
 
     const req = options.request(resolved.url, reqOptions, (res: IncomingMessage) => {

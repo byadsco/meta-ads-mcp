@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import https from "node:https";
 import type { IncomingHttpHeaders, IncomingMessage } from "node:http";
 import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
@@ -320,5 +321,18 @@ describe("downloadSafePublicImage", () => {
         resolve: fakeResolve({ "cdn.example.com": ["203.0.113.10"] }),
       }),
     ).rejects.toThrow(/too large/);
+  });
+
+  it("uses its own agent, never the global one an environment proxy can take over", async () => {
+    const { request, calls } = makeRequest([{ headers: { "content-type": "image/png" }, chunks: ["x"] }]);
+    await downloadSafePublicImage("https://cdn.example.com/a.png", {
+      request,
+      resolve: fakeResolve({ "cdn.example.com": ["203.0.113.10"] }),
+    });
+    const agent = calls[0].options.agent as https.Agent | undefined;
+    expect(agent).toBeInstanceOf(https.Agent);
+    expect(agent).not.toBe(https.globalAgent);
+    expect((agent as unknown as { keepAlive: boolean }).keepAlive).toBe(false);
+    await expect(runLookup(calls[0].options)).resolves.toEqual({ address: "203.0.113.10", family: 4 });
   });
 });

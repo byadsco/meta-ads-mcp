@@ -5,6 +5,7 @@ import { UnsafeUrlError, type AssertSafeUrlOptions, type ResolvedSafePublicUrl }
 import {
   assertAllowedHost,
   buildPinnedLookup,
+  DIRECT_HTTPS_AGENT,
   followSafeRedirects,
   isRedirect,
   parseContentLength,
@@ -75,6 +76,7 @@ function requestImage(
       method: "GET",
       headers: { Accept: options.allowPdf ? "image/*, application/pdf" : "image/*" },
       lookup: buildPinnedLookup(resolved),
+      agent: DIRECT_HTTPS_AGENT,
     };
 
     // Rejected responses are torn down, never drained, so an oversized image

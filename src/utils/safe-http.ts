@@ -1,5 +1,5 @@
 import type { IncomingHttpHeaders, IncomingMessage } from "node:http";
-import type https from "node:https";
+import https from "node:https";
 import type { LookupFunction } from "node:net";
 import {
   resolveSafePublicUrl,
@@ -9,6 +9,11 @@ import {
 } from "./url-guard.js";
 
 export type HttpsRequestFn = typeof https.request;
+
+// The downloads' own agent: the global one may go through an environment
+// proxy (NODE_USE_ENV_PROXY), which never calls the pinned lookup, and a
+// kept-alive socket would skip it too.
+export const DIRECT_HTTPS_AGENT = new https.Agent({ keepAlive: false });
 
 function normalizeHostname(hostname: string): string {
   return hostname.startsWith("[") && hostname.endsWith("]")
