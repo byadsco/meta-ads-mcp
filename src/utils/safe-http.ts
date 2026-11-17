@@ -150,12 +150,42 @@ export function assertAllowedHost(url: URL, suffixes: string[], what = "media"):
  */
 function abortable<T>(start: () => Promise<T>, signal: AbortSignal | undefined, what: string): Promise<T> {
   if (!signal) return start();
-  if (signal.aborted) return Promise.reject(new UnsafeUrlError(`${what} download aborted`));
+  if (signal.aborted) return Promise.reject(stopReason(signal, what));
   return new Promise<T>((resolve, reject) => {
-    const onAbort = () => reject(new UnsafeUrlError(`${what} download aborted`));
+    const onAbort = () => reject(stopReason(signal, what));
     signal.addEventListener("abort", onAbort, { once: true });
     start().then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
   });
+}
+
+/** Why a download stopped: its deadline puts the error in the signal's reason; anything else is an abort. */
+export function stopReason(signal: AbortSignal | undefined, what: string): UnsafeUrlError {
+  return signal?.reason instanceof UnsafeUrlError ? signal.reason : new UnsafeUrlError(`${what} download aborted`);
+}
+
+/**
+ * Gives a download one wall clock for everything: the DNS lookup of every
+ * hop, connecting, every redirect and the whole body. The idle timeout alone
+ * never fires on a server that sends a byte every few seconds. The signal
+ * handed to `run` aborts at the deadline, with the error as its reason, or
+ * when the caller's own signal does.
+ */
+export async function withDownloadDeadline<T>(
+  deadlineMs: number,
+  what: string,
+  callerSignal: AbortSignal | undefined,
+  run: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  const deadline = new AbortController();
+  const timer = setTimeout(
+    () => deadline.abort(new UnsafeUrlError(`${what} download took longer than its ${deadlineMs} ms total limit`)),
+    deadlineMs,
+  );
+  try {
+    return await run(callerSignal ? AbortSignal.any([callerSignal, deadline.signal]) : deadline.signal);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 export function isRedirectResult<T extends object>(
