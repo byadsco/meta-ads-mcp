@@ -4,7 +4,9 @@ import type { RequestOptions } from "node:https";
 import { UnsafeUrlError, type AssertSafeUrlOptions, type ResolvedSafePublicUrl } from "./url-guard.js";
 import {
   assertAllowedHost,
+  BodyBlocks,
   buildPinnedLookup,
+  DIRECT_HTTPS_AGENT,
   followSafeRedirects,
   isRedirect,
   parseContentLength,
@@ -75,6 +77,7 @@ function requestImage(
       method: "GET",
       headers: { Accept: options.allowPdf ? "image/*, application/pdf" : "image/*" },
       lookup: buildPinnedLookup(resolved),
+      agent: DIRECT_HTTPS_AGENT,
     };
 
     // Rejected responses are torn down, never drained, so an oversized image
@@ -119,24 +122,27 @@ function requestImage(
         return;
       }
 
-      const chunks: Buffer[] = [];
+      const blocks: Buffer[] = [];
+      const body = new BodyBlocks((block) => blocks.push(block));
       let total = 0;
 
       res.on("data", (chunk: Buffer | string) => {
+        if (settled) return;
         const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-        total += buffer.length;
-        if (total > options.maxBytes) {
+        if (total + buffer.length > options.maxBytes) {
           rejectAndClose(res, new UnsafeUrlError(`Image is too large: exceeded ${options.maxBytes} bytes`));
           return;
         }
-        chunks.push(buffer);
+        total += buffer.length;
+        body.push(buffer);
       });
 
       res.on("end", () => {
         if (settled) return;
         settled = true;
+        body.flush();
         resolve({
-          buffer: Buffer.concat(chunks),
+          buffer: Buffer.concat(blocks, total),
           contentType,
           extension: extensionFor(contentType),
           finalUrl: resolved.url,

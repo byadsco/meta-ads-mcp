@@ -1,79 +1,47 @@
 import { promises as dns } from "node:dns";
-import { isIP } from "node:net";
+import { BlockList, isIP } from "node:net";
 
 const ALLOWED_PROTOCOLS = new Set(["https:"]);
 
-const PRIVATE_V4_RANGES: Array<[bigint, bigint, string]> = [
-  [bn("10.0.0.0"), bn("10.255.255.255"), "RFC1918 10.0.0.0/8"],
-  [bn("172.16.0.0"), bn("172.31.255.255"), "RFC1918 172.16.0.0/12"],
-  [bn("192.168.0.0"), bn("192.168.255.255"), "RFC1918 192.168.0.0/16"],
-  [bn("127.0.0.0"), bn("127.255.255.255"), "loopback 127.0.0.0/8"],
-  [bn("169.254.0.0"), bn("169.254.255.255"), "link-local / GCP metadata 169.254.0.0/16"],
-  [bn("0.0.0.0"), bn("0.255.255.255"), "current-network 0.0.0.0/8"],
-  [bn("100.64.0.0"), bn("100.127.255.255"), "CGNAT 100.64.0.0/10"],
-  [bn("224.0.0.0"), bn("239.255.255.255"), "multicast 224.0.0.0/4"],
-  [bn("240.0.0.0"), bn("255.255.255.255"), "reserved 240.0.0.0/4"],
+// Every range that is not a public unicast destination. Checked with
+// net.BlockList, which parses each address into its bits (no string
+// prefixes) and also matches an IPv4-mapped IPv6 address (::ffff:a.b.c.d, in
+// any spelling) against the IPv4 rules. The IPv6 forms that carry an IPv4
+// address some other way (compatible, translated, NAT64, 6to4, Teredo) are
+// refused whole: no public site is reached through them from Cloud Run.
+const UNSAFE_RANGES: Array<[string, number, "ipv4" | "ipv6", string]> = [
+  ["10.0.0.0", 8, "ipv4", "RFC1918 10.0.0.0/8"],
+  ["172.16.0.0", 12, "ipv4", "RFC1918 172.16.0.0/12"],
+  ["192.168.0.0", 16, "ipv4", "RFC1918 192.168.0.0/16"],
+  ["127.0.0.0", 8, "ipv4", "loopback 127.0.0.0/8"],
+  ["169.254.0.0", 16, "ipv4", "link-local / GCP metadata 169.254.0.0/16"],
+  ["0.0.0.0", 8, "ipv4", "current-network 0.0.0.0/8"],
+  ["100.64.0.0", 10, "ipv4", "CGNAT 100.64.0.0/10"],
+  ["192.0.0.0", 24, "ipv4", "IETF protocol assignments 192.0.0.0/24"],
+  ["198.18.0.0", 15, "ipv4", "benchmarking 198.18.0.0/15"],
+  ["224.0.0.0", 4, "ipv4", "multicast 224.0.0.0/4"],
+  ["240.0.0.0", 4, "ipv4", "reserved 240.0.0.0/4"],
+  ["::1", 128, "ipv6", "IPv6 loopback ::1"],
+  ["::", 128, "ipv6", "IPv6 unspecified ::"],
+  ["::", 96, "ipv6", "IPv4-compatible IPv6 ::/96"],
+  ["::ffff:0:0:0", 96, "ipv6", "IPv4-translated IPv6 ::ffff:0:0:0/96"],
+  ["64:ff9b::", 96, "ipv6", "NAT64 64:ff9b::/96"],
+  ["64:ff9b:1::", 48, "ipv6", "local NAT64 64:ff9b:1::/48"],
+  ["100::", 64, "ipv6", "IPv6 discard 100::/64"],
+  ["2001::", 32, "ipv6", "Teredo 2001::/32"],
+  ["2001:db8::", 32, "ipv6", "IPv6 documentation 2001:db8::/32"],
+  ["2002::", 16, "ipv6", "6to4 2002::/16"],
+  ["fc00::", 7, "ipv6", "IPv6 unique-local fc00::/7"],
+  ["fe80::", 10, "ipv6", "IPv6 link-local fe80::/10"],
+  ["fec0::", 10, "ipv6", "IPv6 site-local fec0::/10"],
+  ["ff00::", 8, "ipv6", "IPv6 multicast ff00::/8"],
 ];
 
-function bn(ipv4: string): bigint {
-  return ipv4
-    .split(".")
-    .reduce<bigint>((acc, oct) => (acc << 8n) | BigInt(parseInt(oct, 10)), 0n);
-}
-
-function ipv4ToBigInt(ip: string): bigint | null {
-  if (isIP(ip) !== 4) return null;
-  return bn(ip);
-}
-
-function isPrivateV4(ip: string): { reason: string } | null {
-  const value = ipv4ToBigInt(ip);
-  if (value === null) return null;
-  for (const [lo, hi, label] of PRIVATE_V4_RANGES) {
-    if (value >= lo && value <= hi) return { reason: label };
-  }
-  return null;
-}
-
-function isPrivateV6(ip: string): { reason: string } | null {
-  if (isIP(ip) !== 6) return null;
-  const lower = ip.toLowerCase();
-  if (lower === "::1" || lower === "::") return { reason: "IPv6 loopback/unspecified" };
-  if (lower.startsWith("fe80:") || lower.startsWith("fe8") || lower.startsWith("fe9") || lower.startsWith("fea") || lower.startsWith("feb")) {
-    // fe80::/10 covers fe80–febf
-    return { reason: "IPv6 link-local fe80::/10" };
-  }
-  if (/^f[cd]/.test(lower)) return { reason: "IPv6 unique-local fc00::/7" };
-  // IPv4-mapped IPv6 (::ffff:a.b.c.d). Node may render it as
-  // "::ffff:7f00:1" instead of "::ffff:127.0.0.1", so parse both forms.
-  if (lower.startsWith("::ffff:")) {
-    const tail = lower.slice("::ffff:".length);
-    let v4: string | null = null;
-    if (/^[0-9.]+$/.test(tail)) {
-      v4 = tail;
-    } else {
-      // hex form like "7f00:1" or "7f00:0001"
-      const segs = tail.split(":");
-      if (segs.length === 2) {
-        const hi = parseInt(segs[0], 16);
-        const lo = parseInt(segs[1], 16);
-        if (Number.isFinite(hi) && Number.isFinite(lo)) {
-          v4 = [
-            (hi >> 8) & 0xff,
-            hi & 0xff,
-            (lo >> 8) & 0xff,
-            lo & 0xff,
-          ].join(".");
-        }
-      }
-    }
-    if (v4) {
-      const block = isPrivateV4(v4);
-      if (block) return { reason: `IPv4-mapped → ${block.reason}` };
-    }
-  }
-  return null;
-}
+const UNSAFE_LISTS = UNSAFE_RANGES.map(([network, prefix, type, label]) => {
+  const list = new BlockList();
+  list.addSubnet(network, prefix, type);
+  return { list, type, label };
+});
 
 export class UnsafeUrlError extends Error {
   constructor(message: string) {
@@ -95,8 +63,21 @@ export interface ResolvedSafePublicUrl {
   addresses: Array<{ address: string; family: 4 | 6 }>;
 }
 
+/** Why an address is not a safe public destination, or null when it is. */
 export function unsafeIpReason(ip: string): string | null {
-  return isPrivateV4(ip)?.reason ?? isPrivateV6(ip)?.reason ?? null;
+  const family = isIP(ip);
+  if (family !== 4 && family !== 6) return "not an IP address";
+  const type = family === 4 ? "ipv4" : "ipv6";
+  for (const rule of UNSAFE_LISTS) {
+    let hit: boolean;
+    try {
+      hit = rule.list.check(ip, type);
+    } catch {
+      return "unparseable IP address";
+    }
+    if (hit) return type === "ipv6" && rule.type === "ipv4" ? `IPv4-mapped → ${rule.label}` : rule.label;
+  }
+  return null;
 }
 
 /**
@@ -144,15 +125,10 @@ export async function resolveSafePublicUrl(
     ? url.hostname.slice(1, -1)
     : url.hostname;
   const literalIpVersion = isIP(bareHost);
-  if (literalIpVersion === 4) {
-    const block = isPrivateV4(bareHost);
-    if (block) throw new UnsafeUrlError(`URL points at private IP (${block.reason})`);
-    return { url, addresses: [{ address: bareHost, family: 4 }] };
-  }
-  if (literalIpVersion === 6) {
-    const block = isPrivateV6(bareHost);
-    if (block) throw new UnsafeUrlError(`URL points at private IP (${block.reason})`);
-    return { url, addresses: [{ address: bareHost, family: 6 }] };
+  if (literalIpVersion === 4 || literalIpVersion === 6) {
+    const reason = unsafeIpReason(bareHost);
+    if (reason) throw new UnsafeUrlError(`URL points at private IP (${reason})`);
+    return { url, addresses: [{ address: bareHost, family: literalIpVersion }] };
   }
 
   // Hostname → resolve and reject if any address is private.
@@ -179,16 +155,10 @@ export async function resolveSafePublicUrl(
         `Hostname ${url.hostname} resolved to non-IP address ${address}`,
       );
     }
-    const v4 = isPrivateV4(address);
-    if (v4) {
+    const reason = unsafeIpReason(address);
+    if (reason) {
       throw new UnsafeUrlError(
-        `Hostname ${url.hostname} resolves to private IP ${address} (${v4.reason})`,
-      );
-    }
-    const v6 = isPrivateV6(address);
-    if (v6) {
-      throw new UnsafeUrlError(
-        `Hostname ${url.hostname} resolves to private IP ${address} (${v6.reason})`,
+        `Hostname ${url.hostname} resolves to private IP ${address} (${reason})`,
       );
     }
   }
