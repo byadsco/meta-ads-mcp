@@ -1,7 +1,9 @@
+import { isIP } from "node:net";
 import { describe, expect, it } from "vitest";
 import {
   assertSafePublicUrl,
   UnsafeUrlError,
+  unsafeIpReason,
 } from "../../src/utils/url-guard.js";
 
 function fakeResolve(addresses: string[]) {
@@ -116,5 +118,57 @@ describe("assertSafePublicUrl", () => {
     await expect(
       assertSafePublicUrl("https://nope.invalid/", { resolve: fakeResolve([]) }),
     ).rejects.toThrow(/did not resolve/);
+  });
+});
+
+// The GCP metadata address (and loopback) written in every IPv6 form that
+// carries an IPv4 address, plus the IPv4 special ranges the old list missed.
+const INTERNAL_FORMS = [
+  "::ffff:169.254.169.254",
+  "::ffff:a9fe:a9fe",
+  "0:0:0:0:0:ffff:a9fe:a9fe",
+  "::a9fe:a9fe", // IPv4-compatible
+  "::ffff:0:a9fe:a9fe", // IPv4-translated
+  "64:ff9b::a9fe:a9fe", // NAT64
+  "64:ff9b:1::a9fe:a9fe", // local NAT64
+  "2002:a9fe:a9fe::1", // 6to4
+  "2001:0:4136:e378:8000:63bf:3fff:fdd2", // Teredo
+  "::7f00:1",
+  "::",
+  "192.0.0.170",
+  "198.18.0.1",
+  "198.19.255.254",
+  "100::1",
+  "fec0::1",
+  "ff02::1",
+  "2001:db8::1",
+];
+
+describe("unsafeIpReason", () => {
+  it("refuses every IPv6 form that carries an internal IPv4, and the special ranges, however they are spelled", () => {
+    for (const ip of INTERNAL_FORMS) expect(unsafeIpReason(ip), ip).not.toBeNull();
+  });
+
+  it("lets public unicast addresses through", () => {
+    for (const ip of ["8.8.8.8", "104.16.0.1", "203.0.113.10", "2606:4700::6810:1", "2a00:1450:4001::200e", "::ffff:8.8.8.8"]) {
+      expect(unsafeIpReason(ip), ip).toBeNull();
+    }
+  });
+
+  it("refuses each of them as a URL literal and as one DNS answer among public ones", async () => {
+    for (const ip of INTERNAL_FORMS) {
+      const literal = isIP(ip) === 6 ? `https://[${ip}]/a.jpg` : `https://${ip}/a.jpg`;
+      await expect(assertSafePublicUrl(literal, { resolve: fakeResolve([]) }), ip).rejects.toThrow(/private IP/);
+      await expect(
+        assertSafePublicUrl("https://cdn.example.com/a.jpg", { resolve: fakeResolve(["93.184.216.34", ip]) }),
+        ip,
+      ).rejects.toThrow(/resolves to private IP/);
+    }
+  });
+
+  it("names the range of a resolved AAAA record in NAT64 form", async () => {
+    await expect(
+      assertSafePublicUrl("https://cdn.example.com/a.jpg", { resolve: fakeResolve(["64:ff9b::a9fe:a9fe"]) }),
+    ).rejects.toThrow(/NAT64/);
   });
 });
