@@ -8,7 +8,7 @@ import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { downloadSafePublicVideo } from "../../src/media/safe-video-download.js";
 import { UnsafeUrlError } from "../../src/utils/url-guard.js";
-import { drippingServer } from "../helpers/dripping-server.js";
+import { drippingServer, switchingProtocolsServer } from "../helpers/dripping-server.js";
 import { liveHeapBytes, pieceByPieceRequest } from "../helpers/live-heap.js";
 
 interface FakeResponse {
@@ -393,6 +393,24 @@ describe("downloadSafePublicVideo total deadline", () => {
     await vi.advanceTimersByTimeAsync(1_000);
     expect(download.error?.message).toMatch(/1000 ms total limit/);
     expect(calls).toHaveLength(0);
+  });
+
+  it("refuses a 101 at once instead of waiting for the total limit", async () => {
+    const server = await switchingProtocolsServer();
+    try {
+      const started = Date.now();
+      const outcome = await Promise.race([
+        downloadSafePublicVideo("https://video.xx.fbcdn.net/clip.mp4", { request: server.request, resolve: PUBLIC, destDir: dir, deadlineMs: 5_000 })
+          .then(() => "finished", (err: Error) => err),
+        new Promise((r) => setTimeout(() => r("still running after 2 s"), 2_000)),
+      ]);
+      expect(outcome).toBeInstanceOf(UnsafeUrlError);
+      expect((outcome as Error).message).toMatch(/switched protocols/);
+      expect(Date.now() - started).toBeLessThan(1_500);
+      expect(await fs.readdir(dir)).toEqual([]);
+    } finally {
+      await server.close();
+    }
   });
 
   it("closes a real dripping connection at the total limit", async () => {

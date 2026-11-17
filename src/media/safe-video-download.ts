@@ -3,6 +3,7 @@ import type { IncomingMessage } from "node:http";
 import https from "node:https";
 import type { RequestOptions } from "node:https";
 import path from "node:path";
+import type { Duplex } from "node:stream";
 import { randomUUID } from "node:crypto";
 import { UnsafeUrlError, type AssertSafeUrlOptions, type ResolvedSafePublicUrl } from "../utils/url-guard.js";
 import {
@@ -252,6 +253,12 @@ function requestVideo(
       reject_(new UnsafeUrlError(`Video download timed out after ${options.timeoutMs}ms`));
     });
 
+    // A 101 never reaches the response callback: Node hands the socket to an
+    // "upgrade" listener, or destroys it and closes the request without an error.
+    req.on("upgrade", (_res: IncomingMessage, socket: Duplex) => {
+      socket.destroy();
+      reject_(new UnsafeUrlError("Video download failed: the server switched protocols"));
+    });
     req.on("error", fail);
     req.end();
   });

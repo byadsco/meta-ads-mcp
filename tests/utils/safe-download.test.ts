@@ -5,7 +5,7 @@ import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { downloadSafePublicImage } from "../../src/utils/safe-download.js";
 import { UnsafeUrlError } from "../../src/utils/url-guard.js";
-import { drippingServer } from "../helpers/dripping-server.js";
+import { drippingServer, switchingProtocolsServer } from "../helpers/dripping-server.js";
 import { liveHeapBytes, pieceByPieceRequest } from "../helpers/live-heap.js";
 
 interface FakeResponse {
@@ -477,6 +477,16 @@ describe("downloadSafePublicImage total deadline", () => {
     expect(calls).toHaveLength(3);
   });
 
+  it("still ends a request that closes without a response at the total limit", async () => {
+    const closing = vi.fn((_url: URL, _options: Record<string, unknown>) => {
+      const req = Object.assign(new EventEmitter(), { setTimeout: vi.fn(), destroy: vi.fn(), end: vi.fn(() => queueMicrotask(() => req.emit("close"))) });
+      return req;
+    });
+    const download = track(downloadSafePublicImage("https://cdn.example.com/a.png", { request: closing as never, resolve, deadlineMs: 1_000 }));
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(download.error?.message).toMatch(/1000 ms total limit/);
+  });
+
   it("says the caller aborted, not the clock, when the caller's signal fires first", async () => {
     const controller = new AbortController();
     const { request, res, ready } = pieceByPieceRequest({ "content-type": "image/png" });
@@ -516,6 +526,28 @@ describe("downloadSafePublicImage against a real dripping server", () => {
       expect(unhandled).toEqual([]);
     } finally {
       process.off("unhandledRejection", onUnhandled);
+      await server.close();
+    }
+  });
+});
+
+describe("downloadSafePublicImage against a server that switches protocols", () => {
+  it("refuses a 101 at once instead of waiting forever", async () => {
+    const server = await switchingProtocolsServer();
+    try {
+      const started = Date.now();
+      const outcome = await Promise.race([
+        downloadSafePublicImage("https://cdn.example.com/a.png", {
+          request: server.request,
+          resolve: fakeResolve({ "cdn.example.com": ["203.0.113.10"] }),
+          deadlineMs: 5_000,
+        }).then(() => "finished", (err: Error) => err),
+        new Promise((r) => setTimeout(() => r("still running after 2 s"), 2_000)),
+      ]);
+      expect(outcome).toBeInstanceOf(UnsafeUrlError);
+      expect((outcome as Error).message).toMatch(/switched protocols/);
+      expect(Date.now() - started).toBeLessThan(1_500);
+    } finally {
       await server.close();
     }
   });

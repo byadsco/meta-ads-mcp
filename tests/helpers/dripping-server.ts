@@ -1,5 +1,5 @@
 import http from "node:http";
-import type { AddressInfo } from "node:net";
+import net, { type AddressInfo } from "node:net";
 
 /**
  * A real local server that answers with `contentType` and then sends one
@@ -32,4 +32,17 @@ export async function drippingServer(contentType: string, everyMs: number) {
         server.close(() => resolve());
       }),
   };
+}
+
+/** A real local server that answers every request with 101 Switching Protocols. */
+export async function switchingProtocolsServer() {
+  const server = net.createServer((socket) => {
+    socket.on("error", () => undefined);
+    socket.once("data", () => socket.write("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n"));
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address() as AddressInfo;
+  const request = ((_url: URL, options: http.RequestOptions, callback: (res: http.IncomingMessage) => void) =>
+    http.request({ host: "127.0.0.1", port, path: "/", method: "GET", headers: options.headers }, callback)) as never;
+  return { request, close: () => new Promise<void>((resolve) => server.close(() => resolve())) };
 }

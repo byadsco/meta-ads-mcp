@@ -1,6 +1,7 @@
 import type { IncomingHttpHeaders, IncomingMessage } from "node:http";
 import https from "node:https";
 import type { RequestOptions } from "node:https";
+import type { Duplex } from "node:stream";
 import { UnsafeUrlError, type AssertSafeUrlOptions, type ResolvedSafePublicUrl } from "./url-guard.js";
 import {
   assertAllowedHost,
@@ -180,7 +181,16 @@ function requestImage(
       settled = true;
       reject(err instanceof UnsafeUrlError ? err : new UnsafeUrlError(`Image download failed: ${err.message}`));
     });
-    req.on("close", () => options.signal?.removeEventListener("abort", onAbort));
+    // A 101 never reaches the response callback: Node hands the socket to an
+    // "upgrade" listener, or destroys it and closes the request without an error.
+    req.on("upgrade", (_res: IncomingMessage, socket: Duplex) => {
+      socket.destroy();
+      rejectAndClose(undefined, new UnsafeUrlError("Image download failed: the server switched protocols"));
+    });
+    // A request that closes unsettled keeps its abort listener, so the deadline still ends it.
+    req.on("close", () => {
+      if (settled) options.signal?.removeEventListener("abort", onAbort);
+    });
 
     req.end();
   });
