@@ -8,6 +8,7 @@ import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { downloadSafePublicVideo } from "../../src/media/safe-video-download.js";
 import { UnsafeUrlError } from "../../src/utils/url-guard.js";
+import { liveHeapBytes, pieceByPieceRequest } from "../helpers/live-heap.js";
 
 interface FakeResponse {
   statusCode?: number;
@@ -280,6 +281,36 @@ describe("downloadSafePublicVideo", () => {
         destDir: dir,
       }),
     ).rejects.toBeInstanceOf(UnsafeUrlError);
+  });
+
+  it("writes a body sent a byte at a time in blocks, without holding an object per byte", async () => {
+    const pieces = 300_000;
+    const { request, res, ready } = pieceByPieceRequest({ "content-type": "video/mp4" });
+    const pending = downloadSafePublicVideo("https://video.xx.fbcdn.net/clip.mp4", { request, resolve: PUBLIC, destDir: dir });
+    await ready;
+
+    const before = liveHeapBytes();
+    for (let i = 0; i < pieces; i++) res.emit("data", Buffer.from([i & 0xff]));
+    const held = liveHeapBytes() - before;
+    res.emit("end");
+    const video = await pending;
+
+    expect(video.bytes).toBe(pieces);
+    const written = await fs.readFile(video.path);
+    expect(written.length).toBe(pieces);
+    expect(written.every((byte, i) => byte === (i & 0xff))).toBe(true);
+    // A write (and a drain listener) per piece costs tens of MB of heap here.
+    expect(held).toBeLessThan(2 * 1024 * 1024);
+  });
+
+  it("writes a body whose pieces straddle its blocks byte for byte", async () => {
+    const body = Buffer.from(Array.from({ length: 300_001 }, (_, i) => (i * 7) & 0xff));
+    const cuts = [0, 1, 50_000, 65_536, 65_537, 200_000, 300_001];
+    const chunks = cuts.slice(1).map((end, i) => body.subarray(cuts[i], end));
+    const { request } = makeRequest([{ headers: { "content-type": "video/mp4" }, chunks }]);
+    const video = await downloadSafePublicVideo("https://video.xx.fbcdn.net/clip.mp4", { request, resolve: PUBLIC, destDir: dir });
+    expect(video.bytes).toBe(body.length);
+    expect((await fs.readFile(video.path)).equals(body)).toBe(true);
   });
 
   it("uses its own agent, never the global one an environment proxy can take over", async () => {

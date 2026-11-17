@@ -7,6 +7,7 @@ import { randomUUID } from "node:crypto";
 import { UnsafeUrlError, type AssertSafeUrlOptions, type ResolvedSafePublicUrl } from "../utils/url-guard.js";
 import {
   assertAllowedHost,
+  BodyBlocks,
   buildPinnedLookup,
   DIRECT_HTTPS_AGENT,
   followSafeRedirects,
@@ -190,21 +191,32 @@ function requestVideo(
       const stream = createWriteStream(filePath, { flags: "wx" });
       out = stream;
       let total = 0;
+      let waitingForDrain = false;
+      const body = new BodyBlocks((block) => {
+        if (!stream.write(block) && !waitingForDrain) {
+          waitingForDrain = true;
+          res.pause();
+          stream.once("drain", () => {
+            waitingForDrain = false;
+            res.resume();
+          });
+        }
+      });
 
       res.on("data", (chunk: Buffer | string) => {
+        if (settled) return;
         const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
         total += buffer.length;
         if (total > options.maxBytes) {
           reject_(new UnsafeUrlError(`Video is too large: exceeded ${options.maxBytes} bytes`));
           return;
         }
-        if (!stream.write(buffer)) {
-          res.pause();
-          stream.once("drain", () => res.resume());
-        }
+        body.push(buffer);
       });
 
       res.on("end", () => {
+        if (settled) return;
+        body.flush();
         stream.end();
       });
 

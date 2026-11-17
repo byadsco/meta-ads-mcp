@@ -5,6 +5,7 @@ import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import { downloadSafePublicImage } from "../../src/utils/safe-download.js";
 import { UnsafeUrlError } from "../../src/utils/url-guard.js";
+import { liveHeapBytes, pieceByPieceRequest } from "../helpers/live-heap.js";
 
 interface FakeResponse {
   statusCode?: number;
@@ -320,6 +321,54 @@ describe("downloadSafePublicImage", () => {
         maxBytes: 10,
         resolve: fakeResolve({ "cdn.example.com": ["203.0.113.10"] }),
       }),
+    ).rejects.toThrow(/too large/);
+  });
+
+  it("keeps the bytes of a body sent a byte at a time, not one object per byte", async () => {
+    const pieces = 300_000;
+    const { request, res, ready } = pieceByPieceRequest({ "content-type": "image/png" });
+    const pending = downloadSafePublicImage("https://cdn.example.com/a.png", {
+      request,
+      resolve: fakeResolve({ "cdn.example.com": ["203.0.113.10"] }),
+    });
+    await ready;
+
+    const before = liveHeapBytes();
+    for (let i = 0; i < pieces; i++) res.emit("data", Buffer.from([i & 0xff]));
+    const held = liveHeapBytes() - before;
+    res.emit("end");
+    const image = await pending;
+
+    expect(image.buffer.length).toBe(pieces);
+    expect(image.buffer.every((byte, i) => byte === (i & 0xff))).toBe(true);
+    // A Buffer kept per piece costs tens of MB of heap here; the blocks hold
+    // the same bytes outside the heap.
+    expect(held).toBeLessThan(2 * 1024 * 1024);
+  });
+
+  it("puts back together a body whose pieces straddle the blocks it is copied into", async () => {
+    const body = Buffer.from(Array.from({ length: 300_001 }, (_, i) => (i * 7) & 0xff));
+    const cuts = [0, 1, 50_000, 65_536, 65_537, 200_000, 300_001];
+    const chunks = cuts.slice(1).map((end, i) => body.subarray(cuts[i], end));
+    const { request } = makeRequest([{ headers: { "content-type": "image/png" }, chunks }]);
+    const image = await downloadSafePublicImage("https://cdn.example.com/a.png", {
+      request,
+      resolve: fakeResolve({ "cdn.example.com": ["203.0.113.10"] }),
+    });
+    expect(image.buffer.equals(body)).toBe(true);
+  });
+
+  it("accepts a body of exactly maxBytes sent in pieces and refuses one byte more", async () => {
+    const resolve = fakeResolve({ "cdn.example.com": ["203.0.113.10"] });
+    const bytes = (n: number) => Array.from({ length: n }, (_, i) => Buffer.from([i]));
+
+    const exact = makeRequest([{ headers: { "content-type": "image/png" }, chunks: bytes(10) }]);
+    const image = await downloadSafePublicImage("https://cdn.example.com/a.png", { request: exact.request, resolve, maxBytes: 10 });
+    expect([...image.buffer]).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+
+    const over = makeRequest([{ headers: { "content-type": "image/png" }, chunks: bytes(11) }]);
+    await expect(
+      downloadSafePublicImage("https://cdn.example.com/a.png", { request: over.request, resolve, maxBytes: 10 }),
     ).rejects.toThrow(/too large/);
   });
 

@@ -15,6 +15,46 @@ export type HttpsRequestFn = typeof https.request;
 // kept-alive socket would skip it too.
 export const DIRECT_HTTPS_AGENT = new https.Agent({ keepAlive: false });
 
+const BODY_BLOCK_BYTES = 64 * 1024;
+
+/**
+ * Copies each piece of a response body into fixed-size blocks and drops it,
+ * so a download holds what it received, never one object per piece: a server
+ * that sends its body a byte per chunk would otherwise make every byte cost a
+ * Buffer, which the byte cap does not bound.
+ */
+export class BodyBlocks {
+  private block: Buffer | null = null;
+  private used = 0;
+
+  constructor(
+    private readonly onBlock: (block: Buffer) => void,
+    private readonly blockBytes = BODY_BLOCK_BYTES,
+  ) {}
+
+  push(piece: Buffer): void {
+    let offset = 0;
+    while (offset < piece.length) {
+      this.block ??= Buffer.allocUnsafe(this.blockBytes);
+      const copied = piece.copy(this.block, this.used, offset);
+      offset += copied;
+      this.used += copied;
+      if (this.used === this.blockBytes) {
+        this.onBlock(this.block);
+        this.block = null;
+        this.used = 0;
+      }
+    }
+  }
+
+  /** Hands over the last, partial block. */
+  flush(): void {
+    if (this.block && this.used > 0) this.onBlock(this.block.subarray(0, this.used));
+    this.block = null;
+    this.used = 0;
+  }
+}
+
 function normalizeHostname(hostname: string): string {
   return hostname.startsWith("[") && hostname.endsWith("]")
     ? hostname.slice(1, -1)
