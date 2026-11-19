@@ -66,6 +66,7 @@ async function releaseWithin(release: Promise<void>, ms: number): Promise<void> 
 }
 import {
   asRecord,
+  carryOverFields,
   createReplacementCreative,
   deleteCreative,
   errorMessage,
@@ -334,7 +335,13 @@ async function preparePostEdits(entries: Array<{ report: GroupReport; creative: 
     return refuse("post_edit_active_text_options", "an active ad on this post has several text options, and its temporary copy could not show exactly what it shows while the post is edited. Pause it first, or use allow_new_post");
   }
   const scope: PostScope = { account_id: accountId, post, users, creatives };
-  for (const { report } of edits) report.post_scope = scope;
+  // Every ad on the post moves to a temporary copy of its creative, and stays
+  // there if it cannot move back, so what a copy cannot carry is shown too.
+  const carried = Object.values(creatives).flatMap((creative) => carryOverFields(creative).warnings);
+  for (const { report } of edits) {
+    report.post_scope = scope;
+    for (const warning of carried) if (!report.warnings.includes(warning)) report.warnings.push(warning);
+  }
 }
 
 export function registerAdContentTools(server: McpServer, options: { clock?: Clock; leases?: PostEditLeases } = {}): void {

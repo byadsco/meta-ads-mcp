@@ -195,6 +195,38 @@ describe("registerAdSetTools", () => {
       expect(methods).toEqual(["GET", "GET", "GET"]);
     });
 
+    it("dry-run warns about the settings a swapped creative cannot carry", async () => {
+      const server = createMockMcpServer();
+      registerAdSetTools(server as never);
+
+      vi.stubGlobal("fetch", vi.fn()
+        .mockResolvedValueOnce(mockFetchResponse(sourceAdSet({ name: "Honduras - Mujeres" })))
+        .mockResolvedValueOnce(mockFetchResponse({
+          data: [{
+            id: "3001", name: "Honduras - Mujeres__flyer_1", adset_id: "2099", campaign_id: "1001",
+            status: "ACTIVE", effective_status: "ACTIVE", creative: { id: "4001" },
+            created_time: "2026-03-01T00:00:00-0500", updated_time: "2026-03-01T00:00:00-0500",
+          }],
+        }))
+        .mockResolvedValueOnce(mockFetchResponse({
+          id: "4001", name: "Creative HN",
+          object_story_spec: { page_id: "6001", link_data: { link: "https://ugc.byads.co/", image_hash: "h1" } },
+          degrees_of_freedom_spec: { creative_features_spec: { image_background_gen: { enroll_status: "OPT_IN" } } },
+        })));
+
+      const handler = server._registeredTools[2].handler;
+      const result = await handler({
+        account_id: "act_123",
+        source_ad_set_id: "2099",
+        target_ad_set: { name: "Chile - Mujeres", geo_override: { countries: ["CL"] }, status: "PAUSED" },
+        creative_overrides: [{ source_ad_id: "3001", headline: "Headline Chile" }],
+        dry_run: true,
+      }) as { content: Array<{ type: string; text: string }> };
+
+      const payload = JSON.parse(result.content[1].text) as { warnings: string[] };
+      expect(payload.warnings.join(" ")).toMatch(/image_background_gen.*catalog/);
+    });
+
     it("copies each ad natively into the new ad set, forcing PAUSED", async () => {
       const server = createMockMcpServer();
       registerAdSetTools(server as never);

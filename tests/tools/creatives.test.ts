@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { registerCreativeTools } from "../../src/tools/creatives.js";
+import { WRITE_WARNING } from "../../src/tools/_register.js";
 import {
   CREATIVE_DEFAULT_FIELDS,
   SYNTHETIC_CREATIVE_FIELDS,
@@ -27,10 +28,10 @@ describe("registerCreativeTools", () => {
     }
   });
 
-  it("registers exactly 10 tools", () => {
+  it("registers exactly 11 tools", () => {
     const server = createMockMcpServer();
     registerCreativeTools(server as never);
-    expect(server.registerTool).toHaveBeenCalledTimes(10);
+    expect(server.registerTool).toHaveBeenCalledTimes(11);
   });
 
   it("registers tools with expected names", () => {
@@ -49,6 +50,7 @@ describe("registerCreativeTools", () => {
       "ads_get_video_details",
       "ads_upload_ad_video",
       "ads_get_creative_ads",
+      "ads_delete_ad_creative",
     ]);
   });
 
@@ -370,6 +372,155 @@ describe("registerCreativeTools", () => {
       })).rejects.toThrow(/require image_hash or image_url as a thumbnail/i);
 
       expect(vi.mocked(fetch)).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("ads_delete_ad_creative handler", () => {
+    const creative = { id: "4001", name: "Old test", account_id: "123" };
+    const notACreative = {
+      error: { code: 100, type: "OAuthException", message: "(#100) Tried accessing nonexisting field (effective_object_story_id) on node type (Ad)" },
+    };
+    const inUse = { error: { code: 100, error_subcode: 3858800, type: "OAuthException", message: "Content used in ads" } };
+    const gone = { error: { code: 100, error_subcode: 33, type: "GraphMethodException", message: "Unsupported get request." } };
+    const serverError = { error: { code: 1, type: "OAuthException", message: "An unknown error occurred" } };
+
+    function deleteTool() {
+      const server = createMockMcpServer();
+      registerCreativeTools(server as never);
+      const tool = server._registeredTools.find((t) => t.name === "ads_delete_ad_creative");
+      if (!tool) throw new Error("ads_delete_ad_creative is not registered");
+      return tool;
+    }
+
+    // Answers the first GET with `read`, every DELETE with `remove`, and any
+    // later GET (the read-back) with `readBack`.
+    function stubMeta(responses: { read: Response; remove?: Response; readBack?: Response }): void {
+      let gets = 0;
+      vi.stubGlobal("fetch", vi.fn(async (_url: string, init?: RequestInit) => {
+        if (init?.method === "DELETE") return responses.remove ?? mockFetchResponse({ success: true });
+        gets += 1;
+        return gets === 1 ? responses.read : responses.readBack ?? mockFetchResponse(creative);
+      }));
+    }
+
+    const deleteCalls = () => vi.mocked(fetch).mock.calls.filter(([, init]) => (init as RequestInit | undefined)?.method === "DELETE");
+
+    it("deletes a creative once it is confirmed to be one", async () => {
+      stubMeta({ read: mockFetchResponse(creative) });
+
+      const result = await deleteTool().handler({ creative_id: "4001" }) as { content: Array<{ text: string }> };
+
+      const [readUrl, readInit] = vi.mocked(fetch).mock.calls[0];
+      expect((readInit as RequestInit | undefined)?.method ?? "GET").toBe("GET");
+      const read = new URL(readUrl as string);
+      expect(read.pathname).toMatch(/\/4001$/);
+      expect(read.searchParams.get("fields")).toContain("effective_object_story_id");
+      expect(read.searchParams.get("fields")).toContain("account_id");
+
+      const [removeUrl, removeInit] = vi.mocked(fetch).mock.calls[1];
+      expect((removeInit as RequestInit).method).toBe("DELETE");
+      expect(new URL(removeUrl as string).pathname).toMatch(/\/4001$/);
+
+      expect(result.content[0].text).toContain("\"Old test\"");
+      expect(result.content[0].text).toContain("4001");
+      expect(result.content[0].text).toContain("act_123");
+      expect(result.content[0].text).toContain("cannot be undone");
+    });
+
+    it("says a creative is already deleted instead of deleting it again", async () => {
+      stubMeta({ read: mockFetchResponse({ ...creative, status: "DELETED" }) });
+
+      const result = await deleteTool().handler({ creative_id: "4001" }) as { content: Array<{ text: string }> };
+
+      expect(new URL(vi.mocked(fetch).mock.calls[0][0] as string).searchParams.get("fields")).toContain("status");
+      expect(result.content[0].text).toContain("already deleted");
+      expect(deleteCalls()).toHaveLength(0);
+    });
+
+    it("refuses an id that is not a creative and deletes nothing", async () => {
+      stubMeta({ read: mockFetchResponse(notACreative, { status: 400 }) });
+
+      await expect(deleteTool().handler({ creative_id: "4001" })).rejects.toThrow(/was not deleted/);
+      expect(deleteCalls()).toHaveLength(0);
+    });
+
+    it("refuses a malformed id before calling Meta", async () => {
+      vi.stubGlobal("fetch", vi.fn());
+
+      await expect(deleteTool().handler({ creative_id: "123/insights" })).rejects.toThrow();
+      expect(vi.mocked(fetch)).not.toHaveBeenCalled();
+    });
+
+    it("passes on Meta's refusal when an ad uses the creative", async () => {
+      stubMeta({
+        read: mockFetchResponse(creative),
+        remove: mockFetchResponse(inUse, { status: 400 }),
+        readBack: mockFetchResponse({ id: "4001", status: "ACTIVE" }),
+      });
+
+      await expect(deleteTool().handler({ creative_id: "4001" })).rejects.toThrow(/3858800/);
+      expect(deleteCalls()).toHaveLength(1);
+    });
+
+    // Meta answers 100/33 both for a missing object and for one the token can
+    // no longer read, so a failed read-back proves nothing either way.
+    it("reports a lost answer as unconfirmed when the read-back fails", async () => {
+      stubMeta({
+        read: mockFetchResponse(creative),
+        remove: mockFetchResponse(serverError, { status: 500 }),
+        readBack: mockFetchResponse(gone, { status: 400 }),
+      });
+
+      await expect(deleteTool().handler({ creative_id: "4001" })).rejects.toThrow(/unconfirmed/);
+      expect(deleteCalls()).toHaveLength(1);
+    });
+
+    it("counts a lost answer as deleted when Meta reports the creative DELETED", async () => {
+      stubMeta({
+        read: mockFetchResponse(creative),
+        remove: mockFetchResponse(serverError, { status: 500 }),
+        readBack: mockFetchResponse({ id: "4001", status: "DELETED" }),
+      });
+
+      const result = await deleteTool().handler({ creative_id: "4001" }) as { content: Array<{ text: string }> };
+
+      expect(result.content[0].text).toContain("was deleted");
+      expect(result.content[0].text).toContain("confirmed by reading it back");
+      expect(deleteCalls()).toHaveLength(1);
+    });
+
+    it("does not take an answer without success: true as a deletion", async () => {
+      stubMeta({
+        read: mockFetchResponse(creative),
+        remove: mockFetchResponse({}),
+        readBack: mockFetchResponse({ id: "4001", status: "ACTIVE" }),
+      });
+
+      await expect(deleteTool().handler({ creative_id: "4001" })).rejects.toThrow(/did not confirm/);
+    });
+
+    it("confirms an answer without success: true by reading the creative back DELETED", async () => {
+      stubMeta({
+        read: mockFetchResponse(creative),
+        remove: mockFetchResponse({ success: null }),
+        readBack: mockFetchResponse({ id: "4001", status: "DELETED" }),
+      });
+
+      const result = await deleteTool().handler({ creative_id: "4001" }) as { content: Array<{ text: string }> };
+
+      expect(result.content[0].text).toContain("confirmed by reading it back");
+    });
+
+    it("does not report a deletion Meta did not confirm", async () => {
+      stubMeta({ read: mockFetchResponse(creative), remove: mockFetchResponse({ success: false }) });
+
+      await expect(deleteTool().handler({ creative_id: "4001" })).rejects.toThrow(/did not confirm/);
+    });
+
+    it("is annotated as destructive and warns", () => {
+      const tool = deleteTool();
+      expect(tool.annotations?.destructiveHint).toBe(true);
+      expect(tool.description.startsWith(WRITE_WARNING)).toBe(true);
     });
   });
 });

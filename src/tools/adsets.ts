@@ -566,6 +566,7 @@ export function registerAdSetTools(server: McpServer): void {
             planned: true,
           });
           if (plan.strategy === "swap") {
+            if (plan.sourceCreative) warnings.push(...carryOverFields(plan.sourceCreative).warnings);
             result.created_creatives.push({
               source_ad_id: plan.sourceAd.id,
               source_creative_id: plan.sourceCreativeId,
