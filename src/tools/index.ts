@@ -57,7 +57,7 @@ export function registerAllTools(server: McpServer): void {
   registerCampaignTools(server);     // 5 tools
   registerAdSetTools(server);        // 6 tools
   registerAdTools(server);           // 6 tools
-  registerCreativeTools(server);     // 10 tools (+ ads_get_creative_ads)
+  registerCreativeTools(server);     // 11 tools (+ ads_get_creative_ads, ads_delete_ad_creative)
   registerCreativeMediaTools(server); // 1 tool — creative media as inline image blocks
   registerVideoMediaTools(server);   // 1 tool — ads_get_video_media (keyframes / inline MP4 / urls)
   registerVideoAnalysisTools(server); // 1 tool — ads_analyze_video (Gemini video understanding)
@@ -114,5 +114,5 @@ export function registerAllTools(server: McpServer): void {
   // ─── Token Management ────────────────────────────────────
   registerTokenTools(server);        // 4 tools — list / set-active / register / delete
 
-  // Total: 171 tools (79 renamed + 14 new in v3 + 3 audience-sharing + 1 invoices + 27 WhatsApp + 1 url-tags + 1 bulk video ads + 1 creative media + 9 Ad Library/Apify + 1 video media + 1 video analysis + 3 Gemini key mgmt + 1 ad dossier + 1 ad content editor + 2 social proof + 4 Business Manager access + 1 locale search + 7 official-parity tools + 2 experiment tools + 3 audience tools + 6 lead form tools + 3 budget schedule tools)
+  // Total: 172 tools (79 renamed + 14 new in v3 + 3 audience-sharing + 1 invoices + 27 WhatsApp + 1 url-tags + 1 bulk video ads + 1 creative media + 9 Ad Library/Apify + 1 video media + 1 video analysis + 3 Gemini key mgmt + 1 ad dossier + 1 ad content editor + 2 social proof + 4 Business Manager access + 1 locale search + 7 official-parity tools + 2 experiment tools + 3 audience tools + 6 lead form tools + 3 budget schedule tools + 1 creative delete tool)
 }

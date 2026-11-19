@@ -9,6 +9,13 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
+- **`ads_delete_ad_creative` deletes an ad creative** (171 → 172 tools), such as test creatives or replacements no ad uses. It cannot be undone.
+  - It first reads the ID with a field only a creative has, and deletes nothing when that read fails: `DELETE /{id}` removes whatever object the ID names, so an ad, campaign or post ID passed by mistake would otherwise go.
+  - Meta refuses to delete a creative an ad still uses (subcode 3858800): the ad has to move to another creative, or be deleted or archived, first. The tool passes that refusal on.
+  - A creative already deleted is reported as such, with nothing sent: Meta keeps it readable as `DELETED` and accepts a second delete, which would read as a fresh one.
+  - The delete is sent once and counts only on `success: true`. Any other answer, a lost one included, is checked by reading the creative back: only `DELETED` confirms it. A failed read-back is reported as unconfirmed, because Meta answers code 100/33 both for a missing object and for one the token can no longer read.
+  - Measured on Graph API v26.0 (2026-11-19); the details are in `docs/meta-creative-ground-truth.md`.
+
 - **Budget schedules can be listed, changed and deleted** (168 → 171 tools). The rules below were measured on Graph API v26.0 (2026-11-15), except the limit of 50 periods, which is Meta's documentation.
   - `ads_get_budget_schedules` lists the periods of a campaign or ad set. For each one it shows the increase in money, the daily budget during its window, the window in the account's time zone, and whether it is upcoming, IN PROGRESS or ended. `daily_budget` and `budget_remaining` stay the same while a period runs, so until now nothing showed an increase in progress.
   - `ads_update_budget_schedule` changes the increase or the window of a period that has not started.
