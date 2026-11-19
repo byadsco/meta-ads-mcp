@@ -89,6 +89,15 @@ Route B (editing the post):
 - A creative read back with `asset_feed_spec` and `object_story_spec` (text options) can be resent as is to create a replacement: Meta accepted it, with a new post.
 - A creative made by route A (`object_story_id` + text options, no spec) can go through route A again.
 
+## Deleting a creative (measured 2026-11-19)
+
+- `DELETE /{creative_id}` on a creative no ad uses answers `success: true`. The creative stays readable afterwards, as `status: "DELETED"`; it is not reported as missing.
+- A second `DELETE` on an already deleted creative also answers `success: true`.
+- A creative a PAUSED ad uses is refused: code 100, subcode 3858800, "cannot delete content that is in use … used in 1 ad. Delete or archive that ad and try again". The ad keeps the creative.
+- Once the ad's campaign was deleted, the creative was deleted at the first try, a few seconds later.
+- `GET /{id}?fields=effective_object_story_id` on an ad or a campaign answers `(#100) Tried accessing nonexisting field (effective_object_story_id)`, so that field tells a creative apart before a `DELETE`, which would remove whatever object the ID names.
+- Meta appends a date and a hash to the name of a creative made through the API (`<name> 2026-11-19-<32 hex>`).
+
 ## Reading engagement
 
 - Instagram: `GET /{ig_media_id}?fields=like_count,comments_count` works with `instagram_basic`.

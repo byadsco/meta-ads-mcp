@@ -5,7 +5,7 @@ import { MINOR_UNIT_NOTE } from "../../src/meta/currency.js";
 import { createMockMcpServer } from "../setup.js";
 
 describe("registerAllTools", () => {
-  it("registers exactly 171 tools total", () => {
+  it("registers exactly 172 tools total", () => {
     // 79 v2 tools renamed (with account_insights removed → 79) + 14 new in v3 +
     //   3 audience-sharing tools (share / unshare / get-shared-accounts) +
     //   1 invoices tool (ads_get_invoices) +
@@ -28,10 +28,11 @@ describe("registerAllTools", () => {
     //     ads_account_get_activity_logs / ads_library_search) +
     //   2 experiment tools (ads_experiment_check_eligibility / ads_experiment_abtest_update_test) +
     //   3 budget schedule tools (ads_get_budget_schedules / ads_update_budget_schedule /
-    //     ads_delete_budget_schedule).
+    //     ads_delete_budget_schedule) +
+    //   1 creative delete tool (ads_delete_ad_creative).
     const server = createMockMcpServer();
     registerAllTools(server as never);
-    expect(server.registerTool).toHaveBeenCalledTimes(171);
+    expect(server.registerTool).toHaveBeenCalledTimes(172);
   });
 
   it("registers all tools with unique names", () => {
@@ -195,6 +196,8 @@ describe("registerAllTools", () => {
     expect(names).toContain("ads_delete_ad_set");
     expect(names).toContain("ads_get_ad_sets");
     expect(names).toContain("ads_get_ad_set_details");
+
+    expect(names).toContain("ads_delete_ad_creative");
 
     // Removed in v3
     expect(names).not.toContain("ads_get_account_insights");

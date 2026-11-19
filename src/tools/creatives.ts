@@ -16,7 +16,8 @@ import type { AdCreative, AdImage, AdVideo, MetaApiResponse } from "../meta/type
 import { logger } from "../utils/logger.js";
 import { assertSafePublicUrl, UnsafeUrlError } from "../utils/url-guard.js";
 import { downloadSafePublicImage } from "../utils/safe-download.js";
-import { READ, CREATE, UPDATE, UPLOAD, WRITE_WARNING } from "./_register.js";
+import { READ, CREATE, UPDATE, DELETE, UPLOAD, WRITE_WARNING } from "./_register.js";
+import { errorMessage } from "../meta/creative-rebuild.js";
 import {
   ADVANTAGE_CREATIVE_FEATURES,
   CTA_TYPES,
@@ -1060,6 +1061,62 @@ export function registerCreativeTools(server: McpServer): void {
           : []),
       ];
       return { content: [{ type: "text", text: lines.join("\n") }] };
+    },
+  );
+
+  server.registerTool(
+    "ads_delete_ad_creative",
+    {
+      description: `${WRITE_WARNING}Delete an ad creative for good, e.g. test creatives or replacements no ad uses. It cannot be undone. The tool first confirms the ID is an ad creative and deletes nothing otherwise. Meta refuses to delete a creative an ad still uses: point that ad at another creative (ads_update_ad), or delete or archive the ad, first; right after such a move Meta may keep refusing for a minute. Images and videos stay in the account library.`,
+      inputSchema: {
+        creative_id: z.string().describe("ID of the ad creative to delete"),
+      },
+      annotations: { ...DELETE },
+    },
+    async ({ creative_id }) => {
+      const id = validateMetaId(creative_id, "creative");
+      // DELETE /{id} removes whatever object the id names, so the id is first
+      // read with a field only a creative has: on an ad, campaign or post Meta
+      // answers #100 and nothing is deleted.
+      let creative: Pick<AdCreative, "id" | "name" | "status"> & { account_id?: string };
+      try {
+        creative = await metaApiClient.get(`/${id}`, { fields: "id,name,status,account_id,effective_object_story_id" });
+      } catch (err) {
+        throw new Error(`Creative ${id} was not deleted: it could not be read as an ad creative (${errorMessage(err)}).`);
+      }
+      const account = creative.account_id ? normalizeAccountId(creative.account_id) : undefined;
+      const name = singleLine(creative.name, 100) || "(unnamed)";
+      // A deleted creative stays readable as DELETED, and Meta accepts a
+      // second DELETE on it, which would read as a fresh deletion.
+      if (creative.status === "DELETED") {
+        return { content: [{ type: "text", text: `Creative "${name}" (${id}) was already deleted; nothing was sent to Meta.` }] };
+      }
+
+      let confirmedByReadBack = false;
+      try {
+        const result = await metaApiClient.delete<{ success?: unknown }>(`/${id}`, undefined, { accountId: account, noRetry: true });
+        if (result?.success !== true) throw new Error(`Meta did not confirm deleting creative ${id}.`);
+      } catch (err) {
+        // Only a read showing DELETED proves the delete: Meta keeps a deleted
+        // creative readable that way, and answers 100/33 both for a missing
+        // object and for one the token can no longer read.
+        let status: string | undefined;
+        try {
+          status = (await metaApiClient.get<{ status?: string }>(`/${id}`, { fields: "id,status" })).status;
+        } catch (readErr) {
+          throw new Error(`Deleting creative ${id} is unconfirmed: Meta did not confirm the delete (${errorMessage(err)}) and reading it back failed (${errorMessage(readErr)}). Check it with ads_get_creative_details; deleting it again is safe.`);
+        }
+        if (status !== "DELETED") throw err;
+        confirmedByReadBack = true;
+      }
+
+      return {
+        content: [{
+          type: "text",
+          text: `Creative "${name}" (${id})${account ? ` of account ${account}` : ""} was deleted. This cannot be undone.` +
+            (confirmedByReadBack ? " (confirmed by reading it back: Meta did not confirm the delete itself)" : ""),
+        }],
+      };
     },
   );
 }
