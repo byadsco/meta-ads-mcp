@@ -46,15 +46,23 @@ export function withInstagramIdentity(spec: Record<string, unknown>, creative: A
   return { ...spec, instagram_user_id: instagramUserId };
 }
 
+// Turned on, Meta takes it only with a catalog (subcode 3858293, measured
+// 2026-11-19), which a rebuilt creative does not carry; source creatives can
+// still report it on.
+const CATALOG_ONLY_FEATURES = ["image_background_gen"];
+
 // Creatives built before v22.0 still report standard_enhancements, which Meta
-// now rejects in any form (subcode 3858504), so a replacement must drop it.
+// now rejects in any form (subcode 3858504), so a replacement must drop it,
+// along with catalog-only features turned on.
 export function cleanDegreesOfFreedomSpec(
   spec: Record<string, unknown> | undefined,
 ): { spec?: Record<string, unknown>; dropped: string[] } {
   if (!spec) return { dropped: [] };
   const features = asRecord(spec.creative_features_spec);
   if (!features) return { spec, dropped: [] };
-  const dropped = Object.keys(features).filter((name) => (DEPRECATED_FEATURES as readonly string[]).includes(name));
+  const dropped = Object.keys(features).filter((name) =>
+    (DEPRECATED_FEATURES as readonly string[]).includes(name) ||
+    (CATALOG_ONLY_FEATURES.includes(name) && asRecord(features[name])?.["enroll_status"] === "OPT_IN"));
   if (dropped.length === 0) return { spec, dropped };
   const kept = Object.fromEntries(Object.entries(features).filter(([name]) => !dropped.includes(name)));
   return { spec: { ...spec, creative_features_spec: kept }, dropped };
@@ -72,12 +80,33 @@ export function carryOverFields(creative: AdCreative): { body: Record<string, st
   if (creative.link_url) body.link_url = creative.link_url;
   const dof = cleanDegreesOfFreedomSpec(creative.degrees_of_freedom_spec);
   if (dof.spec) body.degrees_of_freedom_spec = JSON.stringify(dof.spec);
-  if (dof.dropped.length > 0) {
-    warnings.push(`Dropped ${dof.dropped.join(", ")} from creative ${creative.id}'s Advantage+ settings: Meta rejects it since v22.0. Its other feature settings are kept.`);
+  for (const name of dof.dropped) {
+    const reason = CATALOG_ONLY_FEATURES.includes(name)
+      ? "Meta takes it turned on only with a catalog (subcode 3858293), which a rebuilt creative does not carry"
+      : "Meta rejects it since v22.0";
+    warnings.push(`Dropped ${name} from creative ${creative.id}'s Advantage+ settings: ${reason}. Its other feature settings are kept.`);
   }
   // Since Marketing API v26.0 a creative created without destination_spec
-  // defaults to Website and Shop for advertisers with a shop.
-  if (creative.destination_spec) body.destination_spec = JSON.stringify(creative.destination_spec);
+  // defaults to Website and Shop for advertisers with a shop. Ads Manager's
+  // own setting reads back as native_commerce_experience, which Meta refuses
+  // from an app with #3 (measured 2026-11-19); its opt-out is written as
+  // destination_type instead, which Meta accepts and reads back.
+  const destination = asRecord(creative.destination_spec);
+  if (destination) {
+    const { native_commerce_experience: shop, ...writable } = destination;
+    if (shop !== undefined && writable.destination_type === undefined) {
+      const { product_browsing: browsing, ...others } = asRecord(shop) ?? {};
+      if (asRecord(browsing)?.["enroll_status"] === "OPT_OUT") {
+        writable.destination_type = "WEBSITE_AND_SHOP_OPT_OUT";
+        if (Object.keys(others).length > 0) {
+          warnings.push(`Dropped ${Object.keys(others).join(", ")} from creative ${creative.id}'s Ads Manager shop setting (native_commerce_experience): Meta refuses it from apps. Its shop opt-out is kept.`);
+        }
+      } else {
+        warnings.push(`Dropped creative ${creative.id}'s Ads Manager shop setting (native_commerce_experience): Meta refuses it from apps, so the replacement follows Meta's default destination.`);
+      }
+    }
+    if (Object.keys(writable).length > 0) body.destination_spec = JSON.stringify(writable);
+  }
   // Since v26.0 Meta no longer defaults the WhatsApp identity for third-party
   // callers, so a replacement without it leaves WhatsApp Status delivery.
   if (creative.wamo_whatsapp_identity_spec) {

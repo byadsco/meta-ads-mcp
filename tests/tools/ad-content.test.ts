@@ -971,6 +971,20 @@ describe("ads_update_ad_content — editing the post (allow_post_edit)", () => {
     expect(text).toMatch(/temporary creative/);
   });
 
+  it("warns in the preview about what a creative of another ad on the post cannot carry over", async () => {
+    // Ad 3005's creative is only found by scanning the post; its temporary copy
+    // cannot keep image_background_gen turned on.
+    const reuseWithBackground = {
+      ...REUSE,
+      degrees_of_freedom_spec: { creative_features_spec: { image_background_gen: { enroll_status: "OPT_IN" } } },
+    };
+    routeFetch({ ...OBJECTS, 4005: reuseWithBackground });
+
+    const result = await tool().handler(ARGS) as ToolResult;
+
+    expect(result.content[0].text).toMatch(/image_background_gen from creative 4005.*catalog/);
+  });
+
   it("refuses when an active ad would run on a temporary creative that is not a copy of the ad", async () => {
     // A promoted post: no creative on it created it, so there is nothing to copy.
     const promoted = { id: "4005", name: "Promoted", effective_object_story_id: "6001_888", body: "Texto" };

@@ -40,6 +40,10 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Fixed
 
+- **Rebuilding a creative made in Ads Manager no longer fails with `(#3) Application does not have the capability`.** `ads_update_ad_url_tags`, `ads_update_ad_content`, the post edit and the creative swap in `ads_clone_ad_set_bundle` copy a creative's `destination_spec` and Advantage+ settings onto the replacement. Measured on Graph API v26.0 (2026-11-19):
+  - **The shop setting.** Ads Manager's own shop setting reads back as `destination_spec.native_commerce_experience`, and Meta answers #3 when an app sends it. Its opt-out (`product_browsing` `OPT_OUT`) is now written as `destination_type: "WEBSITE_AND_SHOP_OPT_OUT"`, which Meta accepts and reads back, so the replacement keeps the shop off. Any other value of it is left out with a warning, and the replacement follows Meta's default. A writable `destination_type` is still carried as it is.
+  - **`image_background_gen` turned on** is dropped with a warning: Meta takes it only with a catalog (subcode 3858293), which a rebuilt creative does not carry. Turned off, it is kept.
+
 - **Budget schedules, what is read from Meta.**
   - **Times.** A period's start and end are read only in the form Meta sends (`2026-11-16T15:00:00+0000`). Before, a time without an offset was read in the server's time zone, and a bare date or a number was accepted too. Anything else now makes the period unreadable, which blocks writes on that campaign or ad set, and a day or hour that does not exist is refused instead of rolled over.
   - **Recurrence.** The recurrence of a period that repeats is shown only when it is plain capitals (`WEEKLY`). Otherwise it reads `not shown`, since Meta's text is shown there outside the untrusted-content fence.

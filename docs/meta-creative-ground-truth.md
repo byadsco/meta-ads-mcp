@@ -98,6 +98,13 @@ Route B (editing the post):
 - `GET /{id}?fields=effective_object_story_id` on an ad or a campaign answers `(#100) Tried accessing nonexisting field (effective_object_story_id)`, so that field tells a creative apart before a `DELETE`, which would remove whatever object the ID names.
 - Meta appends a date and a hash to the name of a creative made through the API (`<name> 2026-11-19-<32 hex>`).
 
+## Copying a creative's destination and Advantage+ settings (measured 2026-11-19)
+
+- A creative can report its shop setting as `destination_spec: { native_commerce_experience: { product_browsing: { enroll_status: "OPT_OUT", action_metadata: { type: "DEFAULT_OFF" } } } }`. Sent back on a new creative, Meta answers `(#3) Application does not have the capability to make this API call`, with a system user token and with a user token of the same app.
+- `destination_spec: { destination_type: "WEBSITE_AND_SHOP_OPT_OUT" }` is accepted on a creative reusing a post, and reads back as sent, with the `product_browsing` Advantage+ feature `OPT_OUT`. Leaving `destination_spec` out was also accepted; for an advertiser with no shop, the creative then reported no `destination_spec`.
+- `image_background_gen: OPT_IN` is refused without a catalog: subcode 3858293, "the image background generation feature is only available if you select a catalog". `OPT_OUT` is accepted.
+- `ads_with_benefits`, `advantage_plus_creative` and `carousel_to_video` (`OPT_OUT`), and `product_metadata_automation` and `site_extensions` (`OPT_IN`), all outside the 23 documented features, were accepted on a creative reusing a post.
+
 ## Reading engagement
 
 - Instagram: `GET /{ig_media_id}?fields=like_count,comments_count` works with `instagram_basic`.
