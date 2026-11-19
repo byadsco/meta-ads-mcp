@@ -50,6 +50,80 @@ describe("carryOverFields", () => {
     });
     expect(warnings[0]).toMatch(/Dropped standard_enhancements/);
   });
+
+  // Meta reports Ads Manager's shop setting as native_commerce_experience and
+  // answers #3 when an app sends it back (measured 2026-11-19).
+  const adsManagerShop = (status: string) => ({
+    native_commerce_experience: { product_browsing: { enroll_status: status, action_metadata: { type: "DEFAULT_OFF" } } },
+  });
+
+  it("writes Ads Manager's shop opt-out the way an app may send it", () => {
+    const { body, warnings } = carryOverFields({ ...base, destination_spec: adsManagerShop("OPT_OUT") } as AdCreative);
+
+    expect(body.destination_spec).toBe(JSON.stringify({ destination_type: "WEBSITE_AND_SHOP_OPT_OUT" }));
+    expect(warnings).toEqual([]);
+  });
+
+  it("keeps a writable destination_type and leaves Ads Manager's shop setting out", () => {
+    const { body } = carryOverFields({
+      ...base,
+      destination_spec: { destination_type: "WEBSITE_AND_SHOP", ...adsManagerShop("OPT_IN") },
+    } as AdCreative);
+
+    expect(body.destination_spec).toBe(JSON.stringify({ destination_type: "WEBSITE_AND_SHOP" }));
+  });
+
+  it("never lets Ads Manager's shop opt-out override a writable destination_type", () => {
+    const { body, warnings } = carryOverFields({
+      ...base,
+      destination_spec: { destination_type: "WEBSITE_AND_SHOP", ...adsManagerShop("OPT_OUT") },
+    } as AdCreative);
+
+    expect(body.destination_spec).toBe(JSON.stringify({ destination_type: "WEBSITE_AND_SHOP" }));
+    expect(warnings).toEqual([]);
+  });
+
+  it("says so when Ads Manager's shop setting holds more than the opt-out it writes", () => {
+    const { body, warnings } = carryOverFields({
+      ...base,
+      destination_spec: { native_commerce_experience: { ...adsManagerShop("OPT_OUT").native_commerce_experience, checkout: { enroll_status: "OPT_IN" } } },
+    } as AdCreative);
+
+    expect(body.destination_spec).toBe(JSON.stringify({ destination_type: "WEBSITE_AND_SHOP_OPT_OUT" }));
+    expect(warnings.join(" ")).toMatch(/checkout/);
+  });
+
+  it("drops an Ads Manager shop setting it cannot write, and says so", () => {
+    const { body, warnings } = carryOverFields({ ...base, destination_spec: adsManagerShop("OPT_IN") } as AdCreative);
+
+    expect(body.destination_spec).toBeUndefined();
+    expect(warnings.join(" ")).toMatch(/native_commerce_experience/);
+  });
+
+  it("drops image_background_gen turned on, which Meta takes only with a catalog, and says so", () => {
+    const { body, warnings } = carryOverFields({
+      ...base,
+      degrees_of_freedom_spec: {
+        creative_features_spec: {
+          image_background_gen: { enroll_status: "OPT_IN" },
+          site_extensions: { enroll_status: "OPT_IN" },
+        },
+      },
+    });
+
+    expect(JSON.parse(body.degrees_of_freedom_spec)).toEqual({
+      creative_features_spec: { site_extensions: { enroll_status: "OPT_IN" } },
+    });
+    expect(warnings.join(" ")).toMatch(/image_background_gen.*catalog/);
+  });
+
+  it("keeps image_background_gen when it is off", () => {
+    const spec = { creative_features_spec: { image_background_gen: { enroll_status: "OPT_OUT" } } };
+    const { body, warnings } = carryOverFields({ ...base, degrees_of_freedom_spec: spec });
+
+    expect(JSON.parse(body.degrees_of_freedom_spec)).toEqual(spec);
+    expect(warnings).toEqual([]);
+  });
 });
 
 describe("cleanDegreesOfFreedomSpec", () => {
